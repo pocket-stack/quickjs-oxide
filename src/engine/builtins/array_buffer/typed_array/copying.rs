@@ -5,7 +5,18 @@
 //! and then applying the requested mutation to that private result.  The
 //! source's public constructor and `Symbol.species` are never observed.
 
-use super::*;
+use super::{TypedArraySnapshot, typed_array_absolute_byte_offset};
+use crate::engine::{
+    api::{error::NativeErrorKind, runtime::Runtime, runtime_error::RuntimeError},
+    builtins::native::TypedArrayElementKind,
+    heap::ContextId,
+    object::ObjectRef,
+    value::{Value, conversion::NativeConversion},
+    vm::{
+        Completion, ToPrimitiveHint,
+        call::{NativeArguments, NativeInvocation},
+    },
+};
 
 #[cfg(test)]
 mod tests;
@@ -17,57 +28,21 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "TypedArray.prototype.with received a constructor invocation",
-            ));
-        };
-        let source = match self.require_typed_array(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let initial = self.typed_array_state(&source)?;
-        if initial.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "ArrayBuffer is detached",
-            )?));
-        }
-        let initial_length = i64::from(initial.length);
-        let index = match self.native_to_int64_sat(
+        finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "TypedArray.with index argv was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let index = if index < 0 {
-            initial_length + index
-        } else {
-            index
-        };
-
-        // QuickJS performs number-hint ToPrimitive before revalidating the
-        // index. The eventual element conversion remains part of the write to
-        // the freshly copied result.
-        let replacement = match self.to_primitive(
-            realm,
-            arguments
-                .readable
-                .get(1)
-                .ok_or(RuntimeError::Invariant(
-                    "TypedArray.with replacement argv was not padded",
-                ))?
-                .clone(),
-            ToPrimitiveHint::Number,
-        )? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+            TypedWithStep::start(self, realm, &invocation, arguments)?,
+        )
+    }
+    fn finish_typed_with(
+        &self,
+        realm: ContextId,
+        source: ObjectRef,
+        element: TypedArrayElementKind,
+        initial_length: u64,
+        index: i64,
+        replacement: Value,
+    ) -> Result<Completion, RuntimeError> {
         let current = self.typed_array_state(&source)?;
         if current.out_of_bounds || index < 0 || index >= i64::from(current.length) {
             return Ok(Completion::Throw(self.new_native_error(
@@ -80,15 +55,11 @@ impl Runtime {
         // The allocation retains the pre-coercion length. If a tracking RAB
         // shrank, QuickJS fills the missing numeric tail through ordinary
         // element conversion; a BigInt tail consequently throws.
-        let target = match self.typed_array_copy_to_default(
-            realm,
-            &source,
-            initial.snapshot.element,
-            u64::from(initial.length),
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        let target =
+            match self.typed_array_copy_to_default(realm, &source, element, initial_length)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
         let index = u64::try_from(index)
             .map_err(|_| RuntimeError::Invariant("validated TypedArray.with index was negative"))?;
         match self.typed_array_set_index(realm, &target, index, &replacement)? {
@@ -236,3 +207,154 @@ impl Runtime {
         Ok(NativeConversion::Value(target))
     }
 }
+pub(crate) enum TypedWithStep {
+    Complete(Completion),
+    Primitive {
+        value: Value,
+        resume: TypedWithResume,
+    },
+}
+pub(crate) struct TypedWithResume(Box<TypedWithResumeState>);
+impl std::ops::Deref for TypedWithResume {
+    type Target = TypedWithResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for TypedWithResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<TypedWithResume>() <= 8);
+pub(crate) struct TypedWithResumeState {
+    realm: ContextId,
+    source: ObjectRef,
+    element: TypedArrayElementKind,
+    length: i64,
+    phase: WithPhase,
+}
+enum WithPhase {
+    Index(Value),
+    Replacement(i64),
+}
+impl TypedWithStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "TypedArray.prototype.with received a constructor invocation",
+            ));
+        };
+        let source = match runtime.require_typed_array(realm, this_value.clone())? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Self::Complete(Completion::Throw(value))),
+        };
+        let initial = runtime.typed_array_state(&source)?;
+        if initial.out_of_bounds {
+            return Ok(Self::Complete(Completion::Throw(
+                runtime.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "ArrayBuffer is detached",
+                )?,
+            )));
+        }
+        let replacement = arguments
+            .readable
+            .get(1)
+            .ok_or(RuntimeError::Invariant(
+                "TypedArray.with replacement argv was not padded",
+            ))?
+            .clone();
+        Ok(Self::Primitive {
+            value: arguments
+                .readable
+                .first()
+                .ok_or(RuntimeError::Invariant(
+                    "TypedArray.with index argv was not padded",
+                ))?
+                .clone(),
+            resume: TypedWithResume(Box::new(TypedWithResumeState {
+                realm,
+                source,
+                element: initial.snapshot.element,
+                length: i64::from(initial.length),
+                phase: WithPhase::Index(replacement),
+            })),
+        })
+    }
+}
+impl TypedWithResume {
+    pub(crate) fn resume(
+        mut self,
+        runtime: &Runtime,
+        result: Completion,
+    ) -> Result<TypedWithStep, RuntimeError> {
+        let value = match result {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(TypedWithStep::Complete(Completion::Throw(value)));
+            }
+        };
+        match self.0.phase {
+            WithPhase::Index(replacement) => {
+                let index = match runtime.native_to_int64_sat(self.0.realm, &value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(TypedWithStep::Complete(Completion::Throw(value)));
+                    }
+                };
+                let index = if index < 0 {
+                    self.0.length + index
+                } else {
+                    index
+                };
+                Ok(TypedWithStep::Primitive {
+                    value: replacement,
+                    resume: {
+                        let updated_0 = WithPhase::Replacement(index);
+                        self.0.phase = updated_0;
+                        self
+                    },
+                })
+            }
+            WithPhase::Replacement(index) => {
+                Ok(TypedWithStep::Complete(runtime.finish_typed_with(
+                    self.0.realm,
+                    self.0.source,
+                    self.0.element,
+                    self.0.length as u64,
+                    index,
+                    value,
+                )?))
+            }
+        }
+    }
+}
+fn finish(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: TypedWithStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            TypedWithStep::Complete(result) => return Ok(result),
+            TypedWithStep::Primitive { value, resume } => {
+                let result = if matches!(value, Value::Object(_)) {
+                    runtime.to_primitive(realm, value, ToPrimitiveHint::Number)?
+                } else {
+                    Completion::Return(value)
+                };
+                resume.resume(runtime, result)?
+            }
+        };
+    }
+}
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<TypedWithStep>() <= 64);

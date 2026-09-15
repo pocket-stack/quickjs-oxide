@@ -5,6 +5,8 @@
 //! preserves arbitrary UTF-16 code units, allocates realm-correct objects as
 //! input is consumed, and records exact source spans for the reviver.
 
+use std::rc::Rc;
+
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
@@ -37,7 +39,7 @@ pub(crate) struct JsonParseRecord {
 
 enum JsonParseRecordKind {
     Primitive { start: usize, end: usize },
-    Array(Vec<JsonParseRecord>),
+    Array(Vec<Rc<JsonParseRecord>>),
     Object(JsonObjectParseRecord),
 }
 
@@ -51,7 +53,7 @@ struct JsonObjectParseRecord {
 
 struct JsonObjectParseRecordEntry {
     key: PropertyKey,
-    record: JsonParseRecord,
+    record: Rc<JsonParseRecord>,
 }
 
 impl JsonParseRecord {
@@ -66,28 +68,23 @@ impl JsonParseRecord {
         }
     }
 
-    pub(crate) fn array_child(&self, index: usize) -> Option<&Self> {
+    pub(crate) fn array_child(&self, index: usize) -> Option<Rc<Self>> {
         let JsonParseRecordKind::Array(elements) = &self.kind else {
             return None;
         };
-        elements.get(index)
+        elements.get(index).cloned()
     }
-
-    pub(crate) fn object_child(&self, key: &PropertyKey) -> Option<&Self> {
+    pub(crate) fn object_child(&self, key: &PropertyKey) -> Option<Rc<Self>> {
         let JsonParseRecordKind::Object(object) = &self.kind else {
             return None;
         };
         let mut entries = object.entries.iter();
-        if object.hashed {
-            entries
-                .rev()
-                .find(|entry| &entry.key == key)
-                .map(|entry| &entry.record)
+        let entry = if object.hashed {
+            entries.rev().find(|entry| &entry.key == key)
         } else {
-            entries
-                .find(|entry| &entry.key == key)
-                .map(|entry| &entry.record)
-        }
+            entries.find(|entry| &entry.key == key)
+        };
+        entry.map(|entry| entry.record.clone())
     }
 }
 
@@ -457,7 +454,10 @@ impl<'a> JsonParser<'a> {
             let (property_value, child_record) = self.parse_value(depth + 1)?;
             self.define_json_property(&object, &key, property_value)?;
             if let Some(record) = child_record {
-                entries.push(JsonObjectParseRecordEntry { key, record });
+                entries.push(JsonObjectParseRecordEntry {
+                    key,
+                    record: Rc::new(record),
+                });
             }
 
             self.skip_whitespace()?;
@@ -505,7 +505,7 @@ impl<'a> JsonParser<'a> {
             let (element, child_record) = self.parse_value(depth + 1)?;
             self.runtime.append_fresh_array_value(&array, element)?;
             if let Some(record) = child_record {
-                elements.push(record);
+                elements.push(Rc::new(record));
             }
             index = index.checked_add(1).ok_or_else(|| {
                 JsonParseFailure::Runtime(RuntimeError::Engine(Error::new(

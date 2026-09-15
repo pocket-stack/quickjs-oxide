@@ -3,3 +3,4 @@
 *.profraw
 *.profdata
 __pycache__/
+/docs/reports/primitive-vm-s09-fair-three-rounds.json

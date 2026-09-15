@@ -1,15 +1,38 @@
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
+use crate::engine::atom::Atom;
 use crate::engine::code::function::metadata::ClosureVariableKind;
 use crate::engine::heap::roots::VarRefRoot;
+use crate::engine::heap::runtime::RuntimeState;
 
-use crate::engine::heap::{ObjectId, ObjectPayload, PropertySlot, RawValue};
+use crate::engine::heap::{ObjectId, ObjectPayload, PropertySlot, RawValue, ShapeId};
 use crate::engine::object::shape::{PropertyFlags, ShapeEntry};
 use crate::engine::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
     OrdinaryPropertyDescriptor, PropertyKey, properties,
 };
 use crate::engine::value::Value;
+
+/// One-use missing selection minted only by the storage transaction below.
+/// It never leaves that exclusive RuntimeState borrow or enters a VM/JS state.
+/// Independent heap append callers cannot construct this capability.
+pub(crate) struct SelectedMissingAppend {
+    object: ObjectId,
+    shape: ShapeId,
+    atom: Atom,
+    slot_count: usize,
+}
+impl SelectedMissingAppend {
+    pub(crate) fn object(&self) -> ObjectId {
+        self.object
+    }
+    pub(crate) fn atom(&self) -> Atom {
+        self.atom
+    }
+    pub(crate) fn into_parts(self) -> (ObjectId, ShapeId, Atom, usize) {
+        (self.object, self.shape, self.atom, self.slot_count)
+    }
+}
 
 impl Runtime {
     pub(crate) fn validate_object_and_key(
@@ -360,23 +383,44 @@ impl Runtime {
     ) -> Result<(), RuntimeError> {
         let mut state = self.0.state.borrow_mut();
         let object_id = object.object_id();
-        let (shape_id, shape_len, dictionary, existing) = {
+        let existing = {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
-            let existing = if let Some(index) = shape.find(key.atom()) {
-                let index = index as usize;
-                let entry = shape.entries().get(index).ok_or(RuntimeError::Invariant(
-                    "shape lookup index was out of bounds",
-                ))?;
-                Some((index, entry.flags))
-            } else {
-                None
-            };
+            shape
+                .find(key.atom())
+                .map(|index| {
+                    let index = index as usize;
+                    let entry = shape.entries().get(index).ok_or(RuntimeError::Invariant(
+                        "shape lookup index was out of bounds",
+                    ))?;
+                    Ok::<_, RuntimeError>((index, entry.flags))
+                })
+                .transpose()?
+        };
+        state.store_selected_property_slot(object_id, key.atom(), flags, replacement, existing)
+    }
+}
+
+impl RuntimeState {
+    /// Consume an own-slot selection made under this same exclusive state borrow.
+    /// Callers must not release the borrow or perform another mutation between
+    /// selecting `existing` and committing it. No slot index is cached in a VM state.
+    pub(super) fn store_selected_property_slot(
+        &mut self,
+        object_id: ObjectId,
+        atom: Atom,
+        flags: PropertyFlags,
+        replacement: PropertySlot,
+        existing: Option<(usize, PropertyFlags)>,
+    ) -> Result<(), RuntimeError> {
+        let state = self;
+        let (shape_id, shape_len, dictionary) = {
+            let object_data = state.heap.object(object_id)?;
+            let shape = state.heap.shape(object_data.shape)?;
             (
                 object_data.shape,
                 shape.entries().len(),
                 shape.is_dictionary(),
-                existing,
             )
         };
 
@@ -408,7 +452,16 @@ impl Runtime {
             && (dictionary || shape_len >= properties::MIN_UNIQUE_SHAPE_APPEND_ENTRIES)
             && state.heap.shape_strong_count(shape_id)? == 1
         {
-            return state.append_unique_layout(object_id, key.atom(), flags, replacement);
+            return state.append_selected_unique_layout(
+                SelectedMissingAppend {
+                    object: object_id,
+                    shape: shape_id,
+                    atom,
+                    slot_count: shape_len,
+                },
+                flags,
+                replacement,
+            );
         }
         let (prototype, mut entries, mut slots) = {
             let object_data = state.heap.object(object_id)?;
@@ -424,12 +477,54 @@ impl Runtime {
             entries[index].flags = flags;
             slots[index] = replacement;
         } else {
-            entries.push(ShapeEntry {
-                atom: key.atom(),
-                flags,
-            });
+            entries.push(ShapeEntry { atom: atom, flags });
             slots.push(replacement);
         }
         state.replace_layout(object_id, prototype, &entries, slots)
+    }
+}
+
+#[cfg(test)]
+mod selected_append_tests {
+    use super::*;
+    use crate::engine::heap::HeapError;
+
+    #[test]
+    fn selected_missing_append_failure_restores_cache_and_atom_ownership() {
+        let runtime = Runtime::new();
+        let owner = runtime.new_object(None).unwrap();
+        let stale = runtime.new_object(None).unwrap();
+        let stale_id = stale.object_id();
+        drop(stale);
+        let key = runtime
+            .intern_property_key("selected-failed-append")
+            .unwrap();
+        let mut state = runtime.0.state.borrow_mut();
+        let shape = state.heap.object(owner.object_id()).unwrap().shape;
+        assert_eq!(state.heap.shape_strong_count(shape), Ok(1));
+        assert!(state.heap.shape(shape).unwrap().find(key.atom()).is_none());
+        let before_atoms = state.atoms.resolve(key.atom()).unwrap().ref_count;
+        let fingerprint = state.shape_fingerprints.get(&shape).unwrap().clone();
+        let selected = SelectedMissingAppend {
+            object: owner.object_id(),
+            shape,
+            atom: key.atom(),
+            slot_count: 0,
+        };
+        assert!(matches!(
+            state.append_selected_unique_layout(
+                selected,
+                PropertyFlags::data(true, true, true),
+                PropertySlot::Data(RawValue::Object(stale_id)),
+            ),
+            Err(RuntimeError::Heap(HeapError::Stale { .. }))
+        ));
+        assert_eq!(
+            state.atoms.resolve(key.atom()).unwrap().ref_count,
+            before_atoms
+        );
+        assert!(state.heap.shape(shape).unwrap().entries().is_empty());
+        assert_eq!(state.shape_fingerprints.get(&shape), Some(&fingerprint));
+        assert_eq!(state.shape_cache.get(&fingerprint), Some(&shape));
     }
 }

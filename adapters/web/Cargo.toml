@@ -13,3 +13,6 @@ workspace = true
 quickjs-oxide = { workspace = true }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
+
+[features]
+stack-vm = ["quickjs-oxide/stack-vm"]

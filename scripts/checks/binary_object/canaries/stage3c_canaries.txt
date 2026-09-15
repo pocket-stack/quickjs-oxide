@@ -12,3 +12,6 @@ stage3c-translate-evidence-not-cfg-ignored|stage3c-runtime-evidence|src/engine/c
 borrowed-call-keeps-lower-stack|stage3c-tail-vm|src/engine/vm/mod.rs|        self.stack.truncate(base);|        self.stack.clear();
 borrowed-call-cleans-errors|stage3c-tail-vm|src/engine/vm/mod.rs|        self.stack.truncate(base);|        if result.is_ok() { self.stack.truncate(base); }
 borrowed-call-exact-arguments|stage3c-tail-vm|src/engine/vm/mod.rs|&self.stack[arguments_start..]);|&self.stack[arguments_start + 1..]);
+ordinary-call-keeps-plain-receiver|stage3c-tail-vm|src/engine/vm/mod.rs|                self.call_from_stack(*argument_count, false, host)?|                self.call_from_stack(*argument_count, true, host)?
+ordinary-call-keeps-method-receiver|stage3c-tail-vm|src/engine/vm/mod.rs|                self.call_from_stack(*argument_count, true, host)?|                self.call_from_stack(*argument_count, false, host)?
+ordinary-call-preserves-extended-route|stage3c-tail-vm|src/engine/vm/mod.rs|            _ => return self.execute_extended_call_instruction(instruction, host),|            _ => return Ok(None),

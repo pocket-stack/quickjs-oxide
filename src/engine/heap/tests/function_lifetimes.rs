@@ -48,7 +48,7 @@ fn two_closures_share_one_mutable_var_ref_cell() {
         else {
             panic!("expected a bytecode function payload");
         };
-        assert_eq!(closure_slots, &[cell]);
+        assert_eq!(closure_slots.as_ref(), &[cell]);
     }
 
     assert_eq!(
@@ -764,6 +764,7 @@ fn async_function_state_traces_callbacks_and_transfers_await_activation() {
             callee_global: prototype,
         },
         actual_argument_count: 0,
+        original_arguments: Vec::new(),
         arguments: Vec::new(),
         locals: Vec::new(),
         reusable_captured_locals: Vec::new(),

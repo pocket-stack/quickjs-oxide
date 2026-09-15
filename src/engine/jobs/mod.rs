@@ -273,6 +273,31 @@ impl Drop for PendingJobRootGuard<'_> {
     }
 }
 
+/// Own the roots of prepared reactions until publication, including host unwind.
+pub(crate) struct PreparedJobs<'a> {
+    runtime: &'a Runtime,
+    jobs: Vec<PendingJob>,
+}
+impl<'a> PreparedJobs<'a> {
+    pub(crate) fn new(runtime: &'a Runtime, jobs: Vec<PendingJob>) -> Self {
+        Self { runtime, jobs }
+    }
+    pub(crate) fn publish(mut self) {
+        self.runtime
+            .publish_prepared_jobs(std::mem::take(&mut self.jobs));
+    }
+}
+impl Drop for PreparedJobs<'_> {
+    fn drop(&mut self) {
+        let Ok(mut state) = self.runtime.0.state.try_borrow_mut() else {
+            return;
+        };
+        for job in self.jobs.drain(..) {
+            let _ = state.release_pending_job_roots_with_context(&job);
+        }
+    }
+}
+
 impl RuntimeState {
     fn retain_pending_job_root(&mut self, root: PendingJobRoot<'_>) -> Result<(), RuntimeError> {
         match root {
@@ -524,6 +549,15 @@ impl Runtime {
             "FinalizationRegistry job callback lost its callable brand",
         ))?;
         let held_value = self.root_raw_value(held_value)?;
+        #[cfg(feature = "stack-vm")]
+        return crate::engine::vm::entry::call(
+            self,
+            realm,
+            &callback,
+            Value::Undefined,
+            std::slice::from_ref(&held_value),
+        );
+        #[cfg(not(feature = "stack-vm"))]
         self.call_internal(
             realm,
             &callback,

@@ -63,7 +63,7 @@ impl Runtime {
 
         // Upstream deliberately ignores fwrite/putchar/fflush failures. Keep
         // host I/O outside JavaScript completion semantics for exact parity.
-        self.0.host_services.write_output(&line, flush);
+        self.with_host_callback(|| self.0.host_services.write_output(&line, flush))?;
         Ok(Completion::Return(Value::Undefined))
     }
 }

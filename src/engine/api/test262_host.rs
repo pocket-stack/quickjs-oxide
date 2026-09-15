@@ -6,11 +6,9 @@
 //! temporary Rust [`Context`] handle is dropped.
 
 use crate::engine::api::context::Context;
-use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::builtins::native::NativeFunctionId;
-use crate::engine::code::runtime::Compilation;
 use crate::engine::heap::ContextId;
 
 use crate::engine::object::{DescriptorField, ObjectRef, OrdinaryPropertyDescriptor};
@@ -19,6 +17,8 @@ use crate::engine::value::conversion::NativeConversion;
 use crate::engine::vm::Completion;
 
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
+
+pub(crate) mod operation;
 
 const EVAL_SCRIPT_FILENAME: &str = "<evalScript>";
 
@@ -178,40 +178,23 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Test262 evalScript received a constructor invocation",
-            ));
-        };
-        let source = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Test262 evalScript argument was not padded",
-        ))?;
-        let source = match self.native_to_js_string(realm, source)? {
-            NativeConversion::Value(source) => source,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        // The compiler currently accepts UTF-8 source rather than an exact
-        // UTF-16 code-unit stream. Reject an unpaired surrogate explicitly;
-        // lossy replacement would silently evaluate different JavaScript.
-        let source_units = source.utf16_units().collect::<Vec<_>>();
-        let source = match String::from_utf16(&source_units) {
-            Ok(source) => source,
-            Err(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Internal,
-                    "evalScript source containing a lone UTF-16 surrogate is not implemented",
-                )?));
-            }
-        };
-
-        let script = match self.compile_in_realm(realm, &source, EVAL_SCRIPT_FILENAME)? {
-            Compilation::Published(script) => script,
-            Compilation::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let callable = self.new_bytecode_closure(realm, &script)?;
-        let global_object = self.global_object_for_realm(realm)?;
-        self.call_internal(realm, &callable, Value::Object(global_object), &[])
+        use operation::EvalScriptStep;
+        let mut step = EvalScriptStep::start(realm, invocation, arguments)?;
+        loop {
+            step = match step {
+                EvalScriptStep::Complete(result) => return Ok(result),
+                EvalScriptStep::String { value, resume } => {
+                    let result = match self.native_to_js_string(realm, &value)? {
+                        NativeConversion::Value(value) => Completion::Return(Value::String(value)),
+                        NativeConversion::Throw(value) => Completion::Throw(value),
+                    };
+                    resume.resume(self, result)?
+                }
+                EvalScriptStep::Call { callable, receiver } => {
+                    return self.call_internal(realm, &callable, receiver, &[]);
+                }
+            };
+        }
     }
 
     pub(crate) fn call_test262_create_realm(

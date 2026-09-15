@@ -6,6 +6,15 @@ use crate::engine::compiler::{EvalCompileContext, compile_unlinked_eval_source_w
 use crate::engine::vm::DirectEvalInvocation;
 use crate::source::text::SourceText;
 
+/// Compilation and caller-cell capture finish before the VM chooses an entry path.
+pub(crate) enum DirectEvalPreparation {
+    Complete(Completion),
+    Ready {
+        callable: CallableRef,
+        this_value: Value,
+    },
+}
+
 impl Runtime {
     /// Publish a synthetic eval root only after the eval-specific verifier has
     /// matched every external closure slot against the invocation environment.
@@ -15,7 +24,10 @@ impl Runtime {
         function: UnlinkedFunction,
         expected: &EvalCompileContext,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        let function = bytecode_publish::VerifiedFunction::eval(function, expected)?;
+        let function = bytecode_publish::VerifiedFunction::eval(
+            function,
+            crate::engine::api::compile::eval_publication_input(expected),
+        )?;
         self.publish_verified_unlinked_function(realm, function)
     }
 
@@ -87,6 +99,29 @@ impl Runtime {
         )
             -> Result<crate::engine::vm::host_bridge::MaterializedEvalEnvironment, Error>,
     {
+        match self.prepare_direct_eval_original(realm, invocation, environment, materialize)? {
+            DirectEvalPreparation::Complete(completion) => Ok(completion),
+            DirectEvalPreparation::Ready {
+                callable,
+                this_value,
+            } => self.call_internal(realm, &callable, this_value, &[]),
+        }
+    }
+
+    /// This phase may compile and capture, but never enters the eval body.
+    pub(crate) fn prepare_direct_eval_original<F>(
+        &self,
+        realm: ContextId,
+        invocation: DirectEvalInvocation,
+        environment: Option<crate::engine::vm::host_bridge::PreparedEvalEnvironment>,
+        materialize: F,
+    ) -> Result<DirectEvalPreparation, RuntimeError>
+    where
+        F: FnOnce(
+            crate::engine::vm::host_bridge::PreparedEvalEnvironment,
+        )
+            -> Result<crate::engine::vm::host_bridge::MaterializedEvalEnvironment, Error>,
+    {
         let DirectEvalInvocation {
             input,
             environment: environment_index,
@@ -100,7 +135,7 @@ impl Runtime {
                     "non-String direct eval prepared a caller environment",
                 ));
             }
-            return Ok(Completion::Return(input));
+            return Ok(DirectEvalPreparation::Complete(Completion::Return(input)));
         }
 
         let environment = environment.ok_or(RuntimeError::Invariant(
@@ -146,7 +181,9 @@ impl Runtime {
             ),
         )? {
             Compilation::Published(function) => function,
-            Compilation::Throw(value) => return Ok(Completion::Throw(value)),
+            Compilation::Throw(value) => {
+                return Ok(DirectEvalPreparation::Complete(Completion::Throw(value)));
+            }
         };
 
         // QuickJS parses and publishes eval bytecode before `js_closure2`
@@ -174,7 +211,10 @@ impl Runtime {
             &bindings,
             &environment.roots,
         )?;
-        self.call_internal(realm, &callable, this_value, &[])
+        Ok(DirectEvalPreparation::Ready {
+            callable,
+            this_value,
+        })
     }
 
     pub(crate) fn is_original_eval(
@@ -389,25 +429,30 @@ impl Runtime {
         Ok((bindings, caller_profile))
     }
 
-    fn execute_string_eval(
+    fn prepare_string_eval(
         &self,
         realm: ContextId,
         source: &JsString,
         context: EvalCompileContext,
         environment_roots: &[VarRefRoot],
         this_value: Value,
-    ) -> Result<Completion, RuntimeError> {
+    ) -> Result<DirectEvalPreparation, RuntimeError> {
         let source = Self::eval_source_text(source)?;
         let kind = context.kind;
         let bindings = context.bindings.clone();
         let function =
             match self.compile_eval_in_realm(realm, &source, DEFAULT_EVAL_FILENAME, context)? {
                 Compilation::Published(function) => function,
-                Compilation::Throw(value) => return Ok(Completion::Throw(value)),
+                Compilation::Throw(value) => {
+                    return Ok(DirectEvalPreparation::Complete(Completion::Throw(value)));
+                }
             };
         let callable =
             self.new_eval_bytecode_closure(realm, &function, kind, &bindings, environment_roots)?;
-        self.call_internal(realm, &callable, this_value, &[])
+        Ok(DirectEvalPreparation::Ready {
+            callable,
+            this_value,
+        })
     }
 
     /// Execute an ECMAScript String as QuickJS `JS_EVAL_TYPE_INDIRECT`.
@@ -418,8 +463,22 @@ impl Runtime {
         realm: ContextId,
         source: &JsString,
     ) -> Result<Completion, RuntimeError> {
+        match self.prepare_indirect_string_eval(realm, source)? {
+            DirectEvalPreparation::Complete(completion) => Ok(completion),
+            DirectEvalPreparation::Ready {
+                callable,
+                this_value,
+            } => self.call_internal(realm, &callable, this_value, &[]),
+        }
+    }
+
+    pub(crate) fn prepare_indirect_string_eval(
+        &self,
+        realm: ContextId,
+        source: &JsString,
+    ) -> Result<DirectEvalPreparation, RuntimeError> {
         let global_object = self.global_object_for_realm(realm)?;
-        self.execute_string_eval(
+        self.prepare_string_eval(
             realm,
             source,
             EvalCompileContext::indirect(),

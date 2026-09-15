@@ -1,37 +1,21 @@
-# 编译
+# 编译器
 
-负责词法、语法、作用域解析与字节码生成。输出尚未发布的代码草稿。
+compiler 负责把完整 JavaScript 源码转换为尚未发布的函数和模块草稿，
+包括词法与语法分析、声明和作用域处理、名字解析、闭包捕获及栈指令生成。
+修改语法、绑定规则或编译期改写时，从这个模块开始。
 
-使用 source、code、atom 和 value 的共享表示；不选择宿主 provider，不创建执行中的堆对象。
+入口只编排请求；options 管配置，parser 管语法/诊断与构造状态，model 管
+阶段间共享产物。FunctionBuilder 的消费式 finish 检查临时控制状态后交出 IR；
+resolution 解析名字，lowering 生成栈码，relocation 管目标重定位，flow 复用
+必需验证，optimize 管有限局部改写与源码位置投影。
 
-## 文件与子目录
+当前管线使用线性 FunctionIr/IrOp，解析和绑定解析完成后生成栈式代码。
+声明顺序、稳定绑定身份、异常区域和源码位置贯穿这些阶段；名字索引是
+查找工具，不能代替遮蔽、重复声明或 eval 的语义判断。
 
-- [arrow.rs](arrow.rs)：arrow 的类型和操作实现。
-- [class/](class/README.md)：子模块职责与文件说明。
-- [class.rs](class.rs)：Class parsing and lowering.。
-- [destructuring.rs](destructuring.rs)：destructuring 的类型和操作实现。
-- [function.rs](function.rs)：function 的类型和操作实现。
-- [generator.rs](generator.rs)：generator 的类型和操作实现。
-- [lexer.rs](lexer.rs)：ECMAScript lexical analysis.。
-- [lowering.rs](lowering.rs)：Lower resolved IR to verified bytecode and source debug information.。
-- [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
-- [module.rs](module.rs)：Static ECMAScript module parsing and root-binding lowering.。
-- [object_literal.rs](object_literal.rs)：object_literal 的类型和操作实现。
-- [optional_chain.rs](optional_chain.rs)：QuickJS-shaped optional-chain parsing and control-flow rewrites.。
-- [private_reference.rs](private_reference.rs)：Class-private data-field references and late lexical resolution.。
-- [pseudo_binding.rs](pseudo_binding.rs)：pseudo_binding 的类型和操作实现。
-- [resolution.rs](resolution.rs)：Resolve lexical names, declaration hoists, eval environments, and closure captures in the IR.。
-- [scope_validation.rs](scope_validation.rs)：Validate the completed scope and binding graph before identifier resolution.。
-- [template.rs](template.rs)：QuickJS-shaped template literal and tagged-template lowering.。
-- [tests/](tests/README.md)：子模块职责与文件说明。
-- [tests.rs](tests.rs)：模块回归测试。
+compiler 使用 source 的精确源码表示和 code 的代码契约。它不选择宿主
+provider，也不拥有正在执行的帧；运行时链接、roots 和发布事务属于 code
+及 heap。对象和 Symbol 的运行时身份不成为普通编译常量。
 
-作用域的 `bindings` 保留声明顺序和稳定 BindingId；名称索引仅用于选择该
-顺序中最后一个同名绑定。正常声明通过 `FunctionIr::add_binding` 同步索引，
-晚插入的函数私有名称在调整顺序后重建索引。遮蔽、重复声明是否合法以及
-参数环境边界仍由解析和验证逻辑决定，不能依赖 HashMap 的覆盖行为判定。
-
-常量池仍按追加顺序决定字节码编号。所有追加通过
-`FunctionIr::append_constant`；字符串索引记录第一个 primitive string，
-仅供 `ensure_string_constant` 复用名称。普通字面量追加不会去重，AtomString
-和模板常量也不会混入这个索引。模板后处理只修改模板载荷。
+[栈 VM 实施设计](../../../docs/primitive-vm-implementation-plan.md)
+描述待实施的内部重组；完整前端及其语义仍由本模块负责。

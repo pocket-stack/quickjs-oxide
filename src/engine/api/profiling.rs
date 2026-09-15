@@ -5,6 +5,24 @@
 //! Allocation tracing observes the arena Vec's backing-storage transitions,
 //! not JS object creation and not a process-wide malloc interceptor.
 
+mod cost;
+pub(crate) use cost::record_call_preparation;
+#[cfg(feature = "stack-vm")]
+pub(crate) use cost::record_owned_call_storage;
+pub use cost::{
+    CallBufferCost, CallPreparationCost, CostProfile, CostSnapshot, OwnedStorageCost, PhaseCost,
+    VmPhaseCost,
+};
+pub(crate) use cost::{
+    CompilePhase, PhaseTimer, cost_profile_active, record_compiler_storage, record_legacy_dispatch,
+    record_legacy_pc_publication, record_lowered_function,
+};
+pub(crate) use cost::{
+    record_call_buffer_capacity, record_call_buffer_copies, record_call_buffer_initialized,
+    record_call_buffer_moves, record_call_buffer_observed, record_call_buffer_share,
+    record_call_raw_buffer_copies,
+};
+
 use super::Runtime;
 use crate::engine::heap::HeapCounts;
 use std::cell::RefCell;
@@ -288,3 +306,10 @@ mod tests {
         assert!(before.heap.context_nodes >= 2);
     }
 }
+
+#[cfg(feature = "stack-vm")]
+pub(crate) use cost::{
+    OwnedStorageEvent, record_owned_bridge, record_owned_execution_event,
+    record_owned_execution_layout, record_owned_instruction, record_owned_storage,
+    record_owned_sync_call_bridge,
+};

@@ -4,8 +4,6 @@
 //! owns the native handlers and the numerical kernels so adding `Math` does not
 //! grow the runtime facade or duplicate arithmetic behavior in the compiler.
 
-use super::object::ObjectIteratorStep;
-use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
@@ -17,10 +15,12 @@ use crate::engine::object::shape::PropertyFlags;
 use crate::engine::object::{
     DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
 };
-use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
+
+pub(crate) mod operation;
+pub(crate) mod sum;
 
 #[cfg(test)]
 mod tests;
@@ -423,7 +423,7 @@ impl Runtime {
         realm: ContextId,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
-        let seed = self.0.host_services.random_seed();
+        let seed = self.with_host_callback(|| self.0.host_services.random_seed())?;
         self.0
             .state
             .borrow_mut()
@@ -579,49 +579,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math min/max did not receive a generic-magic invocation",
-            ));
-        };
-        if arguments.actual_arg_count == 0 {
-            return Ok(Completion::Return(Value::Float(match selector {
-                MathMinMaxKind::Min => f64::INFINITY,
-                MathMinMaxKind::Max => f64::NEG_INFINITY,
-            })));
-        }
-
-        let mut result = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Math min/max first argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        for argument in arguments
-            .readable
-            .iter()
-            .take(arguments.actual_arg_count)
-            .skip(1)
-        {
-            let value = match self.native_to_number(realm, argument)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if !result.is_nan() {
-                if value.is_nan() {
-                    result = value;
-                } else {
-                    result = match selector {
-                        MathMinMaxKind::Min => quickjs_min(result, value),
-                        MathMinMaxKind::Max => quickjs_max(result, value),
-                    };
-                }
-            }
-        }
-        Ok(Completion::Return(Value::number(result)))
+            operation::MathStep::start(
+                self,
+                realm,
+                operation::MathKind::MinMax(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_math_unary(
@@ -631,23 +599,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math unary function did not receive an f_f invocation",
-            ));
-        };
-        let value = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Math unary argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::number(quickjs_unary(
-            selector, value,
-        ))))
+            operation::MathStep::start(
+                self,
+                realm,
+                operation::MathKind::Unary(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_math_binary(
@@ -657,32 +619,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math binary function did not receive an f_f_f invocation",
-            ));
-        };
-        let left = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Math binary first argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let right = match self.native_to_number(
-            realm,
-            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "Math binary second argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::number(quickjs_binary(
-            selector, left, right,
-        ))))
+            operation::MathStep::start(
+                self,
+                realm,
+                operation::MathKind::Binary(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_math_hypot(
@@ -691,40 +638,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math.hypot did not receive a generic invocation",
-            ));
-        };
-        if arguments.actual_arg_count == 0 {
-            return Ok(Completion::Return(Value::Int(0)));
-        }
-        let mut result = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Math.hypot first argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if arguments.actual_arg_count == 1 {
-            result = result.abs();
-        } else {
-            for argument in arguments
-                .readable
-                .iter()
-                .take(arguments.actual_arg_count)
-                .skip(1)
-            {
-                let value = match self.native_to_number(realm, argument)? {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                result = result.hypot(value);
-            }
-        }
-        Ok(Completion::Return(Value::number(result)))
+            operation::MathStep::start(
+                self,
+                realm,
+                operation::MathKind::Hypot,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_math_random(
@@ -749,33 +673,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math.imul did not receive a generic invocation",
-            ));
-        };
-        let left = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Math.imul first argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => Self::to_uint32_number(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let right = match self.native_to_number(
-            realm,
-            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "Math.imul second argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => Self::to_uint32_number(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let product = left.wrapping_mul(right);
-        Ok(Completion::Return(Value::Int(i32::from_ne_bytes(
-            product.to_ne_bytes(),
-        ))))
+            operation::MathStep::start(
+                self,
+                realm,
+                operation::MathKind::Imul,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_math_clz32(
@@ -784,21 +692,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math.clz32 did not receive a generic invocation",
-            ));
-        };
-        let value = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Math.clz32 argument was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => Self::to_uint32_number(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::Int(value.leading_zeros() as i32)))
+            operation::MathStep::start(
+                self,
+                realm,
+                operation::MathKind::Clz32,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_math_sum_precise(
@@ -807,91 +711,10 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Math.sumPrecise did not receive a generic invocation",
-            ));
-        };
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Math.sumPrecise iterable argument was not readable",
-            ))?;
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let iterator_method = match &iterable {
-            Value::Null | Value::Undefined => {
-                let base = if matches!(iterable, Value::Null) {
-                    "null"
-                } else {
-                    "undefined"
-                };
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    &format!("cannot read property 'Symbol.iterator' of {base}"),
-                )?));
-            }
-            _ => match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-        };
-        let Value::Object(iterator_method) = iterator_method else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let Some(iterator_method) = self.as_callable(&iterator_method)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let iterator = match self.call_internal(realm, &iterator_method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        // Pinned QuickJS obtains and caches `next` once. Failure here or in a
-        // subsequent IteratorNext follows its plain exception exit and does
-        // not perform IteratorClose.
-        let next_key = self.intern_property_key("next")?;
-        let next_method = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let mut sum = SumPrecise::new();
-        loop {
-            let item = match self.object_iterator_next(realm, &iterator, next_method.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Float(sum.result())));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let number = match item {
-                Value::Int(value) => f64::from(value),
-                Value::Float(value) => value,
-                _ => {
-                    let exception =
-                        self.new_native_error(realm, NativeErrorKind::Type, "not a number")?;
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(exception));
-                }
-            };
-            sum.add(number);
-        }
+        sum::finish(
+            self,
+            realm,
+            sum::SumStep::start(self, realm, &invocation, arguments)?,
+        )
     }
 }

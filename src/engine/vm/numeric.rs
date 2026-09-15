@@ -1,87 +1,24 @@
-use super::*;
+pub(super) mod operation;
+#[cfg(test)]
+use super::{Completion, ToPrimitiveHint, VmHost};
+use crate::engine::{
+    api::{Error, ErrorKind},
+    value::{
+        Value,
+        bigint::{BigIntError, JsBigInt},
+    },
+};
+use num_bigint::BigInt;
+use num_traits::FromPrimitive;
 
 pub(in crate::engine::vm) enum NumericValue {
     Number(f64),
     BigInt(JsBigInt),
 }
 
-pub(in crate::engine::vm) fn abstract_equal(
-    host: &mut impl VmHost,
-    mut left: Value,
-    mut right: Value,
-) -> Result<OperationOutcome<bool>, Error> {
-    loop {
-        if left.strict_equal(&right) {
-            return Ok(OperationOutcome::Value(true));
-        }
-        if (matches!(right, Value::Null | Value::Undefined) && host.is_html_dda(&left)?)
-            || (matches!(left, Value::Null | Value::Undefined) && host.is_html_dda(&right)?)
-        {
-            return Ok(OperationOutcome::Value(true));
-        }
-        match (&left, &right) {
-            (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => {
-                return Ok(OperationOutcome::Value(true));
-            }
-            (Value::Int(_) | Value::Float(_), Value::String(_)) => {
-                right = Value::number(right.to_number()?);
-            }
-            (Value::String(_), Value::Int(_) | Value::Float(_)) => {
-                left = Value::number(left.to_number()?);
-            }
-            (Value::BigInt(left_bigint), Value::String(right_string)) => {
-                return Ok(OperationOutcome::Value(
-                    string_to_bigint(right_string).is_some_and(|right| &right == left_bigint),
-                ));
-            }
-            (Value::String(left_string), Value::BigInt(right_bigint)) => {
-                return Ok(OperationOutcome::Value(
-                    string_to_bigint(left_string).is_some_and(|left| &left == right_bigint),
-                ));
-            }
-            (Value::BigInt(left_bigint), Value::Int(_) | Value::Float(_)) => {
-                return Ok(OperationOutcome::Value(
-                    compare_bigint_number(left_bigint, right.to_number()?)
-                        == Some(std::cmp::Ordering::Equal),
-                ));
-            }
-            (Value::Int(_) | Value::Float(_), Value::BigInt(right_bigint)) => {
-                return Ok(OperationOutcome::Value(
-                    compare_bigint_number(right_bigint, left.to_number()?)
-                        == Some(std::cmp::Ordering::Equal),
-                ));
-            }
-            (Value::Bool(_), _) => left = Value::number(left.to_number()?),
-            (_, Value::Bool(_)) => right = Value::number(right.to_number()?),
-            (
-                Value::Object(_),
-                Value::Int(_)
-                | Value::Float(_)
-                | Value::BigInt(_)
-                | Value::String(_)
-                | Value::Symbol(_),
-            ) => match host.to_primitive(left, ToPrimitiveHint::Default)? {
-                Completion::Return(value) => left = value,
-                Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
-            },
-            (
-                Value::Int(_)
-                | Value::Float(_)
-                | Value::BigInt(_)
-                | Value::String(_)
-                | Value::Symbol(_),
-                Value::Object(_),
-            ) => match host.to_primitive(right, ToPrimitiveHint::Default)? {
-                Completion::Return(value) => right = value,
-                Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
-            },
-            _ => return Ok(OperationOutcome::Value(false)),
-        }
-    }
-}
-
 /// Apply ToPrimitive at the VM boundary. Primitive operands keep their exact
 /// representation and need no host services; only objects can execute user code.
+#[cfg(test)]
 #[inline]
 pub(in crate::engine::vm) fn to_primitive(
     host: &mut impl VmHost,
@@ -94,20 +31,20 @@ pub(in crate::engine::vm) fn to_primitive(
     }
 }
 
-pub(in crate::engine::vm) fn to_numeric(
-    host: &mut impl VmHost,
-    value: Value,
-) -> Result<OperationOutcome<NumericValue>, Error> {
-    match to_primitive(host, value, ToPrimitiveHint::Number)? {
-        Completion::Return(value) => Ok(OperationOutcome::Value(to_numeric_primitive(value)?)),
-        Completion::Throw(value) => Ok(OperationOutcome::Throw(value)),
-    }
-}
-
 pub(in crate::engine::vm) fn to_numeric_primitive(value: Value) -> Result<NumericValue, Error> {
     match value {
         Value::BigInt(value) => Ok(NumericValue::BigInt(value)),
         value => Ok(NumericValue::Number(value.to_number()?)),
+    }
+}
+
+/// OP_plus after ToPrimitive: preserve numeric tags and its specific BigInt
+/// diagnostic. This step cannot invoke user code.
+pub(in crate::engine::vm) fn unary_plus_primitive(value: Value) -> Result<Value, Error> {
+    match value {
+        Value::BigInt(_) => Err(Error::new(ErrorKind::Type, "bigint argument with unary +")),
+        value @ (Value::Int(_) | Value::Float(_)) => Ok(value),
+        value => Ok(Value::number(value.to_number()?)),
     }
 }
 
@@ -166,4 +103,47 @@ pub(in crate::engine::vm) fn bigint_error(error: BigIntError) -> Error {
         error => error.to_string(),
     };
     Error::new(ErrorKind::Range, message)
+}
+
+/// Addition after both operands have completed ToPrimitive, in order.
+pub(in crate::engine::vm) fn add_primitives(left: Value, right: Value) -> Result<Value, Error> {
+    add_primitives_ref(&left, &right)
+}
+
+/// Same primitive kernel with owners retained by the caller. No user code can
+/// execute; callers may borrow frame locals without cloning temporary roots.
+pub(in crate::engine::vm) fn add_primitives_ref(
+    left: &Value,
+    right: &Value,
+) -> Result<Value, Error> {
+    if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
+        use std::borrow::Cow;
+        let left = match left {
+            Value::String(value) => Cow::Borrowed(value),
+            value => Cow::Owned(value.to_js_string()?),
+        };
+        let right = match right {
+            Value::String(value) => Cow::Borrowed(value),
+            value => Cow::Owned(value.to_js_string()?),
+        };
+        return Ok(Value::String(left.try_concat(&right).map_err(Error::from)?));
+    }
+    match (left, right) {
+        (Value::BigInt(left), Value::BigInt(right)) => {
+            Ok(Value::BigInt(left.add(right).map_err(bigint_error)?))
+        }
+        (Value::BigInt(_), right) => {
+            right.to_number()?;
+            Err(mixed_numeric_type_error())
+        }
+        (left, Value::BigInt(_)) => {
+            left.to_number()?;
+            Err(mixed_numeric_type_error())
+        }
+        (left, right) => {
+            let left = left.to_number()?;
+            let right = right.to_number()?;
+            Ok(Value::number(left + right))
+        }
+    }
 }

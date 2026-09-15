@@ -1,6 +1,24 @@
 use super::*;
 
 impl Heap {
+    /// Deliberately corrupt only native realm metadata for rejection-order tests.
+    /// Tests must restore the returned realm before releasing the native owner;
+    /// this does not alter the retained realm edge or any production capability.
+    #[cfg(all(test, feature = "stack-vm"))]
+    pub(crate) fn replace_native_realm_for_test(
+        &mut self,
+        object: ObjectId,
+        realm: Option<ContextId>,
+    ) -> Result<Option<ContextId>, HeapError> {
+        let ObjectPayload::NativeFunction { data, .. } = &mut self.object_mut(object)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "native realm test expected native function",
+            ));
+        };
+        Ok(std::mem::replace(&mut data.realm, realm))
+    }
+
     /// Finish two-phase native-function bootstrap by installing its defining
     /// realm as an owned GC edge.
     ///

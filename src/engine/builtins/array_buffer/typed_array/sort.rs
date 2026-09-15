@@ -7,26 +7,30 @@
 //! zero while making callback-driven resize and detach behavior match the C
 //! implementation.
 
-use crate::engine::builtins::array::{QuickJsSortAccessor, quickjs_rqsort_by, quickjs_rqsort_with};
+use crate::engine::builtins::array::rqsort::{SortAction, SortMachine};
+use crate::engine::builtins::array::{QuickJsSortAccessor, quickjs_rqsort_with};
 use crate::engine::builtins::buffer_access::BufferAccessToken;
 use std::cmp::Ordering;
 
-use super::*;
+use super::{TypedArrayState, typed_array_absolute_byte_offset, typed_array_decode};
+use crate::engine::{
+    api::{
+        error::{Error, ErrorKind},
+        runtime::Runtime,
+        runtime_error::RuntimeError,
+    },
+    builtins::native::TypedArrayElementKind,
+    heap::ContextId,
+    object::{CallableRef, ObjectRef},
+    value::{Value, conversion::NativeConversion},
+    vm::{
+        Completion,
+        call::{NativeArguments, NativeInvocation},
+    },
+};
 
 #[cfg(test)]
 mod tests;
-
-enum TypedArraySortAbort {
-    Throw(Value),
-    Runtime(RuntimeError),
-}
-
-#[derive(Clone, Copy)]
-struct CustomTypedArraySortRaw<'a> {
-    bytes: &'a [u8],
-    element: TypedArrayElementKind,
-    width: usize,
-}
 
 struct TypedArrayInPlaceSort<'a> {
     runtime: &'a Runtime,
@@ -117,28 +121,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        // QuickJS validates sort's comparefn before touching the receiver.
-        let comparator = match self.native_sort_comparator(realm, arguments)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "TypedArray.prototype.sort received a constructor invocation",
-            ));
-        };
-        let target = match self.require_typed_array(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let length = match self.typed_array_validated_length(realm, &target)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        match self.sort_typed_array_words(realm, &target, length, comparator.as_ref())? {
-            NativeConversion::Value(()) => Ok(Completion::Return(Value::Object(target))),
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        finish(
+            self,
+            realm,
+            TypedSortStep::start(self, realm, false, &invocation, arguments)?,
+        )
     }
 
     pub(crate) fn call_typed_array_to_sorted(
@@ -147,49 +134,20 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "TypedArray.prototype.toSorted received a constructor invocation",
-            ));
-        };
-
-        // Unlike sort, QuickJS brands and copies first.  In particular an
-        // invalid comparefn cannot mask a detached or out-of-bounds source.
-        let source = match self.require_typed_array(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let source_state = self.typed_array_state(&source)?;
-        let target = match self.typed_array_copy_to_default(
+        finish(
+            self,
             realm,
-            &source,
-            source_state.snapshot.element,
-            u64::from(source_state.length),
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let comparator = match self.native_sort_comparator(realm, arguments)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let target_length = self.typed_array_state(&target)?.length;
-        match self.sort_typed_array_words(realm, &target, target_length, comparator.as_ref())? {
-            NativeConversion::Value(()) => Ok(Completion::Return(Value::Object(target))),
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+            TypedSortStep::start(self, realm, true, &invocation, arguments)?,
+        )
     }
 
-    fn sort_typed_array_words(
+    fn sort_typed_array_words_default(
         &self,
-        realm: ContextId,
         target: &ObjectRef,
         length: u32,
-        comparator: Option<&CallableRef>,
-    ) -> Result<NativeConversion<()>, RuntimeError> {
+    ) -> Result<(), RuntimeError> {
         if length < 2 {
-            return Ok(NativeConversion::Value(()));
+            return Ok(());
         }
         let initial = self.typed_array_state(target)?;
         if initial.out_of_bounds || initial.length < length {
@@ -197,59 +155,18 @@ impl Runtime {
                 "validated TypedArray changed before sort snapshot",
             ));
         }
-        if comparator.is_none() {
-            let width = usize::from(initial.snapshot.element.byte_length());
-            let count = usize::try_from(length)
-                .map_err(|_| RuntimeError::Invariant("TypedArray sort length overflowed usize"))?;
-            let access = self.snapshot_buffer_access(initial.snapshot.buffer)?;
-            let mut accessor = TypedArrayInPlaceSort {
-                runtime: self,
-                access,
-                element: initial.snapshot.element,
-                start: typed_array_absolute_byte_offset(initial.snapshot, 0)?,
-                width,
-            };
-            quickjs_rqsort_with(count, &mut accessor)?;
-            return Ok(NativeConversion::Value(()));
-        }
-
-        let (raw_bytes, mut indices) = self.snapshot_custom_typed_array_sort(initial, length)?;
-        let comparator = comparator.ok_or(RuntimeError::Invariant(
-            "custom TypedArray sort lost its comparator",
-        ))?;
         let width = usize::from(initial.snapshot.element.byte_length());
-        let raw = CustomTypedArraySortRaw {
-            bytes: &raw_bytes,
+        let count = usize::try_from(length)
+            .map_err(|_| RuntimeError::Invariant("TypedArray sort length overflowed usize"))?;
+        let access = self.snapshot_buffer_access(initial.snapshot.buffer)?;
+        let mut accessor = TypedArrayInPlaceSort {
+            runtime: self,
+            access,
             element: initial.snapshot.element,
+            start: typed_array_absolute_byte_offset(initial.snapshot, 0)?,
             width,
         };
-
-        let result = quickjs_rqsort_by(&mut indices, |indices, left, right| {
-            let ordering = match self
-                .compare_typed_array_sort_indices(realm, comparator, raw, indices, left, right)
-            {
-                Ok(NativeConversion::Value(value)) => value,
-                Ok(NativeConversion::Throw(value)) => {
-                    return Err(TypedArraySortAbort::Throw(value));
-                }
-                Err(error) => return Err(TypedArraySortAbort::Runtime(error)),
-            };
-            Ok(ordering)
-        });
-        match result {
-            Ok(()) => {}
-            Err(TypedArraySortAbort::Throw(value)) => {
-                return Ok(NativeConversion::Throw(value));
-            }
-            Err(TypedArraySortAbort::Runtime(error)) => return Err(error),
-        }
-
-        // A comparator may mutate, shrink, grow, transiently invalidate, or
-        // detach the receiver.  QuickJS only consults its final live count:
-        // detach/final OOB means no write, shrink clips the prefix, and grow
-        // never extends the old snapshot.
-        self.write_custom_typed_array_sort(target, &raw_bytes, &indices, width)?;
-        Ok(NativeConversion::Value(()))
+        quickjs_rqsort_with(count, &mut accessor)
     }
 
     fn snapshot_custom_typed_array_sort(
@@ -283,60 +200,6 @@ impl Runtime {
         })?;
         indices.extend(0..length);
         Ok((raw_bytes, indices))
-    }
-
-    fn compare_typed_array_sort_indices(
-        &self,
-        realm: ContextId,
-        comparator: &CallableRef,
-        raw: CustomTypedArraySortRaw<'_>,
-        indices: &[u32],
-        left: usize,
-        right: usize,
-    ) -> Result<NativeConversion<Ordering>, RuntimeError> {
-        // TypedArray sort must call even for raw-identical values.  Array's
-        // representation-equality shortcut is intentionally not shared.
-        let left_index = *indices.get(left).ok_or(RuntimeError::Invariant(
-            "TypedArray sort left index was out of bounds",
-        ))?;
-        let right_index = *indices.get(right).ok_or(RuntimeError::Invariant(
-            "TypedArray sort right index was out of bounds",
-        ))?;
-        let left_value = typed_array_decode(
-            raw.element,
-            custom_typed_array_sort_word(raw.bytes, raw.width, left_index)?,
-        );
-        let right_value = typed_array_decode(
-            raw.element,
-            custom_typed_array_sort_word(raw.bytes, raw.width, right_index)?,
-        );
-        let result = match self.call_internal(
-            realm,
-            comparator,
-            Value::Undefined,
-            &[left_value, right_value],
-        )? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let number = if let Value::Int(value) = result {
-            f64::from(value)
-        } else {
-            match self.native_to_number(realm, &result)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => {
-                    return Ok(NativeConversion::Throw(value));
-                }
-            }
-        };
-        let ordering = if number > 0.0 {
-            Ordering::Greater
-        } else if number < 0.0 {
-            Ordering::Less
-        } else {
-            left_index.cmp(&right_index)
-        };
-        Ok(NativeConversion::Value(ordering))
     }
 
     fn write_custom_typed_array_sort(
@@ -524,3 +387,266 @@ fn word_u64(word: &[u8; 8]) -> u64 {
 fn word_i64(word: &[u8; 8]) -> i64 {
     i64::from_ne_bytes(*word)
 }
+
+pub(crate) enum TypedSortStep {
+    Complete(Completion),
+    Call {
+        callable: CallableRef,
+        arguments: Vec<Value>,
+        resume: TypedSortResume,
+    },
+    Number {
+        value: Value,
+        resume: TypedSortResume,
+    },
+}
+enum TypedSortPhase {
+    Call,
+    Number,
+}
+pub(crate) struct TypedSortResume(Box<TypedSortResumeState>);
+impl std::ops::Deref for TypedSortResume {
+    type Target = TypedSortResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for TypedSortResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<TypedSortResume>() <= 8);
+pub(crate) struct TypedSortResumeState {
+    target: ObjectRef,
+    comparator: CallableRef,
+    raw_bytes: Vec<u8>,
+    indices: Vec<u32>,
+    element: TypedArrayElementKind,
+    width: usize,
+    // Keep rqsort's fixed partition stack outside each copied domain reply.
+    machine: Box<SortMachine>,
+    left_index: u32,
+    right_index: u32,
+    phase: TypedSortPhase,
+}
+impl TypedSortStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        copying: bool,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let comparator = if !copying {
+            match runtime.native_sort_comparator(realm, arguments)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Ok(Self::Complete(Completion::Throw(value)));
+                }
+            }
+        } else {
+            None
+        };
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "TypedArray sort requires generic invocation",
+            ));
+        };
+        let source = match runtime.require_typed_array(realm, this_value.clone())? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Self::Complete(Completion::Throw(value))),
+        };
+        let (target, length, comparator) = if copying {
+            let source_state = runtime.typed_array_state(&source)?;
+            let target = match runtime.typed_array_copy_to_default(
+                realm,
+                &source,
+                source_state.snapshot.element,
+                u64::from(source_state.length),
+            )? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Ok(Self::Complete(Completion::Throw(value)));
+                }
+            };
+            let comparator = match runtime.native_sort_comparator(realm, arguments)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Ok(Self::Complete(Completion::Throw(value)));
+                }
+            };
+            let length = runtime.typed_array_state(&target)?.length;
+            (target, length, comparator)
+        } else {
+            let length = match runtime.typed_array_validated_length(realm, &source)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Ok(Self::Complete(Completion::Throw(value)));
+                }
+            };
+            (source, length, comparator)
+        };
+        if length < 2 {
+            return Ok(Self::Complete(Completion::Return(Value::Object(target))));
+        }
+        let Some(comparator) = comparator else {
+            runtime.sort_typed_array_words_default(&target, length)?;
+            return Ok(Self::Complete(Completion::Return(Value::Object(target))));
+        };
+        let initial = runtime.typed_array_state(&target)?;
+        if initial.out_of_bounds || initial.length < length {
+            return Err(RuntimeError::Invariant(
+                "validated TypedArray changed before sort snapshot",
+            ));
+        }
+        let (raw_bytes, indices) = runtime.snapshot_custom_typed_array_sort(initial, length)?;
+        let width = usize::from(initial.snapshot.element.byte_length());
+        TypedSortResume(Box::new(TypedSortResumeState {
+            target,
+            comparator,
+            raw_bytes,
+            indices,
+            element: initial.snapshot.element,
+            width,
+            machine: Box::new(SortMachine::new(length as usize)),
+            left_index: 0,
+            right_index: 0,
+            phase: TypedSortPhase::Call,
+        }))
+        .next(runtime, None)
+    }
+}
+impl TypedSortResume {
+    fn next(
+        mut self,
+        runtime: &Runtime,
+        mut reply: Option<Ordering>,
+    ) -> Result<TypedSortStep, RuntimeError> {
+        loop {
+            match self.0.machine.advance(reply.take()) {
+                SortAction::Complete => {
+                    // Reacquire the final buffer token only after all callback-driven resize/detach mutations.
+                    runtime.write_custom_typed_array_sort(
+                        &self.0.target,
+                        &self.0.raw_bytes,
+                        &self.0.indices,
+                        self.0.width,
+                    )?;
+                    return Ok(TypedSortStep::Complete(Completion::Return(Value::Object(
+                        self.0.target,
+                    ))));
+                }
+                SortAction::Swap(left, right) => self.0.indices.swap(left, right),
+                SortAction::Compare(left, right) => {
+                    self.0.left_index = *self.0.indices.get(left).ok_or(
+                        RuntimeError::Invariant("TypedArray sort left index out of bounds"),
+                    )?;
+                    self.0.right_index = *self.0.indices.get(right).ok_or(
+                        RuntimeError::Invariant("TypedArray sort right index out of bounds"),
+                    )?;
+                    let left_value = typed_array_decode(
+                        self.0.element,
+                        custom_typed_array_sort_word(
+                            &self.0.raw_bytes,
+                            self.0.width,
+                            self.0.left_index,
+                        )?,
+                    );
+                    let right_value = typed_array_decode(
+                        self.0.element,
+                        custom_typed_array_sort_word(
+                            &self.0.raw_bytes,
+                            self.0.width,
+                            self.0.right_index,
+                        )?,
+                    );
+                    self.0.phase = TypedSortPhase::Call;
+                    return Ok(TypedSortStep::Call {
+                        callable: self.0.comparator.clone(),
+                        arguments: vec![left_value, right_value],
+                        resume: self,
+                    });
+                }
+            }
+        }
+    }
+    pub(crate) fn resume(
+        mut self,
+        runtime: &Runtime,
+        result: Completion,
+    ) -> Result<TypedSortStep, RuntimeError> {
+        if !matches!(self.0.phase, TypedSortPhase::Call) {
+            return Err(RuntimeError::Invariant(
+                "TypedArray sort call reply mismatch",
+            ));
+        }
+        let value = match result {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(TypedSortStep::Complete(Completion::Throw(value)));
+            }
+        };
+        if let Value::Int(value) = value {
+            return self.compared(runtime, f64::from(value));
+        }
+        self.0.phase = TypedSortPhase::Number;
+        Ok(TypedSortStep::Number {
+            value,
+            resume: self,
+        })
+    }
+    pub(crate) fn number(
+        self,
+        runtime: &Runtime,
+        result: NativeConversion<f64>,
+    ) -> Result<TypedSortStep, RuntimeError> {
+        if !matches!(self.0.phase, TypedSortPhase::Number) {
+            return Err(RuntimeError::Invariant(
+                "TypedArray sort number reply mismatch",
+            ));
+        }
+        let value = match result {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => {
+                return Ok(TypedSortStep::Complete(Completion::Throw(value)));
+            }
+        };
+        self.compared(runtime, value)
+    }
+    fn compared(self, runtime: &Runtime, number: f64) -> Result<TypedSortStep, RuntimeError> {
+        let order = if number > 0.0 {
+            Ordering::Greater
+        } else if number < 0.0 {
+            Ordering::Less
+        } else {
+            self.0.left_index.cmp(&self.0.right_index)
+        };
+        self.next(runtime, Some(order))
+    }
+}
+pub(crate) fn finish(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: TypedSortStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            TypedSortStep::Complete(result) => return Ok(result),
+            TypedSortStep::Call {
+                callable,
+                arguments,
+                resume,
+            } => resume.resume(
+                runtime,
+                runtime.call_internal(realm, &callable, Value::Undefined, &arguments)?,
+            )?,
+            TypedSortStep::Number { value, resume } => {
+                resume.number(runtime, runtime.native_to_number(realm, &value)?)?
+            }
+        };
+    }
+}
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<TypedSortStep>() <= 64);

@@ -31,7 +31,7 @@ pub(crate) struct DirectEvalInvocation {
 pub(crate) struct CallInput {
     pub this_value: Value,
     pub new_target: Value,
-    pub callee_global: ObjectRef,
+    pub callee_global: Option<ObjectRef>,
 }
 
 pub(crate) trait VmHost {
@@ -658,5 +658,22 @@ impl Vm {
         resume: VmResume,
     ) -> Result<VmExit, Error> {
         suspension.resume(code, host, resume)
+    }
+}
+
+impl CallInput {
+    pub(in crate::engine::vm) fn callee_global(
+        &mut self,
+        runtime: &crate::engine::api::runtime::Runtime,
+        realm: crate::engine::heap::ContextId,
+    ) -> Result<&ObjectRef, Error> {
+        if self.callee_global.is_none() {
+            self.callee_global = Some(
+                runtime
+                    .global_object_for_realm(realm)
+                    .map_err(crate::engine::vm::exception::runtime_error_to_vm_error)?,
+            );
+        }
+        Ok(self.callee_global.as_ref().unwrap())
     }
 }

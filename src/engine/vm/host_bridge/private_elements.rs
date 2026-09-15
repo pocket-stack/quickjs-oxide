@@ -6,96 +6,22 @@ impl RuntimeVmHost {
     fn validate_private_definition(
         definition: VariableDefinition,
     ) -> Result<(Atom, ClosureVariableKind), Error> {
-        if !matches!(
-            definition.kind,
-            ClosureVariableKind::PrivateField
-                | ClosureVariableKind::PrivateMethod
-                | ClosureVariableKind::PrivateGetter
-                | ClosureVariableKind::PrivateSetter
-                | ClosureVariableKind::PrivateGetterSetter
-        ) || !definition.is_lexical
-            || !definition.is_const
-            || definition.is_parameter_initializer
-        {
-            return Err(Error::internal(
-                "private-name opcode referenced a non-private local definition",
-            ));
-        }
-        definition
-            .name
-            .map(|name| (name, definition.kind))
-            .ok_or_else(|| Error::internal("private-element local has no source name"))
+        crate::engine::vm::private_bindings::validate_definition(definition)
     }
 
     fn validate_private_descriptor(
         descriptor: ClosureVariable,
     ) -> Result<ClosureVariableKind, Error> {
-        if !matches!(
-            descriptor.kind,
-            ClosureVariableKind::PrivateField
-                | ClosureVariableKind::PrivateMethod
-                | ClosureVariableKind::PrivateGetter
-                | ClosureVariableKind::PrivateSetter
-                | ClosureVariableKind::PrivateGetterSetter
-        ) || !descriptor.is_lexical
-            || !descriptor.is_const
-            || !matches!(descriptor.name, ClosureVariableName::Atom(_))
-            || !matches!(
-                descriptor.source,
-                ClosureSource::ParentLocal(_)
-                    | ClosureSource::ParentClosure(_)
-                    | ClosureSource::EvalEnvironment(_)
-            )
-        {
-            return Err(Error::internal(
-                "private-name opcode referenced a non-private closure descriptor",
-            ));
-        }
-        Ok(descriptor.kind)
+        crate::engine::vm::private_bindings::validate_descriptor(descriptor)
     }
 
     pub(crate) fn initialize_private_name_binding(&mut self, index: u16) -> Result<(), Error> {
-        let (source_name, kind) = Self::validate_private_definition(self.local_definition(index)?)?;
-        if kind != ClosureVariableKind::PrivateField {
-            return Err(Error::internal(
-                "private-name initializer referenced a non-field binding",
-            ));
-        }
-        let description = self
-            .runtime
-            .0
-            .state
-            .borrow()
-            .atoms
-            .to_js_string(source_name)
-            .map_err(|error| Error::internal(error.to_string()))?;
-        let name = self
-            .runtime
-            .new_private_name(description)
-            .map_err(runtime_error_to_vm_error)?;
+        let definition = self.local_definition(index)?;
         let binding = self
             .locals
             .get_mut(usize::from(index))
             .ok_or_else(|| Error::internal("private-name local index is out of bounds"))?;
-        match binding {
-            FrameBinding::Uninitialized => {
-                *binding = FrameBinding::Private(name);
-                Ok(())
-            }
-            FrameBinding::Private(_) => Err(Error::internal(
-                "private-name local was initialized more than once",
-            )),
-            FrameBinding::PrivateCallable(_) => Err(Error::internal(
-                "private-name initializer reached a private-method frame cell",
-            )),
-            FrameBinding::Captured(root) => self
-                .runtime
-                .initialize_private_var_ref(root, &name)
-                .map_err(runtime_error_to_vm_error),
-            FrameBinding::Direct(_) => Err(Error::internal(
-                "private-name initializer reached an ordinary frame value",
-            )),
-        }
+        crate::engine::vm::private_bindings::initialize_name(&self.runtime, definition, binding)
     }
 
     pub(crate) fn initialize_private_method_binding(
@@ -133,101 +59,20 @@ impl RuntimeVmHost {
         infer_name: bool,
         accepts_kind: impl FnOnce(ClosureVariableKind) -> bool,
     ) -> Result<(), Error> {
-        let (source_name, kind) = Self::validate_private_definition(self.local_definition(index)?)?;
-        if !accepts_kind(kind) {
-            return Err(Error::internal(
-                "private-callable initializer referenced an incompatible binding",
-            ));
-        }
-        let Value::Object(home_object) = home_object else {
-            return Err(Error::internal(
-                "private-callable initializer did not receive a HomeObject",
-            ));
-        };
-        let callable = self
-            .runtime
-            .callable_from_value(callable_value)
-            .map_err(|error| Error::internal(error.to_string()))?;
-        if infer_name {
-            let name = self
-                .runtime
-                .0
-                .state
-                .borrow()
-                .atoms
-                .to_js_string(source_name)
-                .map_err(|error| Error::internal(error.to_string()))?;
-            self.runtime
-                .define_object_name(&Value::Object(callable.as_object().clone()), &name)
-                .map_err(runtime_error_to_vm_error)?;
-        }
-        self.runtime
-            .install_object_literal_home_object(&callable, &home_object)
-            .map_err(runtime_error_to_vm_error)?;
-
+        let definition = self.local_definition(index)?;
         let binding = self
             .locals
             .get_mut(usize::from(index))
             .ok_or_else(|| Error::internal("private-callable local index is out of bounds"))?;
-        match binding {
-            FrameBinding::Uninitialized => {
-                *binding = FrameBinding::PrivateCallable(callable);
-                Ok(())
-            }
-            FrameBinding::Captured(root) => self
-                .runtime
-                .initialize_private_callable_var_ref(root, &callable, kind)
-                .map_err(runtime_error_to_vm_error),
-            FrameBinding::PrivateCallable(_) => Err(Error::internal(
-                "private-callable local was initialized more than once",
-            )),
-            FrameBinding::Private(_) => Err(Error::internal(
-                "private-callable initializer reached a private-field frame cell",
-            )),
-            FrameBinding::Direct(_) => Err(Error::internal(
-                "private-callable initializer reached an ordinary frame value",
-            )),
-        }
-    }
-
-    fn captured_private_name(&self, root: &VarRefRoot) -> Result<Option<PrivateNameRef>, Error> {
-        match self
-            .runtime
-            .raw_var_ref_value(root)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            RawValue::Uninitialized => Ok(None),
-            RawValue::Private(_) => self
-                .runtime
-                .private_name_from_raw_var_ref(root)
-                .map(Some)
-                .map_err(runtime_error_to_vm_error),
-            _ => Err(Error::internal(
-                "private-name VarRef contains an ordinary value",
-            )),
-        }
-    }
-
-    fn captured_private_callable(
-        &self,
-        root: &VarRefRoot,
-        kind: ClosureVariableKind,
-    ) -> Result<Option<CallableRef>, Error> {
-        match self
-            .runtime
-            .raw_var_ref_value(root)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            RawValue::Uninitialized => Ok(None),
-            RawValue::Object(_) => self
-                .runtime
-                .private_callable_from_raw_var_ref(root, kind)
-                .map(Some)
-                .map_err(runtime_error_to_vm_error),
-            _ => Err(Error::internal(
-                "private-callable VarRef contains an incompatible value",
-            )),
-        }
+        crate::engine::vm::private_bindings::initialize_callable(
+            &self.runtime,
+            definition,
+            binding,
+            home_object,
+            callable_value,
+            infer_name,
+            accepts_kind,
+        )
     }
 
     fn private_source_kind(&self, source: PrivateNameSource) -> Result<ClosureVariableKind, Error> {
@@ -254,55 +99,28 @@ impl RuntimeVmHost {
         &self,
         source: PrivateNameSource,
     ) -> Result<Option<PrivateNameRef>, Error> {
-        match source {
-            PrivateNameSource::Local(index) => {
-                let (_, kind) = Self::validate_private_definition(self.local_definition(index)?)?;
-                if kind != ClosureVariableKind::PrivateField {
-                    return Err(Error::internal(
-                        "private-field operation referenced a non-field local",
-                    ));
-                }
-                let binding = self
-                    .locals
+        use crate::engine::vm::private_bindings::PrivateSource;
+        let source = match source {
+            PrivateNameSource::Local(index) => PrivateSource::Local(
+                self.local_definition(index)?,
+                self.locals
                     .get(usize::from(index))
-                    .ok_or_else(|| Error::internal("private-name local index is out of bounds"))?;
-                match binding {
-                    FrameBinding::Private(name) => Ok(Some(name.clone())),
-                    FrameBinding::Captured(root) => self.captured_private_name(root),
-                    FrameBinding::Uninitialized => Ok(None),
-                    FrameBinding::PrivateCallable(_) => Err(Error::internal(
-                        "private-field local contains a private method",
-                    )),
-                    FrameBinding::Direct(_) => Err(Error::internal(
-                        "private-name local contains an ordinary frame value",
-                    )),
-                }
-            }
-            PrivateNameSource::Closure(index) => {
-                let descriptor = self
+                    .ok_or_else(|| Error::internal("private-name local index is out of bounds"))?,
+            ),
+            PrivateNameSource::Closure(index) => PrivateSource::Closure(
+                *self
                     .executable
                     .closure_variables
                     .get(usize::from(index))
-                    .copied()
                     .ok_or_else(|| {
                         Error::internal("private-name closure index is out of bounds")
-                    })?;
-                let kind = Self::validate_private_descriptor(descriptor)?;
-                if kind != ClosureVariableKind::PrivateField {
-                    return Err(Error::internal(
-                        "private-field operation referenced a non-field closure",
-                    ));
-                }
-                let root = self
-                    .closure_slots
+                    })?,
+                self.closure_slots
                     .get(usize::from(index))
-                    .ok_or_else(|| Error::internal("private-name closure slot is out of bounds"))?;
-                self.runtime
-                    .validate_var_ref_metadata(root, descriptor)
-                    .map_err(runtime_error_to_vm_error)?;
-                self.captured_private_name(root)
-            }
-        }
+                    .ok_or_else(|| Error::internal("private-name closure slot is out of bounds"))?,
+            ),
+        };
+        crate::engine::vm::private_bindings::optional_field_name(&self.runtime, source)
     }
 
     fn optional_private_callable(
@@ -310,55 +128,28 @@ impl RuntimeVmHost {
         source: PrivateNameSource,
         expected_kind: ClosureVariableKind,
     ) -> Result<Option<CallableRef>, Error> {
-        match source {
-            PrivateNameSource::Local(index) => {
-                let (_, kind) = Self::validate_private_definition(self.local_definition(index)?)?;
-                if kind != expected_kind || !is_private_callable_kind(kind) {
-                    return Err(Error::internal(
-                        "private-callable operation referenced an incompatible local",
-                    ));
-                }
-                let binding = self.locals.get(usize::from(index)).ok_or_else(|| {
+        use crate::engine::vm::private_bindings::PrivateSource;
+        let source = match source {
+            PrivateNameSource::Local(index) => PrivateSource::Local(
+                self.local_definition(index)?,
+                self.locals.get(usize::from(index)).ok_or_else(|| {
                     Error::internal("private-callable local index is out of bounds")
-                })?;
-                match binding {
-                    FrameBinding::PrivateCallable(callable) => Ok(Some(callable.clone())),
-                    FrameBinding::Captured(root) => {
-                        self.captured_private_callable(root, expected_kind)
-                    }
-                    FrameBinding::Uninitialized => Ok(None),
-                    FrameBinding::Private(_) => Err(Error::internal(
-                        "private-callable local contains a private field identity",
-                    )),
-                    FrameBinding::Direct(_) => Err(Error::internal(
-                        "private-callable local contains an ordinary frame value",
-                    )),
-                }
-            }
-            PrivateNameSource::Closure(index) => {
-                let descriptor = self
+                })?,
+            ),
+            PrivateNameSource::Closure(index) => PrivateSource::Closure(
+                *self
                     .executable
                     .closure_variables
                     .get(usize::from(index))
-                    .copied()
                     .ok_or_else(|| {
                         Error::internal("private-callable closure index is out of bounds")
-                    })?;
-                let kind = Self::validate_private_descriptor(descriptor)?;
-                if kind != expected_kind || !is_private_callable_kind(kind) {
-                    return Err(Error::internal(
-                        "private-callable operation referenced an incompatible closure",
-                    ));
-                }
-                let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
+                    })?,
+                self.closure_slots.get(usize::from(index)).ok_or_else(|| {
                     Error::internal("private-callable closure slot is out of bounds")
-                })?;
-                self.runtime
-                    .validate_var_ref_metadata(root, descriptor)
-                    .map_err(runtime_error_to_vm_error)?;
-                self.captured_private_callable(root, expected_kind)
-            }
-        }
+                })?,
+            ),
+        };
+        crate::engine::vm::private_bindings::optional_callable(&self.runtime, source, expected_kind)
     }
 
     fn private_name(&self, source: PrivateNameSource) -> Result<PrivateNameRef, Error> {
@@ -419,21 +210,7 @@ impl RuntimeVmHost {
         kind: ClosureVariableKind,
         base: Value,
     ) -> Result<ObjectRef, Error> {
-        // QuickJS resolves the callable's HomeObject brand before converting
-        // the receiver. This ordering is observable for partially evaluated
-        // classes and primitive receivers.
-        self.runtime
-            .require_private_method_brand(callable, kind)
-            .map_err(runtime_error_to_vm_error)?;
-        let receiver = Self::private_receiver(base, false)?;
-        if !self
-            .runtime
-            .check_private_method_brand(callable, &receiver, kind)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            return Err(Error::new(ErrorKind::Type, "invalid brand on object"));
-        }
-        Ok(receiver)
+        crate::engine::vm::private_bindings::branded_receiver(&self.runtime, callable, kind, base)
     }
 
     pub(crate) fn get_private_field_value(

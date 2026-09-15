@@ -27,17 +27,17 @@ expect_full_rewrite_rejected stage3j-host-throw-identity-erased \
     $'                Completion::Return(key) => key,\n                Completion::Throw(value) => return Ok(Completion::Throw(value)),' \
     $'                Completion::Return(key) => key,\n                Completion::Throw(_value) => return Ok(Completion::Return(Value::Undefined)),'
 expect_full_rewrite_rejected stage3j-to-primitive-string-literal-drift \
-    stage3j-to-propkey-primitive-semantics src/engine/heap/runtime/mod.rs \
+    stage3j-to-propkey-primitive-semantics src/engine/value/conversion/primitive.rs \
     '                    ToPrimitiveHint::String => "string",' \
     '                    ToPrimitiveHint::String => "default",'
 expect_full_rewrite_rejected stage3j-to-primitive-type-error-realm-drift \
-    stage3j-to-propkey-primitive-semantics src/engine/heap/runtime/mod.rs \
-    $'                Completion::Return(Value::Object(_)) => Ok(Completion::Throw(\n                    self.new_native_error(realm, NativeErrorKind::Type, "toPrimitive")?,\n                )),' \
-    $'                Completion::Return(Value::Object(_)) => Ok(Completion::Throw(\n                    self.new_native_error(ContextId::ROOT, NativeErrorKind::Type, "toPrimitive")?,\n                )),'
+    stage3j-to-propkey-primitive-semantics src/engine/value/conversion/primitive.rs \
+    '            runtime.new_native_error(self.0.realm, NativeErrorKind::Type, message)?,' \
+    '            runtime.new_native_error(ContextId::ROOT, NativeErrorKind::Type, message)?,'
 expect_full_rewrite_rejected stage3j-ordinary-fallback-order-drift \
-    stage3j-to-propkey-ordinary-fallback src/engine/builtins/object.rs \
-    '            ToPrimitiveHint::String => ["toString", "valueOf"],' \
-    '            ToPrimitiveHint::String => ["valueOf", "toString"],'
+    stage3j-to-propkey-ordinary-fallback src/engine/value/conversion/primitive.rs \
+    '        let name = if string_first != second {' \
+    '        let name = if string_first == second {'
 expect_full_rewrite_rejected stage3i-validator-if-false-target-zero-erased \
     stage3i-push-this-protocol src/engine/code/binary_object/ordinary_leaf.rs \
     '            FunctionOp::IfFalse(0) | FunctionOp::IfTrue(0) | FunctionOp::Goto(0)' \

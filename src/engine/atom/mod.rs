@@ -420,6 +420,13 @@ impl AtomTable {
         parse_canonical_u32_js_string(text).and_then(Atom::from_immediate_integer)
     }
 
+    /// Recognize an array-index String without interning or allocating. Keep
+    /// the same spelling and Uint32 exclusion as `array_index`.
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn canonical_array_index(text: &JsString) -> Option<u32> {
+        parse_canonical_u32_js_string(text).filter(|value| *value != u32::MAX)
+    }
+
     /// Intern a string property name and return one owning reference.
     ///
     /// Canonical decimal strings in `0..=2^31 - 1` are returned as immediate

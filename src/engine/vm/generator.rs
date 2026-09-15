@@ -19,13 +19,13 @@ use crate::engine::object::{
     CallableRef, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey,
     WellKnownSymbol,
 };
-use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::call::{NativeArguments, NativeInvocation, NativeInvokeOutcome};
-use crate::engine::vm::host_bridge::{
-    EncodedVmActivation, RuntimeVmHost, VmActivationResume, VmRunOutcome,
-};
-use crate::engine::vm::{Completion, VmResume, VmSuspendKind, VmSuspension};
+use crate::engine::vm::suspend::{self, EncodedVmActivation, VmActivationResume, VmRunOutcome};
+use crate::engine::vm::{Completion, VmResume, VmSuspendKind};
+
+mod resume;
+pub(crate) use resume::{GeneratorResume, GeneratorStep};
 
 impl Runtime {
     pub(crate) fn initialize_generator_intrinsic(
@@ -154,59 +154,18 @@ impl Runtime {
         &self,
         caller_realm: ContextId,
         callable: &CallableRef,
-        host: RuntimeVmHost,
-        suspension: VmSuspension,
+        activation: EncodedVmActivation,
     ) -> Result<Completion, RuntimeError> {
-        let prototype = match self.generator_instance_prototype(caller_realm, callable)? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let activation = host.encode_vm_activation(suspension)?;
-        if activation.kind != VmSuspendKind::Initial {
-            return Err(RuntimeError::Invariant(
-                "new generator activation is not suspended at start",
-            ));
+        suspend::creation::GeneratorCreation {
+            realm: caller_realm,
+            callable: callable.clone(),
+            asynchronous: false,
         }
-        let generator = self.allocate_generator_object(&prototype, activation)?;
-        Ok(Completion::Return(Value::Object(generator)))
+        .frozen(self, Box::new(activation))?
+        .finish(self, caller_realm)
     }
 
-    fn generator_instance_prototype(
-        &self,
-        caller_realm: ContextId,
-        callable: &CallableRef,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let prototype_key = self.intern_property_key("prototype")?;
-        let prototype =
-            match self.get_property_in_realm(caller_realm, callable.as_object(), &prototype_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-            };
-        if let Value::Object(prototype) = prototype {
-            return Ok(NativeConversion::Value(prototype));
-        }
-        let realm = match self.function_realm(caller_realm, callable)? {
-            NativeConversion::Value(realm) => realm,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let prototype = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .context(realm)?
-            .generator
-            .ok_or(RuntimeError::Invariant(
-                "generator callable realm has no Generator intrinsics",
-            ))?
-            .prototype;
-        Ok(NativeConversion::Value(ObjectRef::from_borrowed_handle(
-            self.clone(),
-            prototype,
-        )?))
-    }
-
-    fn allocate_generator_object(
+    pub(super) fn allocate_generator_object(
         &self,
         prototype: &ObjectRef,
         activation: EncodedVmActivation,
@@ -266,6 +225,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<NativeInvokeOutcome, RuntimeError> {
+        self.start_generator_prototype_resume(realm, kind, invocation, arguments)?
+            .finish(self)
+    }
+
+    pub(crate) fn start_generator_prototype_resume(
+        &self,
+        realm: ContextId,
+        kind: GeneratorResumeKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<GeneratorStep, RuntimeError> {
         let NativeInvocation::Call { this_value } = invocation else {
             return Err(RuntimeError::Invariant(
                 "Generator resume did not receive an iterator-next invocation",
@@ -279,8 +249,12 @@ impl Runtime {
                 "Generator resume has no readable argument slot",
             ))?;
         let Value::Object(generator) = this_value else {
-            return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                self.new_native_error(realm, NativeErrorKind::Type, "not a generator")?,
+            return Ok(GeneratorStep::Complete(NativeInvokeOutcome::Completion(
+                Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not a generator",
+                )?),
             )));
         };
         let snapshot = {
@@ -295,8 +269,12 @@ impl Runtime {
             }
         };
         let Some((previous_state, activation)) = snapshot else {
-            return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                self.new_native_error(realm, NativeErrorKind::Type, "not a generator")?,
+            return Ok(GeneratorStep::Complete(NativeInvokeOutcome::Completion(
+                Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not a generator",
+                )?),
             )));
         };
         match previous_state {
@@ -306,7 +284,9 @@ impl Runtime {
                         "completed generator retained an activation",
                     ));
                 }
-                return Ok(Self::completed_generator_outcome(kind, argument));
+                return Ok(GeneratorStep::Complete(Self::completed_generator_outcome(
+                    kind, argument,
+                )));
             }
             GeneratorState::Executing => {
                 if activation.is_some() {
@@ -314,12 +294,12 @@ impl Runtime {
                         "executing generator retained a dormant activation",
                     ));
                 }
-                return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                    self.new_native_error(
+                return Ok(GeneratorStep::Complete(NativeInvokeOutcome::Completion(
+                    Completion::Throw(self.new_native_error(
                         realm,
                         NativeErrorKind::Type,
                         "cannot invoke a running generator",
-                    )?,
+                    )?),
                 )));
             }
             GeneratorState::SuspendedStart
@@ -339,7 +319,7 @@ impl Runtime {
             GeneratorState::SuspendedYieldStar => VmSuspendKind::YieldStar,
             GeneratorState::Executing | GeneratorState::Completed => unreachable!(),
         };
-        let rooted = RuntimeVmHost::decode_vm_activation(
+        let rooted = suspend::thaw(
             self.clone(),
             suspend_kind,
             realm,
@@ -374,7 +354,9 @@ impl Runtime {
         if previous_state == GeneratorState::SuspendedStart && kind != GeneratorResumeKind::Next {
             self.complete_executing_generator(&generator)?;
             drop(rooted);
-            return Ok(Self::completed_generator_outcome(kind, argument));
+            return Ok(GeneratorStep::Complete(Self::completed_generator_outcome(
+                kind, argument,
+            )));
         }
 
         let resume = match previous_state {
@@ -388,16 +370,25 @@ impl Runtime {
             }
             GeneratorState::Executing | GeneratorState::Completed => unreachable!(),
         };
-        let outcome = match rooted.run(self, resume) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.complete_executing_generator(&generator)?;
-                return Err(error);
-            }
-        };
+        Ok(GeneratorStep::Run {
+            activation: Box::new(rooted),
+            input: resume,
+            resume: Box::new(GeneratorResume {
+                runtime: self.clone(),
+                generator,
+                active: true,
+            }),
+        })
+    }
+
+    fn finish_generator_resume(
+        &self,
+        generator: &ObjectRef,
+        outcome: VmRunOutcome,
+    ) -> Result<NativeInvokeOutcome, RuntimeError> {
         match outcome {
             VmRunOutcome::Complete(completion) => {
-                self.complete_executing_generator(&generator)?;
+                self.complete_executing_generator(generator)?;
                 Ok(match completion {
                     Completion::Return(value) => {
                         NativeInvokeOutcome::IteratorNextRaw { value, done: true }
@@ -417,7 +408,7 @@ impl Runtime {
                     VmSuspendKind::Initial
                     | VmSuspendKind::AsyncYieldStar
                     | VmSuspendKind::Await => {
-                        self.complete_executing_generator(&generator)?;
+                        self.complete_executing_generator(generator)?;
                         return Err(RuntimeError::Invariant(
                             "resumed generator stopped at a non-generator suspension",
                         ));
@@ -426,13 +417,13 @@ impl Runtime {
                 if state == GeneratorState::SuspendedYieldStar
                     && !matches!(yielded, Value::Object(_))
                 {
-                    self.complete_executing_generator(&generator)?;
+                    self.complete_executing_generator(generator)?;
                     return Err(RuntimeError::Invariant(
                         "yield* suspension did not retain an iterator-result object",
                     ));
                 }
-                if let Err(error) = self.store_generator_suspension(&generator, &activation) {
-                    let _ = self.complete_executing_generator(&generator);
+                if let Err(error) = self.store_generator_suspension(generator, &activation) {
+                    let _ = self.complete_executing_generator(generator);
                     return Err(error);
                 }
                 drop(activation);

@@ -70,6 +70,7 @@ fn reduced_group_by_element_limit_checks_before_next_and_preserves_throw() {
 }
 
 #[test]
+#[cfg(not(feature = "stack-vm"))]
 fn recursive_group_by_callback_ceiling_is_catchable() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -582,14 +583,18 @@ fn recursive_object_has_own_key_conversion_is_guarded_and_runtime_recovers() {
                 let value = context
                     .eval(&format!(
                         r#"(function(){{
-                    try{{objectHasOwnRecurse({depth});return "missing"}}
+                    try{{return objectHasOwnRecurse({depth})}}
                     catch(error){{return error.name+":"+error.message}}
                 }})()"#,
                     ))
                     .unwrap();
                 assert_eq!(
                     value,
-                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    if cfg!(feature = "stack-vm") {
+                        Value::Bool(true)
+                    } else {
+                        Value::String(JsString::from_static("InternalError:stack overflow"))
+                    },
                     "Object.hasOwn recursion depth {depth}",
                 );
             }
@@ -671,6 +676,7 @@ fn object_from_entries_orders_entry_reads_and_closes_preserving_the_original_thr
 }
 
 #[test]
+#[cfg(not(feature = "stack-vm"))]
 fn recursive_object_from_entries_ceiling_is_catchable_and_runtime_recovers() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -1002,14 +1008,18 @@ fn recursive_object_assign_callbacks_are_catchable_before_host_stack_exhaustion(
             let value = context
                 .eval(&format!(
                     r#"(function(){{
-                        try{{{name}({depth});return "missing"}}
+                        try{{return {name}({depth})}}
                         catch(error){{return error.name+":"+error.message}}
                     }})()"#,
                 ))
                 .unwrap();
             assert_eq!(
                 value,
-                Value::String(JsString::from_static("InternalError:stack overflow")),
+                if cfg!(feature = "stack-vm") {
+                    Value::Int(1)
+                } else {
+                    Value::String(JsString::from_static("InternalError:stack overflow"))
+                },
             );
         }
     }
@@ -1021,14 +1031,18 @@ fn recursive_object_assign_callbacks_are_catchable_before_host_stack_exhaustion(
         let value = context
             .eval(&format!(
                 r#"(function(){{
-                    try{{objectAssignMixedRecurse({depth});return "missing"}}
+                    try{{return objectAssignMixedRecurse({depth})}}
                     catch(error){{return error.name+":"+error.message}}
                 }})()"#,
             ))
             .unwrap();
         assert_eq!(
             value,
-            Value::String(JsString::from_static("InternalError:stack overflow")),
+            if cfg!(feature = "stack-vm") {
+                Value::Int(1)
+            } else {
+                Value::String(JsString::from_static("InternalError:stack overflow"))
+            },
         );
     }
     assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
@@ -1138,18 +1152,24 @@ fn recursive_object_descriptor_key_coercion_is_catchable_before_host_stack_exhau
         context.eval("objectDescriptorRecurse(8)").unwrap(),
         Value::Int(1),
     );
+    // The old configuration still proves its calibrated native ceiling. Owned
+    // callbacks have no suspended Rust body and must complete these finite calls.
     for depth in [9, 10, 11] {
         let value = context
             .eval(&format!(
                 r#"(function(){{
-                    try{{objectDescriptorRecurse({depth});return "missing"}}
+                    try{{return objectDescriptorRecurse({depth})}}
                     catch(error){{return error.name+":"+error.message}}
                 }})()"#,
             ))
             .unwrap();
         assert_eq!(
             value,
-            Value::String(JsString::from_static("InternalError:stack overflow")),
+            if cfg!(feature = "stack-vm") {
+                Value::Int(1)
+            } else {
+                Value::String(JsString::from_static("InternalError:stack overflow"))
+            },
         );
     }
     for name in [
@@ -1162,14 +1182,18 @@ fn recursive_object_descriptor_key_coercion_is_catchable_before_host_stack_exhau
             let value = context
                 .eval(&format!(
                     r#"(function(){{
-                        try{{{name}({depth});return "missing"}}
+                        try{{return {name}({depth})}}
                         catch(error){{return error.name+":"+error.message}}
                     }})()"#,
                 ))
                 .unwrap();
             assert_eq!(
                 value,
-                Value::String(JsString::from_static("InternalError:stack overflow")),
+                if cfg!(feature = "stack-vm") {
+                    Value::Int(1)
+                } else {
+                    Value::String(JsString::from_static("InternalError:stack overflow"))
+                },
                 "mixed native recursion path {name} at depth {depth}",
             );
         }
@@ -1421,28 +1445,36 @@ fn recursive_object_keys_family_ceiling_protects_the_heaviest_measured_path() {
         let value = context
             .eval(&format!(
                 r#"(function(){{
-                    try{{objectKeysHeavyRecurse({depth});return "missing"}}
+                    try{{return objectKeysHeavyRecurse({depth})}}
                     catch(error){{return error.name+":"+error.message}}
                 }})()"#,
             ))
             .unwrap();
         assert_eq!(
             value,
-            Value::String(JsString::from_static("InternalError:stack overflow")),
+            if cfg!(feature = "stack-vm") {
+                Value::Int(0)
+            } else {
+                Value::String(JsString::from_static("InternalError:stack overflow"))
+            },
         );
     }
 
     let value = context
         .eval(
             r#"(function(){
-                try{objectKeysDirectRecurse(80);return "missing"}
+                try{return objectKeysDirectRecurse(80)}
                 catch(error){return error.name+":"+error.message}
             })()"#,
         )
         .unwrap();
     assert_eq!(
         value,
-        Value::String(JsString::from_static("InternalError:stack overflow")),
+        if cfg!(feature = "stack-vm") {
+            Value::Int(0)
+        } else {
+            Value::String(JsString::from_static("InternalError:stack overflow"))
+        },
     );
 }
 
@@ -1473,4 +1505,71 @@ fn string_property(
         panic!("{name} was not a String property");
     };
     value.to_utf8_lossy()
+}
+
+#[test]
+#[cfg(feature = "stack-vm")]
+fn recursive_group_by_uses_default_logical_budget_and_recovers() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let value = context
+        .eval(
+            r#"(function(){
+        function recurse(depth){
+            return Object.groupBy([depth],function(){
+                if(depth!==0)recurse(depth-1);
+                return "group";
+            });
+        }
+        recurse(8);
+        try{recurse(-1);return "missing"}
+        catch(error){return error.name+":"+error.message}
+    })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        value,
+        Value::String(JsString::from_static("InternalError:stack overflow"))
+    );
+    assert_eq!(
+        context.eval("Object.groupBy([42],x=>'x').x[0]").unwrap(),
+        Value::Int(42)
+    );
+    assert!(runtime.0.state.borrow().active_frames.is_empty());
+}
+
+#[test]
+#[cfg(feature = "stack-vm")]
+fn recursive_from_entries_uses_default_logical_budget_closes_and_recovers() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let value = context
+        .eval(
+            r#"(function(){
+        let closes=0;
+        function recurse(depth){
+            let key={[Symbol.toPrimitive](){if(depth!==0)recurse(depth-1);return 'x'}};
+            let done=false;
+            let source={
+                [Symbol.iterator](){return this},
+                next(){if(done)return {done:true};done=true;return {done:false,value:[key,depth]}},
+                return(){closes++;return {done:true}}
+            };
+            return Object.fromEntries(source).x;
+        }
+        if(recurse(6)!==6||closes!==0)return 'finite recursion failed';
+        try{recurse(-1);return 'missing'}
+        catch(error){return error.name+':'+error.message+'|'+(closes>0)}
+    })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        value,
+        Value::String(JsString::from_static("InternalError:stack overflow|true"))
+    );
+    assert_eq!(
+        context.eval("Object.fromEntries([['x',42]]).x").unwrap(),
+        Value::Int(42)
+    );
+    assert!(runtime.0.state.borrow().active_frames.is_empty());
 }

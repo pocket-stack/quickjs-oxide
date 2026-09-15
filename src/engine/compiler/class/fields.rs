@@ -4,7 +4,27 @@
 //! runtime descriptor list.  This module keeps that aggregation out of the
 //! class grammar driver while preserving its exact evaluation phases.
 
-use super::super::*;
+use crate::engine::api::error::Error;
+use crate::engine::api::error::ErrorKind;
+use crate::engine::code::bytecode::Instruction;
+use crate::engine::compiler::lexer::LexContext;
+use crate::engine::compiler::lexer::Punctuator;
+use crate::engine::compiler::lexer::Span;
+use crate::engine::compiler::model::ir::FunctionId;
+use crate::engine::compiler::model::ir::IdentifierAccess;
+use crate::engine::compiler::model::ir::IrConstant;
+use crate::engine::compiler::model::ir::IrOp;
+use crate::engine::compiler::model::ir::function::FunctionIrOptions;
+use crate::engine::compiler::model::ir::function::FunctionKind;
+use crate::engine::compiler::model::ir::function::FunctionSourceInfo;
+use crate::engine::compiler::model::ir::function::ParentLink;
+use crate::engine::compiler::model::ir::function::SuperCapabilities;
+use crate::engine::compiler::parser::builder::FunctionBuilder;
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::parser::diagnostics::source_offset;
+use crate::engine::value::JsString;
+use crate::engine::value::PrimitiveValue as Value;
+
 use super::ClassPropertyKey;
 use crate::engine::code::function::metadata::ClassInitializerKind;
 
@@ -77,8 +97,8 @@ impl<'source> Parser<'source> {
 
         let parent = self.current_function;
         let child = self.functions.len();
-        let definition_scope = self.current_ir().current_scope;
-        self.functions.push(FunctionIr::new(
+        let definition_scope = self.current_ir().context.current_scope;
+        self.functions.push(FunctionBuilder::new(
             Some(ParentLink {
                 function: parent,
                 definition_scope,
@@ -248,6 +268,7 @@ impl<'source> Parser<'source> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

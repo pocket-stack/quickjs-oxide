@@ -1,20 +1,16 @@
-# 值与转换
+# 值、字符串与数值转换
 
-拥有完整 Value、原始常量、UTF-16 字符串、数值算法和 ECMAScript 值转换。
+value 拥有完整 JS Value、受限的原始常量表示、字符串与 BigInt，
+并提供 Number 算法和 ECMAScript 值转换。编译器、VM、对象和内置方法
+共用这些值与算法，避免各自解释同一种数值或字符串语义。
 
-原始值算法不访问宿主；运行时转换可以调用对象方法，须保留抛出值和执行上下文。
+纯数值、字符串和集合键算法与运行时转换分开。ToPrimitive 等转换可能
+读取属性、调用对象方法并抛出任意 JS 值，必须保留顺序、上下文和身份。
+精确 Number 的直接运算不能替代对象转换或 BigInt 混合操作的规则。
 
-## 文件与子目录
+字符串以 UTF-16 code unit 表达语义，包括孤立 surrogate。Latin1、
+UTF-16 和 rope 是存储选择，比较和哈希要得到一致结果；集合的随机种子
+哈希与 QuickJS 内容指纹承担不同职责。
 
-- [bigint.rs](bigint.rs)：`QuickJS`-compatible arbitrary-precision integer values.。
-- [collection_key.rs](collection_key.rs)：已验证 raw key 的 SameValueZero 与哈希；不访问堆、不执行转换或 JS，调用方负责 Runtime 域和内部哨兵检查。
-- [conversion.rs](conversion.rs)：ECMAScript 值转换。
-- [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
-- [number.rs](number.rs)：Exact numeric formatting primitives for the pinned QuickJS release.。
-- [number_parse.rs](number_parse.rs)：Pure numeric-prefix parsing used by the global `parseInt` and `parseFloat`。
-- [primitive.rs](primitive.rs)：primitive 的类型和操作实现。
-
-字符串比较、QuickJS 内容指纹及集合键哈希对平坦 Latin-1/UTF-16 直接遍历
-切片；只有 rope 使用带所有权保护的遍历状态。混合宽度必须按 UTF-16 code
-unit 比较和哈希，不按 UTF-8 字节比较。集合哈希继续由集合索引提供随机种子，
-不能以 32 位 QuickJS 内容指纹替代。
+对象身份与属性行为由 object 管理，原始引用边由 heap 管理，栈槽和值的
+移动由 VM 管理。value 负责值本身及其转换语义，不拥有活动执行帧。

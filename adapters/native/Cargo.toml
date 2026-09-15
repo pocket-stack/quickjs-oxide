@@ -14,4 +14,5 @@ quickjs-oxide = { workspace = true }
 tz-rs = { workspace = true }
 
 [features]
+stack-vm = ["quickjs-oxide/stack-vm"]
 engine-test-support = []

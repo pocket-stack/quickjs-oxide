@@ -7,7 +7,20 @@ Physical source ownership and codec privacy are checked separately.
 import re
 from pathlib import Path
 
-OWNER_GROUPS = {'src/engine/heap/runtime/mod.rs': ['src/engine/api/runtime.rs',
+OWNER_GROUPS = {'src/engine/code/bytecode.rs': ['src/engine/code/instruction.rs'],
+'src/engine/code/verify/mod.rs': [
+    'src/engine/code/verify/roles.rs',
+    'src/engine/code/verify/eval.rs',
+    'src/engine/code/verify/children.rs',
+    'src/engine/code/verify/closures.rs',
+    'src/engine/code/verify/flow.rs',
+    'src/engine/code/verify/operands.rs',
+    'src/engine/code/verify/parameters.rs',
+    'src/engine/code/verify/bindings.rs',
+    'src/engine/code/verify/modules.rs',
+],
+ 'src/engine/heap/runtime/mod.rs': ['src/engine/api/runtime.rs',
+                                    'src/engine/api/compile.rs',
                                     'src/engine/atom/runtime.rs',
                                     'src/engine/builtins/error/backtrace.rs',
                                     'src/engine/builtins/error/construction.rs',

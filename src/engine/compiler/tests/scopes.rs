@@ -428,7 +428,6 @@ fn scope_graph_validation_rejects_invalid_definition_and_binding_identity() {
         bindings_by_name: Default::default(),
     });
     malformed_scope.functions[0].body_scope = super::ScopeId(2);
-    malformed_scope.functions[0].current_scope = super::ScopeId(2);
     malformed_scope.functions[0].scopes[1].parent = Some(super::ScopeId(99));
     assert_eq!(
         resolve_identifiers(&mut malformed_scope)

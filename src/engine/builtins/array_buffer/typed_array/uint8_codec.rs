@@ -5,7 +5,18 @@
 //! WTF-8 input, option getter order, capacity short-circuits, and partial
 //! writes on later syntax errors.
 
-use super::*;
+use super::{TypedArrayState, typed_array_absolute_byte_offset, typed_array_u32_value};
+use crate::engine::{
+    api::{error::NativeErrorKind, runtime::Runtime, runtime_error::RuntimeError},
+    builtins::native::{TypedArrayElementKind, Uint8ArrayCodecKind},
+    heap::ContextId,
+    object::{DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey},
+    value::{JsString, Value, conversion::NativeConversion},
+    vm::{
+        Completion,
+        call::{NativeArguments, NativeInvocation},
+    },
+};
 
 const BASE64_WHITESPACE: u8 = 64;
 const BASE64_ERROR: u8 = 65;
@@ -70,54 +81,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Uint8Array.fromBase64 received a constructor invocation",
-            ));
-        };
-        let source = match self.uint8_codec_input_bytes(realm, arguments, 0)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let options = match self.uint8_codec_options(realm, arguments, 1)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let alphabet = match self.uint8_codec_alphabet(realm, options.as_ref())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let last_chunk = match self.uint8_codec_last_chunk(realm, options.as_ref())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let output_capacity = source
-            .len()
-            .checked_div(4)
-            .and_then(|groups| groups.checked_mul(3))
-            .and_then(|bytes| bytes.checked_add(3))
-            .ok_or(RuntimeError::Invariant(
-                "Uint8Array.fromBase64 capacity overflowed usize",
-            ))?;
-        let mut output = match self.uint8_codec_zeroed_bytes(realm, output_capacity)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let progress = decode_base64(&source, &mut output, alphabet, last_chunk);
-        if progress.invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+        codec_finish(
+            self,
+            realm,
+            Uint8CodecStep::start(
+                self,
                 realm,
-                NativeErrorKind::Syntax,
-                "invalid base64 string",
-            )?));
-        }
-        output.truncate(progress.written);
-        let result = match self.new_uint8_array_from_codec_bytes(realm, &output)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::Object(result)))
+                Uint8ArrayCodecKind::FromBase64,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_uint8_array_from_hex(
@@ -168,45 +142,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let target = match self.require_uint8_array_receiver(realm, invocation)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let source = match self.uint8_codec_input_bytes(realm, arguments, 0)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let options = match self.uint8_codec_options(realm, arguments, 1)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let alphabet = match self.uint8_codec_alphabet(realm, options.as_ref())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let last_chunk = match self.uint8_codec_last_chunk(realm, options.as_ref())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let state = match self.validated_uint8_codec_state(realm, &target)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
-        let length = usize::try_from(state.byte_length)
-            .map_err(|_| RuntimeError::Invariant("Uint8Array byte length overflowed usize"))?;
-        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
-        let progress = self.with_buffer_range_mut(&access, start, length, |target| {
-            decode_base64(&source, target, alphabet, last_chunk)
-        })?;
-        if progress.invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+        codec_finish(
+            self,
+            realm,
+            Uint8CodecStep::start(
+                self,
                 realm,
-                NativeErrorKind::Syntax,
-                "invalid base64 string",
-            )?));
-        }
-        self.make_uint8_codec_progress(realm, progress)
+                Uint8ArrayCodecKind::SetFromBase64,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_uint8_array_set_from_hex(
@@ -249,60 +195,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let target = match self.require_uint8_array_receiver(realm, invocation)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let options = match self.uint8_codec_options(realm, arguments, 0)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let alphabet = match self.uint8_codec_alphabet(realm, options.as_ref())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let omit_padding = match self.uint8_codec_omit_padding(realm, options.as_ref())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let state = match self.validated_uint8_codec_state(realm, &target)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let length = usize::try_from(state.byte_length)
-            .map_err(|_| RuntimeError::Invariant("Uint8Array byte length overflowed usize"))?;
-        let output_length = length
-            .checked_add(2)
-            .and_then(|length| length.checked_div(3))
-            .and_then(|groups| groups.checked_mul(4))
-            .ok_or(RuntimeError::Invariant(
-                "Uint8Array.toBase64 output length overflowed usize",
-            ))?;
-        if output_length > JsString::MAX_LEN {
-            return Ok(Completion::Throw(self.new_native_error(
+        codec_finish(
+            self,
+            realm,
+            Uint8CodecStep::start(
+                self,
                 realm,
-                NativeErrorKind::Range,
-                "output too large",
-            )?));
-        }
-        let mut output = match self.uint8_codec_zeroed_bytes(realm, output_length)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
-        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
-        let written = self.with_buffer_range(&access, start, length, |source| {
-            encode_base64(source, &mut output, alphabet)
-        })?;
-        debug_assert_eq!(written, output.len());
-        if omit_padding {
-            while output.last() == Some(&b'=') {
-                output.truncate(output.len() - 1);
-            }
-        }
-        Ok(Completion::Return(Value::String(
-            JsString::from_owned_latin1(output),
-        )))
+                Uint8ArrayCodecKind::ToBase64,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_uint8_array_to_hex(
@@ -445,19 +348,119 @@ impl Runtime {
         }
     }
 
-    fn uint8_codec_alphabet(
+    fn finish_uint8_array_from_base64(
         &self,
         realm: ContextId,
-        options: Option<&ObjectRef>,
+        source: Vec<u8>,
+        alphabet: Base64Alphabet,
+        last_chunk: LastChunkHandling,
+    ) -> Result<Completion, RuntimeError> {
+        let output_capacity = source
+            .len()
+            .checked_div(4)
+            .and_then(|groups| groups.checked_mul(3))
+            .and_then(|bytes| bytes.checked_add(3))
+            .ok_or(RuntimeError::Invariant(
+                "Uint8Array.fromBase64 capacity overflowed usize",
+            ))?;
+        let mut output = match self.uint8_codec_zeroed_bytes(realm, output_capacity)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let progress = decode_base64(&source, &mut output, alphabet, last_chunk);
+        if progress.invalid {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Syntax,
+                "invalid base64 string",
+            )?));
+        }
+        output.truncate(progress.written);
+        let result = match self.new_uint8_array_from_codec_bytes(realm, &output)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        Ok(Completion::Return(Value::Object(result)))
+    }
+    fn finish_uint8_array_set_from_base64(
+        &self,
+        realm: ContextId,
+        target: ObjectRef,
+        source: Vec<u8>,
+        alphabet: Base64Alphabet,
+        last_chunk: LastChunkHandling,
+    ) -> Result<Completion, RuntimeError> {
+        let state = match self.validated_uint8_codec_state(realm, &target)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
+        let length = usize::try_from(state.byte_length)
+            .map_err(|_| RuntimeError::Invariant("Uint8Array byte length overflowed usize"))?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        let progress = self.with_buffer_range_mut(&access, start, length, |target| {
+            decode_base64(&source, target, alphabet, last_chunk)
+        })?;
+        if progress.invalid {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Syntax,
+                "invalid base64 string",
+            )?));
+        }
+        self.make_uint8_codec_progress(realm, progress)
+    }
+    fn finish_uint8_array_to_base64(
+        &self,
+        realm: ContextId,
+        target: ObjectRef,
+        alphabet: Base64Alphabet,
+        omit_padding: bool,
+    ) -> Result<Completion, RuntimeError> {
+        let state = match self.validated_uint8_codec_state(realm, &target)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = usize::try_from(state.byte_length)
+            .map_err(|_| RuntimeError::Invariant("Uint8Array byte length overflowed usize"))?;
+        let output_length = length
+            .checked_add(2)
+            .and_then(|length| length.checked_div(3))
+            .and_then(|groups| groups.checked_mul(4))
+            .ok_or(RuntimeError::Invariant(
+                "Uint8Array.toBase64 output length overflowed usize",
+            ))?;
+        if output_length > JsString::MAX_LEN {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "output too large",
+            )?));
+        }
+        let mut output = match self.uint8_codec_zeroed_bytes(realm, output_length)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        let written = self.with_buffer_range(&access, start, length, |source| {
+            encode_base64(source, &mut output, alphabet)
+        })?;
+        debug_assert_eq!(written, output.len());
+        if omit_padding {
+            while output.last() == Some(&b'=') {
+                output.truncate(output.len() - 1);
+            }
+        }
+        Ok(Completion::Return(Value::String(
+            JsString::from_owned_latin1(output),
+        )))
+    }
+    fn uint8_codec_alphabet_value(
+        &self,
+        realm: ContextId,
+        value: Value,
     ) -> Result<NativeConversion<Base64Alphabet>, RuntimeError> {
-        let Some(options) = options else {
-            return Ok(NativeConversion::Value(Base64Alphabet::Base64));
-        };
-        let key = self.intern_property_key("alphabet")?;
-        let value = match self.get_property_in_realm(realm, options, &key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
         let Value::String(value) = value else {
             if matches!(value, Value::Undefined) {
                 return Ok(NativeConversion::Value(Base64Alphabet::Base64));
@@ -482,20 +485,11 @@ impl Runtime {
             )?)),
         }
     }
-
-    fn uint8_codec_last_chunk(
+    fn uint8_codec_last_chunk_value(
         &self,
         realm: ContextId,
-        options: Option<&ObjectRef>,
+        value: Value,
     ) -> Result<NativeConversion<LastChunkHandling>, RuntimeError> {
-        let Some(options) = options else {
-            return Ok(NativeConversion::Value(LastChunkHandling::Loose));
-        };
-        let key = self.intern_property_key("lastChunkHandling")?;
-        let value = match self.get_property_in_realm(realm, options, &key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
         let Value::String(value) = value else {
             if matches!(value, Value::Undefined) {
                 return Ok(NativeConversion::Value(LastChunkHandling::Loose));
@@ -521,23 +515,6 @@ impl Runtime {
                 NativeErrorKind::Type,
                 "invalid lastChunkHandling option",
             )?)),
-        }
-    }
-
-    fn uint8_codec_omit_padding(
-        &self,
-        realm: ContextId,
-        options: Option<&ObjectRef>,
-    ) -> Result<NativeConversion<bool>, RuntimeError> {
-        let Some(options) = options else {
-            return Ok(NativeConversion::Value(false));
-        };
-        let key = self.intern_property_key("omitPadding")?;
-        match self.get_property_in_realm(realm, options, &key)? {
-            Completion::Return(value) => {
-                Ok(NativeConversion::Value(self.value_to_boolean(&value)?))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
         }
     }
 
@@ -1060,3 +1037,225 @@ mod tests {
         assert_eq!(&hex, b"00afff");
     }
 }
+
+pub(crate) enum Uint8CodecStep {
+    Complete(Completion),
+    Read {
+        object: ObjectRef,
+        key: PropertyKey,
+        resume: Uint8CodecResume,
+    },
+}
+pub(crate) struct Uint8CodecResume(Box<Uint8CodecResumeState>);
+impl std::ops::Deref for Uint8CodecResume {
+    type Target = Uint8CodecResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Uint8CodecResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<Uint8CodecResume>() <= 8);
+pub(crate) struct Uint8CodecResumeState {
+    realm: ContextId,
+    mode: CodecMode,
+    source: Vec<u8>,
+    options: Option<ObjectRef>,
+    alphabet: Option<Base64Alphabet>,
+}
+enum CodecMode {
+    From,
+    Set(ObjectRef),
+    To(ObjectRef),
+}
+impl Uint8CodecStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        kind: Uint8ArrayCodecKind,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let mode = match kind {
+            Uint8ArrayCodecKind::FromHex => {
+                return runtime
+                    .call_uint8_array_from_hex(realm, invocation.clone(), arguments)
+                    .map(Self::Complete);
+            }
+            Uint8ArrayCodecKind::SetFromHex => {
+                return runtime
+                    .call_uint8_array_set_from_hex(realm, invocation.clone(), arguments)
+                    .map(Self::Complete);
+            }
+            Uint8ArrayCodecKind::ToHex => {
+                return runtime
+                    .call_uint8_array_to_hex(realm, invocation.clone())
+                    .map(Self::Complete);
+            }
+            Uint8ArrayCodecKind::FromBase64 => {
+                if !matches!(invocation, NativeInvocation::Call { .. }) {
+                    return Err(RuntimeError::Invariant(
+                        "Uint8Array.fromBase64 received a constructor invocation",
+                    ));
+                }
+                CodecMode::From
+            }
+            Uint8ArrayCodecKind::SetFromBase64 | Uint8ArrayCodecKind::ToBase64 => {
+                let object =
+                    match runtime.require_uint8_array_receiver(realm, invocation.clone())? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Self::Complete(Completion::Throw(value)));
+                        }
+                    };
+                if kind == Uint8ArrayCodecKind::SetFromBase64 {
+                    CodecMode::Set(object)
+                } else {
+                    CodecMode::To(object)
+                }
+            }
+        };
+        let source = if matches!(mode, CodecMode::To(_)) {
+            Vec::new()
+        } else {
+            match runtime.uint8_codec_input_bytes(realm, arguments, 0)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Ok(Self::Complete(Completion::Throw(value)));
+                }
+            }
+        };
+        let options = match runtime.uint8_codec_options(
+            realm,
+            arguments,
+            usize::from(!matches!(mode, CodecMode::To(_))),
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Self::Complete(Completion::Throw(value))),
+        };
+        let resume = Uint8CodecResume(Box::new(Uint8CodecResumeState {
+            realm,
+            mode,
+            source,
+            options,
+            alphabet: None,
+        }));
+        if let Some(object) = &resume.options {
+            Ok(Self::Read {
+                object: object.clone(),
+                key: runtime.intern_property_key("alphabet")?,
+                resume,
+            })
+        } else {
+            resume.complete(
+                runtime,
+                Base64Alphabet::Base64,
+                LastChunkHandling::Loose,
+                false,
+            )
+        }
+    }
+}
+impl Uint8CodecResume {
+    pub(crate) fn resume(
+        mut self,
+        runtime: &Runtime,
+        reply: Completion,
+    ) -> Result<Uint8CodecStep, RuntimeError> {
+        let value = match reply {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(Uint8CodecStep::Complete(Completion::Throw(value)));
+            }
+        };
+        let Some(alphabet) = self.0.alphabet else {
+            self.0.alphabet = Some(
+                match runtime.uint8_codec_alphabet_value(self.0.realm, value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(Uint8CodecStep::Complete(Completion::Throw(value)));
+                    }
+                },
+            );
+            let name = if matches!(self.0.mode, CodecMode::To(_)) {
+                "omitPadding"
+            } else {
+                "lastChunkHandling"
+            };
+            return Ok(Uint8CodecStep::Read {
+                object: self
+                    .0
+                    .options
+                    .clone()
+                    .ok_or(RuntimeError::Invariant("Uint8 codec lost options"))?,
+                key: runtime.intern_property_key(name)?,
+                resume: self,
+            });
+        };
+        if matches!(self.0.mode, CodecMode::To(_)) {
+            self.complete(
+                runtime,
+                alphabet,
+                LastChunkHandling::Loose,
+                runtime.value_to_boolean(&value)?,
+            )
+        } else {
+            let last = match runtime.uint8_codec_last_chunk_value(self.0.realm, value)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Ok(Uint8CodecStep::Complete(Completion::Throw(value)));
+                }
+            };
+            self.complete(runtime, alphabet, last, false)
+        }
+    }
+    fn complete(
+        self,
+        runtime: &Runtime,
+        alphabet: Base64Alphabet,
+        last: LastChunkHandling,
+        omit: bool,
+    ) -> Result<Uint8CodecStep, RuntimeError> {
+        let result = match self.0.mode {
+            CodecMode::From => {
+                runtime.finish_uint8_array_from_base64(self.0.realm, self.0.source, alphabet, last)
+            }
+            CodecMode::Set(target) => runtime.finish_uint8_array_set_from_base64(
+                self.0.realm,
+                target,
+                self.0.source,
+                alphabet,
+                last,
+            ),
+            CodecMode::To(target) => {
+                runtime.finish_uint8_array_to_base64(self.0.realm, target, alphabet, omit)
+            }
+        }?;
+        Ok(Uint8CodecStep::Complete(result))
+    }
+}
+fn codec_finish(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: Uint8CodecStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            Uint8CodecStep::Complete(result) => return Ok(result),
+            Uint8CodecStep::Read {
+                object,
+                key,
+                resume,
+            } => resume.resume(
+                runtime,
+                runtime.get_property_in_realm(realm, &object, &key)?,
+            )?,
+        };
+    }
+}
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<Uint8CodecStep>() <= 64);

@@ -115,6 +115,15 @@ enum BigIntRepr {
 pub struct JsBigInt(BigIntRepr);
 
 impl JsBigInt {
+    /// Immediate limbs have no allocation; shared heap limbs survive one drop.
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn release_keeps_storage_alive(&self) -> bool {
+        match &self.0 {
+            BigIntRepr::Short(_) => true,
+            BigIntRepr::Heap(value) => Rc::strong_count(value) > 1,
+        }
+    }
+
     /// Test the tagged representation identity observed by QuickJS's raw
     /// `JSValue` equality shortcuts. Heap values must share the same cell;
     /// numeric equality alone is deliberately insufficient.

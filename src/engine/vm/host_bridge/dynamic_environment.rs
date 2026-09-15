@@ -5,117 +5,37 @@
 //! Selection and action remain separate because QuickJS deliberately repeats
 //! `HasProperty` after observable `Symbol.unscopables` and RHS evaluation.
 
-use super::{FrameBinding, RuntimeVmHost, read_frame_binding, runtime_error_to_vm_error};
+#[cfg(test)]
+use super::FrameBinding;
+use super::{RuntimeVmHost, runtime_error_to_vm_error};
 use crate::engine::api::{Error, ErrorKind};
 use crate::engine::code::bytecode::{DynamicEnvironmentSource, WithObjectSource};
+#[cfg(test)]
+use crate::engine::code::function::metadata::ClosureVariable;
+#[cfg(test)]
 use crate::engine::code::function::metadata::{
-    ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
+    ClosureSource, ClosureVariableKind, ClosureVariableName,
 };
-use crate::engine::heap::RawValue;
-use crate::engine::object::{ObjectRef, PropertyKey, WellKnownSymbol};
+use crate::engine::object::{ObjectRef, PropertyKey};
 use crate::engine::value::Value;
 use crate::engine::vm::Completion;
-
-enum PropertyPresence {
-    Present(bool),
-    Throw(Value),
-}
+use crate::engine::vm::environment_bindings::operation::{self, EnvironmentStep};
 
 impl RuntimeVmHost {
     fn with_object(&self, source: WithObjectSource) -> Result<ObjectRef, Error> {
-        let value = match source {
-            WithObjectSource::Local(index) => {
-                let definition = self.local_definition(index)?;
-                if definition.kind != ClosureVariableKind::WithObject
-                    || definition.is_lexical
-                    || definition.is_const
-                {
-                    return Err(Error::internal(
-                        "dynamic with opcode referenced a non-with local",
-                    ));
-                }
-                let binding = self
-                    .locals
-                    .get(usize::from(index))
-                    .ok_or_else(|| Error::internal("with-object local index is out of bounds"))?;
-                if let FrameBinding::Captured(root) = binding {
-                    self.runtime
-                        .validate_var_ref_metadata(
-                            root,
-                            ClosureVariable {
-                                source: ClosureSource::ParentLocal(index),
-                                name: definition
-                                    .name
-                                    .map_or(ClosureVariableName::None, ClosureVariableName::Atom),
-                                is_lexical: definition.is_lexical,
-                                is_const: definition.is_const,
-                                kind: definition.kind,
-                            },
-                        )
-                        .map_err(runtime_error_to_vm_error)?;
-                }
-                read_frame_binding(&self.runtime, binding)?
-            }
-            WithObjectSource::Closure(index) => {
-                let descriptor = self
-                    .executable
-                    .closure_variables
-                    .get(usize::from(index))
-                    .copied()
-                    .ok_or_else(|| Error::internal("with-object closure index is out of bounds"))?;
-                if descriptor.kind != ClosureVariableKind::WithObject
-                    || descriptor.is_lexical
-                    || descriptor.is_const
-                {
-                    return Err(Error::internal(
-                        "dynamic with opcode referenced a non-with closure",
-                    ));
-                }
-                let root = self
-                    .closure_slots
-                    .get(usize::from(index))
-                    .ok_or_else(|| Error::internal("with-object closure slot is out of bounds"))?;
-                self.runtime
-                    .validate_var_ref_metadata(root, descriptor)
-                    .map_err(runtime_error_to_vm_error)?;
-                self.runtime
-                    .read_var_ref(root)
-                    .map_err(runtime_error_to_vm_error)?
-            }
-        };
-        let Value::Object(object) = value else {
-            return Err(Error::internal(
-                "with-object binding did not contain an Object",
-            ));
-        };
-        if !object.belongs_to(&self.runtime) {
-            return Err(Error::internal("with object belongs to another runtime"));
-        }
-        Ok(object)
+        crate::engine::vm::environment_bindings::with_object(
+            &self.runtime,
+            &self.executable,
+            source,
+            |index| self.locals.get(usize::from(index)),
+            &self.closure_slots,
+        )
     }
 
     fn dynamic_object(&self, source: DynamicEnvironmentSource) -> Result<ObjectRef, Error> {
         match source {
             DynamicEnvironmentSource::Eval(source) => self.eval_variable_object(source),
             DynamicEnvironmentSource::With(source) => self.with_object(source),
-        }
-    }
-
-    fn property_presence(
-        &self,
-        object: &ObjectRef,
-        key: &PropertyKey,
-    ) -> Result<PropertyPresence, Error> {
-        match self
-            .runtime
-            .has_property_in_realm(self.current_realm, object, key)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            Completion::Return(Value::Bool(present)) => Ok(PropertyPresence::Present(present)),
-            Completion::Return(_) => Err(Error::internal(
-                "HasProperty returned a non-Boolean completion",
-            )),
-            Completion::Throw(value) => Ok(PropertyPresence::Throw(value)),
         }
     }
 
@@ -132,37 +52,17 @@ impl RuntimeVmHost {
     ) -> Result<Completion, Error> {
         let object = self.dynamic_object(source)?;
         let key = self.constant_property_key(name)?;
-        match self.property_presence(&object, &key)? {
-            PropertyPresence::Present(false) => {
-                return Ok(Completion::Return(Value::Bool(false)));
-            }
-            PropertyPresence::Throw(value) => return Ok(Completion::Throw(value)),
-            PropertyPresence::Present(true) => {}
-        }
-
-        if matches!(source, DynamicEnvironmentSource::With(_)) {
-            let unscopables_key =
-                PropertyKey::from(self.runtime.well_known_symbol(WellKnownSymbol::Unscopables));
-            let unscopables =
-                match self.get_property_with_key(Value::Object(object), &unscopables_key, true)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-            if let Value::Object(unscopables) = unscopables {
-                let excluded =
-                    match self.get_property_with_key(Value::Object(unscopables), &key, true)? {
-                        Completion::Return(value) => self
-                            .runtime
-                            .value_to_boolean(&value)
-                            .map_err(runtime_error_to_vm_error)?,
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                if excluded {
-                    return Ok(Completion::Return(Value::Bool(false)));
-                }
-            }
-        }
-        Ok(Completion::Return(Value::Bool(true)))
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::has_binding(
+                self.current_realm,
+                object,
+                key,
+                matches!(source, DynamicEnvironmentSource::With(_)),
+            ),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 
     pub(crate) fn get_dynamic_binding_impl(
@@ -173,14 +73,12 @@ impl RuntimeVmHost {
     ) -> Result<Completion, Error> {
         let object = self.dynamic_object(source)?;
         let key = self.constant_property_key(name)?;
-        match self.property_presence(&object, &key)? {
-            PropertyPresence::Present(true) => {
-                self.get_property_with_key(Value::Object(object), &key, true)
-            }
-            PropertyPresence::Present(false) if strict => Err(self.reference_not_defined(&key)?),
-            PropertyPresence::Present(false) => Ok(Completion::Return(Value::Undefined)),
-            PropertyPresence::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::get(self.current_realm, object, key, strict),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 
     pub(crate) fn put_dynamic_binding_impl(
@@ -192,16 +90,12 @@ impl RuntimeVmHost {
     ) -> Result<Completion, Error> {
         let object = self.dynamic_object(source)?;
         let key = self.constant_property_key(name)?;
-        match self.property_presence(&object, &key)? {
-            PropertyPresence::Present(false) if strict => {
-                return Err(self.reference_not_defined(&key)?);
-            }
-            PropertyPresence::Throw(value) => return Ok(Completion::Throw(value)),
-            PropertyPresence::Present(_) => {}
-        }
-        // QuickJS forwards JS_PROP_THROW_STRICT for both with_put_var and
-        // put_ref_value only from strict code; sloppy Set rejection is silent.
-        self.set_property_with_key(Value::Object(object), &key, value, strict)
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::put(self.current_realm, object, key, value, strict, false),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 
     pub(crate) fn delete_dynamic_binding_impl(
@@ -211,7 +105,12 @@ impl RuntimeVmHost {
     ) -> Result<Completion, Error> {
         let object = self.dynamic_object(source)?;
         let key = self.constant_property_key(name)?;
-        self.delete_property_with_key(Value::Object(object), &key, false)
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::delete(self.current_realm, object, key),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 
     pub(crate) fn dynamic_environment_object_impl(
@@ -227,90 +126,26 @@ impl RuntimeVmHost {
     /// script can install a same-name global lexical binding after this
     /// bytecode was published, and that live lexical VarRef must win.
     pub(crate) fn global_reference_impl(&mut self, index: u16) -> Result<Completion, Error> {
-        let descriptor = self
-            .executable
-            .closure_variables
-            .get(usize::from(index))
-            .copied()
-            .ok_or_else(|| Error::internal("global reference closure index is out of bounds"))?;
-        if !matches!(
-            descriptor.source,
-            ClosureSource::GlobalDeclaration
-                | ClosureSource::Global
-                | ClosureSource::ParentGlobal(_)
-        ) || !matches!(
-            descriptor.kind,
-            ClosureVariableKind::Normal | ClosureVariableKind::GlobalFunction
-        ) {
-            return Err(Error::internal(
-                "global reference opcode referenced a non-global closure",
-            ));
-        }
-        let ClosureVariableName::Atom(atom) = descriptor.name else {
-            return Err(Error::internal(
-                "published global reference descriptor has no name atom",
-            ));
+        let (global_object, key) = match super::super::environment_bindings::global_reference(
+            &self.runtime,
+            self.current_realm,
+            &self.executable,
+            &self.closure_slots,
+            index,
+        )? {
+            super::super::environment_bindings::GlobalReference::Lexical(object) => {
+                return Ok(Completion::Return(Value::Object(object)));
+            }
+            super::super::environment_bindings::GlobalReference::Object { object, key } => {
+                (object, key)
+            }
         };
-        let root = self
-            .closure_slots
-            .get(usize::from(index))
-            .ok_or_else(|| Error::internal("global reference closure slot is out of bounds"))?;
-        if !root.belongs_to(&self.runtime) {
-            return Err(Error::internal(
-                "global reference closure belongs to another runtime",
-            ));
-        }
-
-        let key = PropertyKey::from_borrowed_atom(self.runtime.clone(), atom)
-            .map_err(|error| Error::internal(error.to_string()))?;
-        let global_var_object = {
-            let state = self.runtime.0.state.borrow();
-            state
-                .heap
-                .context(self.current_realm)
-                .map_err(|error| Error::internal(error.to_string()))?
-                .global_var_object
-        };
-        let global_var_object =
-            ObjectRef::from_borrowed_handle(self.runtime.clone(), global_var_object)
-                .map_err(|error| Error::internal(error.to_string()))?;
-        if let Some(root) = self
-            .runtime
-            .own_var_ref_root(&global_var_object, &key)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            let cell = self
-                .runtime
-                .0
-                .state
-                .borrow()
-                .heap
-                .var_ref(root.id())
-                .map_err(|error| Error::internal(error.to_string()))?
-                .clone();
-            if !cell.is_lexical || cell.kind != ClosureVariableKind::Normal {
-                return Err(Error::internal(
-                    "global lexical object contained a non-lexical VarRef",
-                ));
-            }
-            if matches!(cell.value, RawValue::Uninitialized) {
-                return Err(self.dynamic_lexical_uninitialized_error(atom)?);
-            }
-            if cell.is_const {
-                return Err(self.lexical_read_only_error(Some(atom))?);
-            }
-            return Ok(Completion::Return(Value::Object(global_var_object)));
-        }
-
-        let global_object = self
-            .runtime
-            .global_object_for_realm(self.current_realm)
-            .map_err(runtime_error_to_vm_error)?;
-        match self.property_presence(&global_object, &key)? {
-            PropertyPresence::Present(true) => Ok(Completion::Return(Value::Object(global_object))),
-            PropertyPresence::Present(false) => Ok(Completion::Return(Value::Undefined)),
-            PropertyPresence::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::reference(self.current_realm, global_object, key),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 
     pub(crate) fn get_ref_value_impl(
@@ -334,14 +169,12 @@ impl RuntimeVmHost {
                 "dynamic reference base belongs to another runtime",
             ));
         }
-        match self.property_presence(&object, &key)? {
-            PropertyPresence::Present(true) => {
-                self.get_property_with_key(Value::Object(object), &key, true)
-            }
-            PropertyPresence::Present(false) if strict => Err(self.reference_not_defined(&key)?),
-            PropertyPresence::Present(false) => Ok(Completion::Return(Value::Undefined)),
-            PropertyPresence::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::get(self.current_realm, object, key, strict),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 
     pub(crate) fn put_ref_value_impl(
@@ -370,49 +203,12 @@ impl RuntimeVmHost {
                 "dynamic reference base belongs to another runtime",
             ));
         }
-        match self.property_presence(&object, &key)? {
-            PropertyPresence::Present(false) if strict => {
-                return Err(self.reference_not_defined(&key)?);
-            }
-            PropertyPresence::Throw(value) => return Ok(Completion::Throw(value)),
-            PropertyPresence::Present(_) => {}
-        }
-        // The realm's lexical storage object is structurally ordinary in
-        // this rewrite, but its slots still carry VarRefs. A generic ordinary
-        // DefineOwnProperty write would replace that slot with plain data and
-        // sever every compiled closure. QuickJS writes through the VarRef
-        // property, so preserve the shared cell explicitly after the required
-        // repeated HasProperty step.
-        if let Some(root) = self
-            .runtime
-            .own_var_ref_root(&object, &key)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            let cell = self
-                .runtime
-                .0
-                .state
-                .borrow()
-                .heap
-                .var_ref(root.id())
-                .map_err(|error| Error::internal(error.to_string()))?
-                .clone();
-            if matches!(cell.value, RawValue::Uninitialized) {
-                return Err(self.dynamic_lexical_uninitialized_error(key.atom())?);
-            }
-            if cell.is_const {
-                return if strict {
-                    Err(self.lexical_read_only_error(Some(key.atom()))?)
-                } else {
-                    Ok(Completion::Return(Value::Undefined))
-                };
-            }
-            self.runtime
-                .write_var_ref(&root, value)
-                .map_err(runtime_error_to_vm_error)?;
-            return Ok(Completion::Return(Value::Undefined));
-        }
-        self.set_property_with_key(Value::Object(object), &key, value, strict)
+        operation::finish(
+            &self.runtime,
+            self.current_realm,
+            EnvironmentStep::put(self.current_realm, object, key, value, strict, true),
+        )
+        .map_err(runtime_error_to_vm_error)
     }
 }
 
@@ -471,7 +267,7 @@ mod tests {
             is_const: false,
             kind: ClosureVariableKind::Normal,
         }]);
-        host.closure_slots = vec![root];
+        host.closure_slots = vec![root].into();
         host
     }
 

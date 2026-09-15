@@ -136,3 +136,10 @@ credential-scrubbing, cleanup, and stale-deployment retry fixtures.
 The playground is a milestone view of an incomplete engine, not a claim of
 complete ECMAScript support. The Test262 scoreboard remains the compatibility
 authority.
+
+## 栈 VM 测试配置
+
+`./scripts/web/test-web-playground.sh --stack-vm` 构建非默认栈 VM 并运行同一套
+Node/WASM 测试；省略该参数测试默认 VM。只构建时使用
+`./scripts/web/build-web-playground.sh --stack-vm`。配置和 WASM 哈希记录在
+`target/web-playground-build.receipt`；此配置不改变 playground 的 API 或页面行为。

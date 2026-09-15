@@ -5,7 +5,20 @@
 //! species result, while `subarray` keeps the durable raw view metadata even
 //! when a detached or resized source currently reports length zero.
 
-use super::*;
+use super::{TypedArraySnapshot, typed_array_absolute_byte_offset};
+#[cfg(feature = "stack-vm")]
+use crate::engine::builtins::native::{NativeFunctionId, TypedArrayNativeKind};
+use crate::engine::{
+    api::{runtime::Runtime, runtime_error::RuntimeError},
+    builtins::native::TypedArrayElementKind,
+    heap::ContextId,
+    object::ObjectRef,
+    value::{Value, conversion::NativeConversion},
+    vm::{
+        Completion, ToPrimitiveHint,
+        call::{NativeArguments, NativeInvocation},
+    },
+};
 
 #[cfg(test)]
 mod tests;
@@ -17,60 +30,22 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "TypedArray.prototype.slice received a constructor invocation",
-            ));
-        };
-        let source = match self.require_typed_array(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let initial_length = match self.typed_array_validated_length(realm, &source)? {
-            NativeConversion::Value(value) => i64::from(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let source_snapshot = self.typed_array_snapshot(&source)?;
-        let start = match self.native_to_int64_clamp(
+        finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "TypedArray.slice start argv was not padded",
-            ))?,
-            0,
-            initial_length,
-            initial_length,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let final_index = if matches!(arguments.readable.get(1), Some(Value::Undefined)) {
-            initial_length
-        } else {
-            match self.native_to_int64_clamp(
-                realm,
-                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                    "TypedArray.slice end argv was not padded",
-                ))?,
-                0,
-                initial_length,
-                initial_length,
-            )? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        };
-        let requested_count = u64::try_from((final_index - start).max(0))
-            .map_err(|_| RuntimeError::Invariant("TypedArray.slice count was negative"))?;
-        let target = match self.typed_array_species_create(
-            realm,
-            &source,
-            source_snapshot.element,
-            requested_count,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+            TypedSliceStep::start(self, realm, TypedSliceKind::Slice, &invocation, arguments)?,
+        )
+    }
 
+    fn finish_typed_slice(
+        &self,
+        realm: ContextId,
+        source: ObjectRef,
+        target: ObjectRef,
+        start: i64,
+        requested_count: u64,
+    ) -> Result<Completion, RuntimeError> {
+        let source_snapshot = self.typed_array_snapshot(&source)?;
         // QuickJS deliberately skips both post-species validations for an
         // originally empty range.
         if requested_count != 0 {
@@ -121,88 +96,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "TypedArray.prototype.subarray received a constructor invocation",
-            ));
-        };
-        let source = match self.require_typed_array(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let source_snapshot = self.typed_array_snapshot(&source)?;
-        let initial_length = i64::from(
-            self.typed_array_state_from_snapshot(source_snapshot)?
-                .length,
-        );
-        let start = match self.native_to_int64_clamp(
+        finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "TypedArray.subarray begin argv was not padded",
-            ))?,
-            0,
-            initial_length,
-            initial_length,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let start = u64::try_from(start)
-            .map_err(|_| RuntimeError::Invariant("TypedArray.subarray start was negative"))?;
-        let byte_offset = u64::from(source_snapshot.byte_offset)
-            .checked_add(
-                start
-                    .checked_mul(u64::from(source_snapshot.element.byte_length()))
-                    .ok_or(RuntimeError::Invariant(
-                        "TypedArray.subarray relative offset overflowed u64",
-                    ))?,
-            )
-            .ok_or(RuntimeError::Invariant(
-                "TypedArray.subarray byteOffset overflowed u64",
-            ))?;
-
-        let end_is_undefined = matches!(arguments.readable.get(1), Some(Value::Undefined));
-        let final_index = if end_is_undefined {
-            initial_length
-        } else {
-            match self.native_to_int64_clamp(
+            TypedSliceStep::start(
+                self,
                 realm,
-                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                    "TypedArray.subarray end argv was not padded",
-                ))?,
-                0,
-                initial_length,
-                initial_length,
-            )? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        };
-        let count = u64::try_from(
-            final_index
-                - i64::try_from(start).map_err(|_| {
-                    RuntimeError::Invariant("TypedArray.subarray start exceeded i64")
-                })?,
+                TypedSliceKind::Subarray,
+                &invocation,
+                arguments,
+            )?,
         )
-        .unwrap_or(0);
-        let length = if end_is_undefined && source_snapshot.fixed_byte_length.is_none() {
-            None
-        } else {
-            Some(count)
-        };
-        let buffer = ObjectRef::from_borrowed_handle(self.clone(), source_snapshot.buffer)?;
-        let target = match self.typed_array_species_create_subarray(
-            realm,
-            &source,
-            source_snapshot.element,
-            &buffer,
-            byte_offset,
-            length,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::Object(target)))
     }
 
     fn typed_array_slice_raw_copy(
@@ -245,3 +149,389 @@ impl Runtime {
         Ok(())
     }
 }
+#[derive(Clone, Copy)]
+pub(crate) enum TypedSliceKind {
+    Slice,
+    Subarray,
+}
+impl TypedSliceKind {
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn for_target(target: NativeFunctionId) -> Option<Self> {
+        Some(match target {
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::Slice) => Self::Slice,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::Subarray) => Self::Subarray,
+            _ => return None,
+        })
+    }
+}
+pub(crate) enum TypedSliceStep {
+    Complete(Completion),
+    Primitive { resume: TypedSliceResume },
+    Species { resume: TypedSliceResume },
+    SpeciesView { resume: TypedSliceResume },
+}
+pub(crate) struct TypedSliceResume(Box<TypedSliceResumeState>);
+impl std::ops::Deref for TypedSliceResume {
+    type Target = TypedSliceResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for TypedSliceResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<TypedSliceResume>() <= 8);
+pub(crate) struct TypedSliceResumeState {
+    pending_effect: TypedSliceStepPending,
+    realm: ContextId,
+    source: ObjectRef,
+    length: i64,
+    kind: TypedSliceKind,
+    phase: Phase,
+}
+enum Phase {
+    Start(Value),
+    End { start: i64, offset: u64 },
+    Species { start: i64, count: u64 },
+}
+impl TypedSliceStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        kind: TypedSliceKind,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "TypedArray slice received a constructor invocation",
+            ));
+        };
+        let source = match runtime.require_typed_array(realm, this_value.clone())? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Self::Complete(Completion::Throw(value))),
+        };
+        let length = match kind {
+            TypedSliceKind::Slice => match runtime.typed_array_validated_length(realm, &source)? {
+                NativeConversion::Value(value) => i64::from(value),
+                NativeConversion::Throw(value) => {
+                    return Ok(Self::Complete(Completion::Throw(value)));
+                }
+            },
+            TypedSliceKind::Subarray => i64::from(runtime.typed_array_state(&source)?.length),
+        };
+        // A branded view's raw metadata is immutable; its backing state is reread after every conversion.
+        runtime.typed_array_snapshot(&source)?;
+        let end = arguments
+            .readable
+            .get(1)
+            .ok_or(RuntimeError::Invariant(
+                "TypedArray slice end argv was not padded",
+            ))?
+            .clone();
+        Ok(Self::request_primitive(
+            arguments
+                .readable
+                .first()
+                .ok_or(RuntimeError::Invariant(
+                    "TypedArray slice start argv was not padded",
+                ))?
+                .clone(),
+            TypedSliceResume(Box::new(TypedSliceResumeState {
+                pending_effect: TypedSliceStepPending::default(),
+                realm,
+                source,
+                length,
+                kind,
+                phase: Phase::Start(end),
+            })),
+        ))
+    }
+}
+impl TypedSliceResume {
+    pub(crate) fn resume(
+        mut self,
+        runtime: &Runtime,
+        result: Completion,
+    ) -> Result<TypedSliceStep, RuntimeError> {
+        let value = match result {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(TypedSliceStep::Complete(Completion::Throw(value)));
+            }
+        };
+        let index = match runtime.native_to_int64_clamp(
+            self.0.realm,
+            &value,
+            0,
+            self.0.length,
+            self.0.length,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => {
+                return Ok(TypedSliceStep::Complete(Completion::Throw(value)));
+            }
+        };
+        match self.0.phase {
+            Phase::Start(end) => {
+                let offset = if matches!(self.0.kind, TypedSliceKind::Subarray) {
+                    let snapshot = runtime.typed_array_snapshot(&self.0.source)?;
+                    u64::from(snapshot.byte_offset)
+                        .checked_add(
+                            u64::try_from(index)
+                                .map_err(|_| {
+                                    RuntimeError::Invariant(
+                                        "TypedArray.subarray start was negative",
+                                    )
+                                })?
+                                .checked_mul(u64::from(snapshot.element.byte_length()))
+                                .ok_or(RuntimeError::Invariant(
+                                    "TypedArray.subarray relative offset overflowed u64",
+                                ))?,
+                        )
+                        .ok_or(RuntimeError::Invariant(
+                            "TypedArray.subarray byteOffset overflowed u64",
+                        ))?
+                } else {
+                    0
+                };
+                let next = {
+                    let updated_0 = Phase::End {
+                        start: index,
+                        offset,
+                    };
+                    self.0.phase = updated_0;
+                    self
+                };
+                if matches!(end, Value::Undefined) {
+                    let length = next.length;
+                    return next.select(runtime, index, offset, length, true);
+                }
+                Ok(TypedSliceStep::request_primitive(end, next))
+            }
+            Phase::End { start, offset } => self.select(runtime, start, offset, index, false),
+            Phase::Species { .. } => Err(RuntimeError::Invariant(
+                "TypedArray slice primitive reply in species phase",
+            )),
+        }
+    }
+    fn select(
+        mut self,
+        runtime: &Runtime,
+        start: i64,
+        offset: u64,
+        end: i64,
+        end_undefined: bool,
+    ) -> Result<TypedSliceStep, RuntimeError> {
+        let count = u64::try_from((end - start).max(0))
+            .map_err(|_| RuntimeError::Invariant("TypedArray.slice count was negative"))?;
+        let snapshot = runtime.typed_array_snapshot(&self.0.source)?;
+        let source = self.0.source.clone();
+        let kind = self.0.kind;
+        let resume = {
+            let updated_0 = Phase::Species { start, count };
+            self.0.phase = updated_0;
+            self
+        };
+        Ok(match kind {
+            TypedSliceKind::Slice => {
+                TypedSliceStep::request_species(source, snapshot.element, count, resume)
+            }
+            TypedSliceKind::Subarray => TypedSliceStep::request_species_view(
+                source,
+                snapshot.element,
+                ObjectRef::from_borrowed_handle(runtime.clone(), snapshot.buffer)?,
+                offset,
+                if end_undefined && snapshot.fixed_byte_length.is_none() {
+                    None
+                } else {
+                    Some(count)
+                },
+                resume,
+            ),
+        })
+    }
+    pub(crate) fn species(
+        self,
+        runtime: &Runtime,
+        result: NativeConversion<ObjectRef>,
+    ) -> Result<TypedSliceStep, RuntimeError> {
+        let target = match result {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => {
+                return Ok(TypedSliceStep::Complete(Completion::Throw(value)));
+            }
+        };
+        let Phase::Species { start, count } = self.0.phase else {
+            return Err(RuntimeError::Invariant(
+                "TypedArray slice species reply in wrong phase",
+            ));
+        };
+        Ok(TypedSliceStep::Complete(match self.0.kind {
+            TypedSliceKind::Slice => {
+                runtime.finish_typed_slice(self.0.realm, self.0.source, target, start, count)?
+            }
+            TypedSliceKind::Subarray => Completion::Return(Value::Object(target)),
+        }))
+    }
+}
+fn finish(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: TypedSliceStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            TypedSliceStep::Complete(result) => return Ok(result),
+            TypedSliceStep::Primitive { mut resume } => {
+                let value = resume.take_primitive_value();
+                {
+                    let result = if matches!(value, Value::Object(_)) {
+                        runtime.to_primitive(realm, value, ToPrimitiveHint::Number)?
+                    } else {
+                        Completion::Return(value)
+                    };
+                    resume.resume(runtime, result)?
+                }
+            }
+            TypedSliceStep::Species { mut resume } => {
+                let source = resume.take_species_source();
+                let element = resume.take_species_element();
+                let length = resume.take_species_length();
+                resume.species(
+                    runtime,
+                    runtime.typed_array_species_create(realm, &source, element, length)?,
+                )?
+            }
+            TypedSliceStep::SpeciesView { mut resume } => {
+                let source = resume.take_species_view_source();
+                let element = resume.take_species_view_element();
+                let buffer = resume.take_species_view_buffer();
+                let offset = resume.take_species_view_offset();
+                let length = resume.take_species_view_length();
+                resume.species(
+                    runtime,
+                    runtime.typed_array_species_create_subarray(
+                        realm, &source, element, &buffer, offset, length,
+                    )?,
+                )?
+            }
+        };
+    }
+}
+
+#[derive(Default)]
+struct TypedSliceStepPending {
+    primitive_value: Option<Value>,
+    species_source: Option<ObjectRef>,
+    species_element: Option<TypedArrayElementKind>,
+    species_length: Option<u64>,
+    species_view_source: Option<ObjectRef>,
+    species_view_element: Option<TypedArrayElementKind>,
+    species_view_buffer: Option<ObjectRef>,
+    species_view_offset: Option<u64>,
+    species_view_length: Option<Option<u64>>,
+}
+impl TypedSliceStep {
+    pub(crate) fn request_primitive(value: Value, mut resume: TypedSliceResume) -> Self {
+        resume.0.pending_effect.primitive_value = Some(value);
+        Self::Primitive { resume }
+    }
+    pub(crate) fn request_species(
+        source: ObjectRef,
+        element: TypedArrayElementKind,
+        length: u64,
+        mut resume: TypedSliceResume,
+    ) -> Self {
+        resume.0.pending_effect.species_source = Some(source);
+        resume.0.pending_effect.species_element = Some(element);
+        resume.0.pending_effect.species_length = Some(length);
+        Self::Species { resume }
+    }
+    pub(crate) fn request_species_view(
+        source: ObjectRef,
+        element: TypedArrayElementKind,
+        buffer: ObjectRef,
+        offset: u64,
+        length: Option<u64>,
+        mut resume: TypedSliceResume,
+    ) -> Self {
+        resume.0.pending_effect.species_view_source = Some(source);
+        resume.0.pending_effect.species_view_element = Some(element);
+        resume.0.pending_effect.species_view_buffer = Some(buffer);
+        resume.0.pending_effect.species_view_offset = Some(offset);
+        resume.0.pending_effect.species_view_length = Some(length);
+        Self::SpeciesView { resume }
+    }
+}
+impl TypedSliceResume {
+    pub(crate) fn take_primitive_value(&mut self) -> Value {
+        self.0
+            .pending_effect
+            .primitive_value
+            .take()
+            .expect("TypedSliceStep Primitive value")
+    }
+    pub(crate) fn take_species_source(&mut self) -> ObjectRef {
+        self.0
+            .pending_effect
+            .species_source
+            .take()
+            .expect("TypedSliceStep Species source")
+    }
+    pub(crate) fn take_species_element(&mut self) -> TypedArrayElementKind {
+        self.0
+            .pending_effect
+            .species_element
+            .take()
+            .expect("TypedSliceStep Species element")
+    }
+    pub(crate) fn take_species_length(&mut self) -> u64 {
+        self.0
+            .pending_effect
+            .species_length
+            .take()
+            .expect("TypedSliceStep Species length")
+    }
+    pub(crate) fn take_species_view_source(&mut self) -> ObjectRef {
+        self.0
+            .pending_effect
+            .species_view_source
+            .take()
+            .expect("TypedSliceStep SpeciesView source")
+    }
+    pub(crate) fn take_species_view_element(&mut self) -> TypedArrayElementKind {
+        self.0
+            .pending_effect
+            .species_view_element
+            .take()
+            .expect("TypedSliceStep SpeciesView element")
+    }
+    pub(crate) fn take_species_view_buffer(&mut self) -> ObjectRef {
+        self.0
+            .pending_effect
+            .species_view_buffer
+            .take()
+            .expect("TypedSliceStep SpeciesView buffer")
+    }
+    pub(crate) fn take_species_view_offset(&mut self) -> u64 {
+        self.0
+            .pending_effect
+            .species_view_offset
+            .take()
+            .expect("TypedSliceStep SpeciesView offset")
+    }
+    pub(crate) fn take_species_view_length(&mut self) -> Option<u64> {
+        self.0
+            .pending_effect
+            .species_view_length
+            .take()
+            .expect("TypedSliceStep SpeciesView length")
+    }
+}
+const _: () = assert!(std::mem::size_of::<TypedSliceStep>() <= 64);
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<TypedSliceStep>() <= 64);

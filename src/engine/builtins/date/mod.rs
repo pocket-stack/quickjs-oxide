@@ -320,3 +320,8 @@ mod tests {
         assert_ne!(first_random, different_random);
     }
 }
+
+#[cfg(feature = "stack-vm")]
+pub(crate) use constructor::operation::{DateConstructorResume, DateConstructorStep};
+#[cfg(feature = "stack-vm")]
+pub(crate) use prototype::operation::{DatePrototypeResume, DatePrototypeStep};

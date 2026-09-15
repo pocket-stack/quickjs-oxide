@@ -104,6 +104,14 @@ pub struct FunctionBytecodeId {
     pub(in crate::engine::heap) generation: u32,
 }
 
+impl FunctionBytecodeId {
+    /// Immutable publications cannot be replaced in place. Arena identity
+    /// combines slot and generation, so reuse always changes this token.
+    pub(crate) fn publish_generation(self) -> u64 {
+        (u64::from(self.index) << 32) | u64::from(self.generation)
+    }
+}
+
 impl fmt::Debug for FunctionBytecodeId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

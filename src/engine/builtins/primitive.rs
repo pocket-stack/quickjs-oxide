@@ -1,4 +1,4 @@
-use crate::engine::api::error::{Error, NativeErrorKind, NativeErrorMessage};
+use crate::engine::api::error::{NativeErrorKind, NativeErrorMessage};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
@@ -16,6 +16,11 @@ use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation, NativeInvokeOutcome};
 
+pub(crate) mod constructor;
+pub(crate) mod globals;
+pub(crate) mod numeric;
+pub(crate) mod text;
+
 impl Runtime {
     pub(crate) fn call_primitive_constructor(
         &self,
@@ -24,95 +29,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "primitive constructor readable argv was not padded to one",
-        ))?;
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "primitive constructor did not receive constructor-or-function invocation",
-            ));
-        };
-        if kind == PrimitiveKind::Symbol {
-            // Like QuickJS's constructor-or-function C entry, Symbol keeps its
-            // constructor bit but rejects a real new.target before ToString.
-            if !matches!(new_target, Value::Undefined) {
-                return Ok(Completion::Throw(
-                    self.new_not_constructor_error(realm, &new_target)?,
-                ));
-            }
-            let description =
-                if arguments.actual_arg_count == 0 || matches!(argument, Value::Undefined) {
-                    None
-                } else {
-                    match self.native_to_js_string(realm, argument)? {
-                        NativeConversion::Value(value) => Some(value),
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                };
-            return Ok(Completion::Return(Value::Symbol(
-                self.new_symbol(description)?,
-            )));
-        }
-        if kind == PrimitiveKind::BigInt {
-            // BigInt deliberately keeps QuickJS's constructor-or-function
-            // cproto bit, but its body rejects any real new.target before
-            // touching the argument.
-            if !matches!(new_target, Value::Undefined) {
-                return Ok(Completion::Throw(
-                    self.new_not_constructor_error(realm, &new_target)?,
-                ));
-            }
-            let value = match self.native_to_bigint_constructor_value(realm, argument)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            return Ok(Completion::Return(Value::BigInt(value)));
-        }
-        let value = match kind {
-            PrimitiveKind::Boolean => Value::Bool(self.value_to_boolean(argument)?),
-            PrimitiveKind::Number if arguments.actual_arg_count == 0 => Value::Int(0),
-            PrimitiveKind::Number => {
-                let value = match self.native_to_number_constructor_value(realm, argument)? {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                Value::number(value)
-            }
-            PrimitiveKind::String if arguments.actual_arg_count == 0 => {
-                Value::String(JsString::from_static(""))
-            }
-            PrimitiveKind::String => {
-                let value = if matches!(new_target, Value::Undefined)
-                    && let Value::Symbol(symbol) = argument
-                {
-                    self.symbol_descriptive_string(symbol)?
-                } else {
-                    match self.native_to_js_string(realm, argument)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                };
-                Value::String(value)
-            }
-            PrimitiveKind::Symbol | PrimitiveKind::BigInt => {
-                return Err(RuntimeError::Invariant(
-                    "unimplemented primitive constructor reached native dispatch",
-                ));
-            }
-        };
-        if matches!(new_target, Value::Undefined) {
-            return Ok(Completion::Return(value));
-        }
-        let prototype =
-            match self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-                self.primitive_prototype_for_realm(fallback_realm, kind)
-            })? {
-                NativeConversion::Value(prototype) => prototype,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        Ok(Completion::Return(Value::Object(
-            self.new_primitive_object(&prototype, kind, value)?,
-        )))
+        constructor::finish(
+            self,
+            realm,
+            constructor::PrimitiveConstructorStep::start(
+                self,
+                realm,
+                kind,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn new_not_constructor_error(
@@ -146,32 +73,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "global numeric parser did not receive a generic call",
-            ));
-        };
-        let input = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "global numeric parser argv was not padded",
-        ))?;
-        let input = match self.native_to_js_string(realm, input)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = match kind {
-            NumberParseKind::ParseFloat => crate::engine::value::number_parse::parse_float(&input),
-            NumberParseKind::ParseInt => {
-                let radix = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                    "parseInt radix argv was not padded",
-                ))?;
-                let radix = match self.native_to_number(realm, radix)? {
-                    NativeConversion::Value(value) => crate::engine::value::number::to_int32(value),
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                crate::engine::value::number_parse::parse_int(&input, radix)
-            }
-        };
-        Ok(Completion::Return(Value::number(result)))
+        globals::finish(
+            self,
+            realm,
+            globals::GlobalStep::start(
+                self,
+                realm,
+                globals::GlobalKind::Parse(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_global_number_predicate(
@@ -181,44 +93,25 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "global numeric predicate did not receive a generic call",
-            ));
-        };
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "global numeric predicate argv was not padded",
-        ))?;
-        let number = match self.native_to_number(realm, argument)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = match kind {
-            GlobalNumberPredicateKind::IsNaN => number.is_nan(),
-            GlobalNumberPredicateKind::IsFinite => number.is_finite(),
-        };
-        Ok(Completion::Return(Value::Bool(result)))
+        globals::finish(
+            self,
+            realm,
+            globals::GlobalStep::start(
+                self,
+                realm,
+                globals::GlobalKind::Predicate(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
-    pub(crate) fn call_global_uri_codec(
+    fn finish_global_uri_codec(
         &self,
         realm: ContextId,
         kind: GlobalUriCodecKind,
-        invocation: NativeInvocation,
-        arguments: &NativeArguments,
+        input: JsString,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "global URI codec did not receive a generic call",
-            ));
-        };
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "global URI codec argv was not padded",
-        ))?;
-        let input = match self.native_to_js_string(realm, argument)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
         let result = match kind {
             GlobalUriCodecKind::DecodeUri => crate::engine::builtins::uri::decode(&input, false),
             GlobalUriCodecKind::DecodeUriComponent => {
@@ -240,6 +133,26 @@ impl Runtime {
                 error.message(),
             )?)),
         }
+    }
+
+    pub(crate) fn call_global_uri_codec(
+        &self,
+        realm: ContextId,
+        kind: GlobalUriCodecKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        globals::finish(
+            self,
+            realm,
+            globals::GlobalStep::start(
+                self,
+                realm,
+                globals::GlobalKind::Uri(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn primitive_this_value(
@@ -358,42 +271,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String character method did not receive a generic invocation",
-            ));
-        };
-        let string = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String character method argv was not padded",
-        ))?;
-        let mut index = match self.native_to_number(realm, argument)? {
-            NativeConversion::Value(value) => crate::engine::value::number::to_int32_sat(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let length = i32::try_from(string.len()).map_err(|_| {
-            RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
-        })?;
-        if selector == StringCharAtKind::At && index < 0 {
-            index += length;
-        }
-        if index < 0 || index >= length {
-            return Ok(Completion::Return(match selector {
-                StringCharAtKind::At => Value::Undefined,
-                StringCharAtKind::CharAt => Value::String(JsString::from_static("")),
-            }));
-        }
-        let index =
-            usize::try_from(index).expect("validated non-negative String index always fits usize");
-        let unit = string.code_unit_at(index).ok_or(RuntimeError::Invariant(
-            "validated String character index did not name a code unit",
-        ))?;
-        Ok(Completion::Return(Value::String(JsString::from_code_unit(
-            unit,
-        ))))
+        text::finish(
+            self,
+            realm,
+            text::ScalarTextStep::start(
+                self,
+                realm,
+                text::ScalarTextKind::CharAt(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_string_prototype_iterator(
@@ -401,18 +289,21 @@ impl Runtime {
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String.prototype iterator did not receive a generic invocation",
-            ));
+        let arguments = NativeArguments {
+            readable: Vec::new(),
+            actual_arg_count: 0,
         };
-        let string = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::Object(
-            self.new_string_iterator(realm, string)?,
-        )))
+        text::finish(
+            self,
+            realm,
+            text::ScalarTextStep::start(
+                self,
+                realm,
+                text::ScalarTextKind::Iterator,
+                &invocation,
+                &arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_string_iterator_next(
@@ -488,29 +379,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String charCodeAt did not receive a generic invocation",
-            ));
-        };
-        let string = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String charCodeAt argv was not padded",
-        ))?;
-        let index = match self.native_to_number(realm, argument)? {
-            NativeConversion::Value(value) => crate::engine::value::number::to_int32_sat(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let Some(unit) = usize::try_from(index)
-            .ok()
-            .and_then(|index| string.code_unit_at(index))
-        else {
-            return Ok(Completion::Return(Value::Float(f64::NAN)));
-        };
-        Ok(Completion::Return(Value::Int(i32::from(unit))))
+        text::finish(
+            self,
+            realm,
+            text::ScalarTextStep::start(
+                self,
+                realm,
+                text::ScalarTextKind::CharCodeAt,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_string_prototype_code_point_at(
@@ -519,31 +398,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String codePointAt did not receive a generic invocation",
-            ));
-        };
-        let string = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String codePointAt argv was not padded",
-        ))?;
-        let index = match self.native_to_number(realm, argument)? {
-            NativeConversion::Value(value) => crate::engine::value::number::to_int32_sat(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let Some(code_point) = usize::try_from(index)
-            .ok()
-            .and_then(|index| string.code_point_at(index))
-        else {
-            return Ok(Completion::Return(Value::Undefined));
-        };
-        Ok(Completion::Return(Value::Int(
-            i32::try_from(code_point).expect("a Unicode code point always fits i32"),
-        )))
+        text::finish(
+            self,
+            realm,
+            text::ScalarTextStep::start(
+                self,
+                realm,
+                text::ScalarTextKind::CodePointAt,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_string_prototype_concat(
@@ -552,33 +417,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String concat did not receive a generic invocation",
-            ));
-        };
-        let receiver = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if arguments.actual_arg_count == 0 {
-            return Ok(Completion::Return(Value::String(receiver)));
-        }
-
-        let mut result = receiver;
-        for argument in &arguments.readable[..arguments.actual_arg_count] {
-            let chunk = match argument {
-                // QuickJS `JS_ConcatString` accepts an existing rope without
-                // routing it back through `JS_ToString`/linearization.
-                Value::String(value) => value.clone(),
-                _ => match self.native_to_js_string(realm, argument)? {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                },
-            };
-            result = result.try_concat(&chunk).map_err(Error::from)?;
-        }
-        Ok(Completion::Return(Value::String(result)))
+        text::finish(
+            self,
+            realm,
+            text::ScalarTextStep::start(
+                self,
+                realm,
+                text::ScalarTextKind::Concat,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_string_prototype_well_formed(
@@ -587,63 +436,35 @@ impl Runtime {
         selector: StringWellFormedKind,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String well-formed method did not receive a generic invocation",
-            ));
+        let arguments = NativeArguments {
+            readable: Vec::new(),
+            actual_arg_count: 0,
         };
-        let string = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(match selector {
-            StringWellFormedKind::IsWellFormed => Value::Bool(string.is_well_formed()),
-            StringWellFormedKind::ToWellFormed => Value::String(string.to_well_formed()),
-        }))
+        text::finish(
+            self,
+            realm,
+            text::ScalarTextStep::start(
+                self,
+                realm,
+                text::ScalarTextKind::WellFormed(selector),
+                &invocation,
+                &arguments,
+            )?,
+        )
     }
 
-    pub(crate) fn call_primitive_prototype_to_string(
+    fn finish_branded_to_string(
         &self,
         realm: ContextId,
         kind: PrimitiveKind,
-        invocation: NativeInvocation,
-        arguments: &NativeArguments,
+        value: Value,
+        radix: u32,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "primitive toString did not receive a generic invocation",
-            ));
-        };
-        let value = match self.primitive_this_value(realm, kind, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
         match (kind, value) {
             (PrimitiveKind::Number, value @ (Value::Int(_) | Value::Float(_))) => {
                 let number = value.as_number().ok_or(RuntimeError::Invariant(
                     "Number brand extraction did not return a Number",
                 ))?;
-                let radix_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                    "Number.prototype.toString argv was not padded",
-                ))?;
-                let radix = if matches!(radix_argument, Value::Undefined) {
-                    10
-                } else {
-                    let radix = match self.native_to_number(realm, radix_argument)? {
-                        NativeConversion::Value(value) => {
-                            crate::engine::value::number::to_int32_sat(value)
-                        }
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    if !(2..=36).contains(&radix) {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Range,
-                            "radix must be between 2 and 36",
-                        )?));
-                    }
-                    u32::try_from(radix).expect("a Number radix between 2 and 36 always fits u32")
-                };
                 let formatted = crate::engine::value::number::to_string_radix(number, radix)
                     .map_err(|error| match error {
                         crate::engine::value::number::NumberFormatError::InvalidRadix => {
@@ -671,27 +492,6 @@ impl Runtime {
                 self.symbol_descriptive_string(&value)?,
             ))),
             (PrimitiveKind::BigInt, Value::BigInt(value)) => {
-                let radix_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                    "BigInt.prototype.toString argv was not padded",
-                ))?;
-                let radix = if matches!(radix_argument, Value::Undefined) {
-                    10
-                } else {
-                    let radix = match self.native_to_number(realm, radix_argument)? {
-                        NativeConversion::Value(value) => {
-                            crate::engine::value::number::to_int32_sat(value)
-                        }
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    if !(2..=36).contains(&radix) {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Range,
-                            "radix must be between 2 and 36",
-                        )?));
-                    }
-                    u32::try_from(radix).expect("a BigInt radix between 2 and 36 fits u32")
-                };
                 if value.exceeds_allocation_limit()
                     && (value.is_negative() || !radix.is_power_of_two())
                 {
@@ -712,6 +512,26 @@ impl Runtime {
                 "unimplemented primitive toString reached native dispatch",
             )),
         }
+    }
+
+    pub(crate) fn call_primitive_prototype_to_string(
+        &self,
+        realm: ContextId,
+        kind: PrimitiveKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        numeric::finish(
+            self,
+            realm,
+            numeric::NumericStep::start(
+                self,
+                realm,
+                numeric::NumericKind::ToString(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn finish_number_format(
@@ -747,70 +567,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Number prototype formatter did not receive a generic invocation",
-            ));
-        };
-        // QuickJS performs the receiver brand check before touching any
-        // argument, including user-code coercion on the digit/radix value.
-        let value = match self.primitive_this_value(realm, PrimitiveKind::Number, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let number = value.as_number().ok_or(RuntimeError::Invariant(
-            "Number formatter brand extraction did not return a Number",
-        ))?;
-
-        let result = match kind {
-            NumberFormatKind::LocaleString => {
-                crate::engine::value::number::to_string_radix(number, 10)
-            }
-            NumberFormatKind::Fixed => {
-                let digits = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                    "Number.prototype.toFixed argv was not padded",
-                ))?;
-                let digits = match self.native_to_number(realm, digits)? {
-                    NativeConversion::Value(value) => {
-                        crate::engine::value::number::to_int32_sat(value)
-                    }
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                crate::engine::value::number::to_fixed(number, digits)
-            }
-            NumberFormatKind::Exponential => {
-                let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                    "Number.prototype.toExponential argv was not padded",
-                ))?;
-                // The pinned C implementation runs ToInt32Sat even for
-                // undefined, then records undefined as the FREE-format case.
-                let converted = match self.native_to_number(realm, argument)? {
-                    NativeConversion::Value(value) => {
-                        crate::engine::value::number::to_int32_sat(value)
-                    }
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                let digits = (!matches!(argument, Value::Undefined)).then_some(converted);
-                crate::engine::value::number::to_exponential(number, digits)
-            }
-            NumberFormatKind::Precision => {
-                let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                    "Number.prototype.toPrecision argv was not padded",
-                ))?;
-                let precision = if matches!(argument, Value::Undefined) {
-                    None
-                } else {
-                    match self.native_to_number(realm, argument)? {
-                        NativeConversion::Value(value) => {
-                            Some(crate::engine::value::number::to_int32_sat(value))
-                        }
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                };
-                crate::engine::value::number::to_precision(number, precision)
-            }
-        };
-        self.finish_number_format(realm, result)
+        numeric::finish(
+            self,
+            realm,
+            numeric::NumericStep::start(
+                self,
+                realm,
+                numeric::NumericKind::Format(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_number_predicate(
@@ -847,37 +614,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "BigInt truncation method did not receive a generic call",
-            ));
-        };
-        let bits = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "BigInt truncation bits argument was not padded",
-        ))?;
-        let bits = match self.native_to_index(realm, bits)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "BigInt truncation value argument was not padded",
-        ))?;
-        let value = match self.native_to_bigint(realm, value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let value = match kind {
-            BigIntAsNKind::AsUintN => value.as_uint_n(bits),
-            BigIntAsNKind::AsIntN => value.as_int_n(bits),
-        };
-        match value {
-            Ok(value) => Ok(Completion::Return(Value::BigInt(value))),
-            Err(_) => Ok(Completion::Throw(self.new_native_error(
+        numeric::finish(
+            self,
+            realm,
+            numeric::NumericStep::start(
+                self,
                 realm,
-                NativeErrorKind::Range,
-                "BigInt is too large to allocate",
-            )?)),
-        }
+                numeric::NumericKind::BigIntAsN(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_symbol_registry(
@@ -896,13 +643,19 @@ impl Runtime {
             "Symbol registry argv was not padded",
         ))?;
         match kind {
-            SymbolRegistryKind::For => {
-                let key = match self.native_to_js_string(realm, argument)? {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                Ok(Completion::Return(Value::Symbol(self.symbol_for(&key)?)))
-            }
+            SymbolRegistryKind::For => globals::finish(
+                self,
+                realm,
+                globals::GlobalStep::start(
+                    self,
+                    realm,
+                    globals::GlobalKind::SymbolFor,
+                    &NativeInvocation::Call {
+                        this_value: Value::Undefined,
+                    },
+                    arguments,
+                )?,
+            ),
             SymbolRegistryKind::KeyFor => {
                 let Value::Symbol(symbol) = argument else {
                     return Ok(Completion::Throw(self.new_native_error(
@@ -967,7 +720,21 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        match arguments.readable.first() {
+        super::function::invoke::finish(
+            self,
+            realm,
+            self.prepare_active_frame_probe(realm, arguments)?,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepare_active_frame_probe(
+        &self,
+        _realm: ContextId,
+        arguments: &NativeArguments,
+    ) -> Result<super::function::invoke::InvokeStep, RuntimeError> {
+        use super::function::invoke::InvokeStep;
+        let completion = match arguments.readable.first() {
             Some(Value::Object(value))
                 if matches!(arguments.readable.get(1), Some(Value::Bool(false))) =>
             {
@@ -976,12 +743,13 @@ impl Runtime {
             Some(Value::Object(callback)) => {
                 let callback = self.callable_from_value(Value::Object(callback.clone()))?;
                 let active_function = self.active_function()?;
-                self.call_internal(
-                    realm,
-                    &callback,
-                    Value::Undefined,
-                    &[Value::Object(active_function)],
-                )
+                return Ok(InvokeStep::Call(Box::new(
+                    super::function::invoke::InvokeCall {
+                        target: crate::engine::vm::call::DirectCallTarget::Callable(callback),
+                        receiver: Value::Undefined,
+                        arguments: vec![Value::Object(active_function)],
+                    },
+                )));
             }
             Some(Value::Bool(false)) => Ok(Completion::Throw(Value::String(
                 JsString::from_static("active frame probe throw"),
@@ -993,7 +761,7 @@ impl Runtime {
                 "active frame probe received an unsupported command",
             )),
             None => {
-                let snapshot = self.0.state.borrow().active_frames.clone();
+                let snapshot = self.0.state.borrow().active_frames.to_vec();
                 self.0
                     .state
                     .borrow_mut()
@@ -1001,6 +769,7 @@ impl Runtime {
                     .push(snapshot);
                 Ok(Completion::Return(Value::Undefined))
             }
-        }
+        }?;
+        Ok(InvokeStep::Complete(completion))
     }
 }

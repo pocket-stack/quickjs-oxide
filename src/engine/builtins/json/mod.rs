@@ -109,3 +109,12 @@ impl Runtime {
         }
     }
 }
+
+#[cfg(feature = "stack-vm")]
+pub(crate) use raw::RawResume as JsonRawResume;
+#[cfg(feature = "stack-vm")]
+pub(crate) use reviver::{ParseResume as JsonParseResume, ParseStep as JsonParseStep};
+#[cfg(feature = "stack-vm")]
+pub(crate) use stringify::{
+    StringifyResume as JsonStringifyResume, StringifyStep as JsonStringifyStep,
+};

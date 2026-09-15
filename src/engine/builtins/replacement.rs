@@ -2,7 +2,13 @@
 
 use crate::engine::value::ReplacementStringBuffer;
 
-use super::*;
+use crate::engine::{
+    api::{error::NativeErrorKind, runtime::Runtime, runtime_error::RuntimeError},
+    heap::ContextId,
+    object::{ObjectRef, PropertyKey},
+    value::{JsString, JsStringError, Value, conversion::NativeConversion},
+    vm::Completion,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubstitutionStatus {
@@ -22,6 +28,7 @@ pub(crate) enum SubstitutionCaptures<'a> {
     MatchRanges(&'a [Option<std::ops::Range<usize>>]),
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct SubstitutionInput<'a> {
     pub(crate) matched: SubstitutionMatch<'a>,
     pub(crate) input: &'a JsString,
@@ -40,12 +47,12 @@ impl Runtime {
     /// result objects or temporary capture strings. Named capture properties
     /// remain lazy: every `$<name>` occurrence performs its own Get and
     /// ToString in the defining realm.
-    pub(crate) fn append_get_substitution(
+    pub(crate) fn advance_get_substitution(
         &self,
-        realm: ContextId,
         buffer: &mut ReplacementStringBuffer,
         substitution: SubstitutionInput<'_>,
-    ) -> Result<Result<SubstitutionStatus, Value>, RuntimeError> {
+        cursor: &mut usize,
+    ) -> Result<SubstitutionAction, RuntimeError> {
         let SubstitutionInput {
             matched,
             input,
@@ -63,21 +70,20 @@ impl Runtime {
             SubstitutionMatch::Converted(value) => value.len(),
             SubstitutionMatch::InputRange { start, end } => end - start,
         };
-        let mut cursor = 0_usize;
 
-        while cursor < replacement.len() {
-            let Some(dollar) = (cursor..replacement.len())
+        while *cursor < replacement.len() {
+            let Some(dollar) = (*cursor..replacement.len())
                 .find(|index| replacement.code_unit_at(*index) == Some(u16::from(b'$')))
             else {
-                buffer.append_range(&replacement, cursor, replacement.len());
+                buffer.append_range(&replacement, *cursor, replacement.len());
                 break;
             };
             if dollar + 1 >= replacement.len() {
-                buffer.append_range(&replacement, cursor, replacement.len());
+                buffer.append_range(&replacement, *cursor, replacement.len());
                 break;
             }
 
-            buffer.append_range(&replacement, cursor, dollar);
+            buffer.append_range(&replacement, *cursor, dollar);
             let token_start = dollar;
             let mut next = dollar + 2;
             let token = replacement
@@ -96,7 +102,9 @@ impl Runtime {
                         }
                     }
                     if buffer.error().is_some() {
-                        return Ok(Ok(SubstitutionStatus::BufferFailed));
+                        return Ok(SubstitutionAction::Complete(
+                            SubstitutionStatus::BufferFailed,
+                        ));
                     }
                 }
                 unit if unit == u16::from(b'`') => {
@@ -130,7 +138,9 @@ impl Runtime {
                                     Value::String(value) => {
                                         buffer.append_js_string(value);
                                         if buffer.error().is_some() {
-                                            return Ok(Ok(SubstitutionStatus::BufferFailed));
+                                            return Ok(SubstitutionAction::Complete(
+                                                SubstitutionStatus::BufferFailed,
+                                            ));
                                         }
                                     }
                                     _ => {
@@ -144,7 +154,9 @@ impl Runtime {
                                 if let Some(range) = &ranges[capture_index] {
                                     buffer.append_range(input, range.start, range.end);
                                     if buffer.error().is_some() {
-                                        return Ok(Ok(SubstitutionStatus::BufferFailed));
+                                        return Ok(SubstitutionAction::Complete(
+                                            SubstitutionStatus::BufferFailed,
+                                        ));
                                     }
                                 }
                             }
@@ -158,45 +170,63 @@ impl Runtime {
                         .find(|index| replacement.code_unit_at(*index) == Some(u16::from(b'>')))
                     else {
                         buffer.append_range(&replacement, token_start, next);
-                        cursor = next;
+                        *cursor = next;
                         continue;
                     };
                     let name = replacement.sub_string(next, close);
                     let key = self.intern_property_key_js_string(&name)?;
-                    let capture = match self.get_property_in_realm(
-                        realm,
-                        named_captures.expect("named captures disappeared"),
-                        &key,
-                    )? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => return Ok(Err(value)),
-                    };
-                    if !matches!(capture, Value::Undefined) {
-                        // QuickJS's concat-value helper avoids a second
-                        // exception once this StringBuffer has already failed,
-                        // but the property Get above remains observable.
-                        if buffer.error().is_some() {
-                            return Ok(Ok(SubstitutionStatus::BufferFailed));
-                        }
-                        let capture = match self.native_to_js_string(realm, &capture)? {
-                            NativeConversion::Value(value) => value,
-                            NativeConversion::Throw(value) => return Ok(Err(value)),
-                        };
-                        buffer.append_js_string(&capture);
-                        if buffer.error().is_some() {
-                            return Ok(Ok(SubstitutionStatus::BufferFailed));
-                        }
-                    }
-                    next = close + 1;
+                    *cursor = close + 1;
+                    return Ok(SubstitutionAction::Named(key));
                 }
                 _ => {
                     buffer.append_range(&replacement, token_start, next);
                 }
             }
-            cursor = next;
+            *cursor = next;
         }
 
-        Ok(Ok(SubstitutionStatus::Complete))
+        Ok(SubstitutionAction::Complete(SubstitutionStatus::Complete))
+    }
+
+    pub(crate) fn append_get_substitution(
+        &self,
+        realm: ContextId,
+        buffer: &mut ReplacementStringBuffer,
+        substitution: SubstitutionInput<'_>,
+    ) -> Result<Result<SubstitutionStatus, Value>, RuntimeError> {
+        let mut cursor = 0;
+        loop {
+            let key = match self.advance_get_substitution(buffer, substitution, &mut cursor)? {
+                SubstitutionAction::Complete(status) => return Ok(Ok(status)),
+                SubstitutionAction::Named(key) => key,
+            };
+            let capture = match self.get_property_in_realm(
+                realm,
+                substitution
+                    .named_captures
+                    .expect("named captures disappeared"),
+                &key,
+            )? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Err(value)),
+            };
+            match named_substitution_capture(buffer, capture) {
+                NamedSubstitutionCapture::Skip => continue,
+                NamedSubstitutionCapture::Failed => {
+                    return Ok(Ok(SubstitutionStatus::BufferFailed));
+                }
+                NamedSubstitutionCapture::Convert(value) => {
+                    let capture = match self.native_to_js_string(realm, &value)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => return Ok(Err(value)),
+                    };
+                    buffer.append_js_string(&capture);
+                    if buffer.error().is_some() {
+                        return Ok(Ok(SubstitutionStatus::BufferFailed));
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn finish_replacement_buffer(
@@ -218,5 +248,28 @@ impl Runtime {
                 )?))
             }
         }
+    }
+}
+
+/// The borrowed pure scanner stops before every observable named lookup.
+pub(crate) enum SubstitutionAction {
+    Complete(SubstitutionStatus),
+    Named(PropertyKey),
+}
+pub(crate) enum NamedSubstitutionCapture {
+    Skip,
+    Failed,
+    Convert(Value),
+}
+pub(crate) fn named_substitution_capture(
+    buffer: &ReplacementStringBuffer,
+    capture: Value,
+) -> NamedSubstitutionCapture {
+    if matches!(capture, Value::Undefined) {
+        NamedSubstitutionCapture::Skip
+    } else if buffer.error().is_some() {
+        NamedSubstitutionCapture::Failed
+    } else {
+        NamedSubstitutionCapture::Convert(capture)
     }
 }

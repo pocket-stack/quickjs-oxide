@@ -53,6 +53,7 @@ impl Runtime {
                 .expect("fixed well-known symbol set fits the atom table");
             well_known_symbols.insert(symbol, atom);
         }
+        let active_frame_depth = Rc::new(Cell::new(0));
         Self(Rc::new(RuntimeInner {
             state: RefCell::new(RuntimeState {
                 atoms,
@@ -70,7 +71,9 @@ impl Runtime {
                 shape_cache: HashMap::new(),
                 shape_fingerprints: HashMap::new(),
                 well_known_symbols,
-                active_frames: Vec::new(),
+                active_frames: crate::engine::vm::frames::ActiveFrames::with_depth(
+                    active_frame_depth.clone(),
+                ),
                 active_collection_records: Vec::new(),
                 next_active_frame_token: 1,
                 next_module_async_evaluation_order: 0,
@@ -79,6 +82,7 @@ impl Runtime {
                 #[cfg(test)]
                 iterator_result_allocations: 0,
             }),
+            active_frame_depth,
             deferred_references: Default::default(),
             host_services,
             can_block: Cell::new(false),

@@ -8,7 +8,7 @@ use crate::engine::code::function::metadata::{
     ClosureVariable, EvalEnvironment, FunctionMetadata, VariableDefinition,
 };
 use crate::engine::code::rooted::FunctionBytecodeRef;
-use crate::engine::heap::{BytecodeConstant, ContextId};
+use crate::engine::heap::{BytecodeConstant, ContextId, FunctionBytecodeId};
 use std::rc::Rc;
 
 /// A rooted, immutable eval descriptor selected from its publisher's array.
@@ -38,9 +38,28 @@ impl std::ops::Deref for PublishedEvalEnvironment {
     }
 }
 
+/// Heap-resident certificate contains only immutable publication facts, never
+/// Runtime or an external root. The function payload owns the bytecode edge.
+#[derive(Debug, Clone)]
+pub(crate) struct OrdinaryAuthentication {
+    pub(crate) publish_generation: u64,
+    pub(crate) closure_count: usize,
+    pub(crate) data: Rc<PublishedFunctionData>,
+}
+
+impl PartialEq for OrdinaryAuthentication {
+    fn eq(&self, other: &Self) -> bool {
+        self.publish_generation == other.publish_generation
+            && self.closure_count == other.closure_count
+            && Rc::ptr_eq(&self.data, &other.data)
+    }
+}
+
 pub(crate) struct PublishedFunctionSnapshot {
-    root: Option<FunctionBytecodeRef>,
-    data: PublishedFunctionData,
+    root: std::cell::OnceCell<FunctionBytecodeRef>,
+    bytecode: Option<FunctionBytecodeId>,
+    runtime_identity: usize,
+    data: Rc<PublishedFunctionData>,
 }
 
 impl std::ops::Deref for PublishedFunctionSnapshot {
@@ -51,6 +70,16 @@ impl std::ops::Deref for PublishedFunctionSnapshot {
 }
 
 impl PublishedFunctionSnapshot {
+    /// Borrow every static binding classification from this rooted owner.
+    pub(crate) fn frame_layout(&self) -> crate::engine::code::function::layout::FrameLayout<'_> {
+        crate::engine::code::function::layout::FrameLayout::new(
+            &self.metadata,
+            &self.argument_definitions,
+            &self.local_definitions,
+            &self.closure_variables,
+        )
+    }
+
     /// One checked projection for all constant consumers. The opcode still
     /// chooses the kind-specific operation; this view owns no extra roots.
     #[inline]
@@ -64,21 +93,80 @@ impl PublishedFunctionSnapshot {
         let index = usize::from(index);
         self.eval_environments.get(index)?;
         Some(PublishedEvalEnvironment {
-            owner: self.root.as_ref()?.clone(),
+            owner: self.root.get()?.clone(),
             environments: self.eval_environments.clone(),
             index,
         })
     }
 
     pub(crate) fn root(&self) -> Option<&FunctionBytecodeRef> {
-        self.root.as_ref()
+        self.root.get()
+    }
+
+    /// Domain token is non-owning; a rooted snapshot or its frame's callee
+    /// owns Runtime for every access. It avoids retaining Runtime in caches.
+    pub(crate) fn belongs_to(&self, runtime: &Runtime) -> bool {
+        self.runtime_identity == Rc::as_ptr(&runtime.0) as usize
+    }
+
+    pub(crate) fn bytecode_id(&self) -> Option<FunctionBytecodeId> {
+        self.bytecode
+    }
+
+    /// Cold observation boundary. Ordinary frames are already kept alive by
+    /// their callee owner and therefore do not acquire this independent root
+    /// until eval, suspension, or host materialization actually needs one.
+    pub(crate) fn ensure_root(&self, runtime: &Runtime) -> Result<(), RuntimeError> {
+        if self.bytecode.is_some() && !self.belongs_to(runtime) {
+            return Err(RuntimeError::WrongRuntime("function bytecode"));
+        }
+        if self.root.get().is_none() {
+            if let Some(id) = self.bytecode {
+                let root = FunctionBytecodeRef::from_borrowed_handle(runtime.clone(), id)?;
+                let _ = self.root.set(root);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authentication(&self, closure_count: usize) -> OrdinaryAuthentication {
+        OrdinaryAuthentication {
+            publish_generation: self.bytecode.unwrap().publish_generation(),
+            closure_count,
+            data: self.data.clone(),
+        }
+    }
+
+    /// Caller holds the owning function and has checked the certificate's
+    /// generation and closure fact in the same immutable heap borrow.
+    pub(crate) fn from_authentication(
+        runtime: &Runtime,
+        id: FunctionBytecodeId,
+        facts: OrdinaryAuthentication,
+    ) -> Self {
+        Self {
+            root: Default::default(),
+            bytecode: Some(id),
+            runtime_identity: Rc::as_ptr(&runtime.0) as usize,
+            data: facts.data,
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn empty_for_test(realm: ContextId) -> Self {
         Self {
-            root: None,
-            data: PublishedFunctionData {
+            root: Default::default(),
+            bytecode: None,
+            runtime_identity: 0,
+            data: Rc::new(PublishedFunctionData {
+                has_captured_locals: true,
+                observes_arguments: true,
+                #[cfg(feature = "stack-vm")]
+                fusion: Default::default(),
+                #[cfg(feature = "stack-vm")]
+                property_read_ic: crate::engine::object::property_ic::PropertyReadCacheTable::new(
+                    &[],
+                ),
                 code: Rc::from([]),
                 constants: Rc::from([]),
                 property_key_atoms: None,
@@ -89,7 +177,7 @@ impl PublishedFunctionSnapshot {
                 arg_eval_variable_object_local: None,
                 metadata: FunctionMetadata::default(),
                 realm,
-            },
+            }),
         }
     }
 }
@@ -100,14 +188,21 @@ impl PublishedFunctionSnapshot {
 impl std::ops::DerefMut for PublishedFunctionSnapshot {
     fn deref_mut(&mut self) -> &mut Self::Target {
         assert!(
-            self.root.is_none(),
+            self.bytecode.is_none(),
             "published snapshots remain immutable in tests"
         );
-        &mut self.data
+        Rc::get_mut(&mut self.data).expect("synthetic executable remains uniquely owned")
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct PublishedFunctionData {
+    pub(crate) has_captured_locals: bool,
+    pub(crate) observes_arguments: bool,
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fusion: crate::engine::code::fusion::FusionPlan,
+    #[cfg(feature = "stack-vm")]
+    pub(crate) property_read_ic: crate::engine::object::property_ic::PropertyReadCacheTable,
     pub(crate) code: Rc<[crate::engine::code::bytecode::Instruction]>,
     pub(crate) constants: Rc<[BytecodeConstant]>,
     pub(crate) property_key_atoms: Option<Rc<[Atom]>>,
@@ -127,19 +222,51 @@ impl Runtime {
         &self,
         function: &FunctionBytecodeRef,
     ) -> Result<PublishedFunctionSnapshot, RuntimeError> {
+        if !function.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("function bytecode"));
+        }
+        self.snapshot_function_bytecode_owned(function.clone())
+    }
+
+    pub(crate) fn snapshot_function_bytecode_owned(
+        &self,
+        function: FunctionBytecodeRef,
+    ) -> Result<PublishedFunctionSnapshot, RuntimeError> {
         let _operation = self.operation();
         if !function.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("function bytecode"));
         }
-        let root = function.clone();
         let state = self.0.state.borrow();
         let bytecode = state.heap.function_bytecode(function.bytecode_id())?;
         // The realm is a strong edge of the bytecode node. Validating it here
         // makes a corrupt realm edge fail before entering a VM frame.
         state.heap.context(bytecode.realm)?;
-        Ok(PublishedFunctionSnapshot {
-            root: Some(root),
-            data: PublishedFunctionData {
+        let data = bytecode.executable.get_or_init(|| {
+            let data = Rc::new(PublishedFunctionData {
+                has_captured_locals: !bytecode.local_definitions.is_empty()
+                    && bytecode.code.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::engine::code::bytecode::Instruction::FClosure(_)
+                                | crate::engine::code::bytecode::Instruction::Eval { .. }
+                                | crate::engine::code::bytecode::Instruction::ApplyEval { .. }
+                        )
+                    }),
+                observes_arguments: bytecode.code.iter().any(|op| {
+                    matches!(
+                        op,
+                        crate::engine::code::bytecode::Instruction::Arguments(_)
+                            | crate::engine::code::bytecode::Instruction::Rest(_)
+                            | crate::engine::code::bytecode::Instruction::Eval { .. }
+                            | crate::engine::code::bytecode::Instruction::ApplyEval { .. }
+                    )
+                }),
+                #[cfg(feature = "stack-vm")]
+                fusion: bytecode.fusion.clone(),
+                #[cfg(feature = "stack-vm")]
+                property_read_ic: crate::engine::object::property_ic::PropertyReadCacheTable::new(
+                    &bytecode.code,
+                ),
                 code: bytecode.code.clone(),
                 constants: bytecode.constants.clone(),
                 property_key_atoms: bytecode.property_key_atoms.clone(),
@@ -153,7 +280,29 @@ impl Runtime {
                     .and_then(|layout| layout.arg_eval_variable_object_local),
                 metadata: bytecode.metadata,
                 realm: bytecode.realm,
-            },
+            });
+            #[cfg(feature = "profiling")]
+            crate::engine::api::profiling::record_call_buffer_capacity(
+                "executable.published_data_rc",
+                0,
+                1,
+                size_of::<PublishedFunctionData>(),
+            );
+            data
+        });
+        let data = data.clone();
+        #[cfg(feature = "profiling")]
+        crate::engine::api::profiling::record_call_buffer_share(
+            "executable.published_data_rc",
+            1,
+            size_of::<PublishedFunctionData>(),
+        );
+
+        Ok(PublishedFunctionSnapshot {
+            runtime_identity: Rc::as_ptr(&self.0) as usize,
+            bytecode: Some(function.bytecode_id()),
+            root: std::cell::OnceCell::from(function),
+            data,
         })
     }
 }
@@ -191,6 +340,11 @@ mod tests {
             Err(RuntimeError::WrongRuntime("function bytecode"))
         ));
         let snapshot = runtime.snapshot_function_bytecode(&function).unwrap();
+        let second = runtime.snapshot_function_bytecode(&function).unwrap();
+        assert!(Rc::ptr_eq(&snapshot.data, &second.data));
+        // Two frame headers share one projection but each keeps the bytecode
+        // root alive independently. The cache itself owns no rooting handle.
+        drop(second);
         let id = function.bytecode_id();
         drop(function);
         assert_eq!(snapshot.root().unwrap().bytecode_id(), id);

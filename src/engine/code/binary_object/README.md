@@ -1,22 +1,17 @@
-# 私有字节码解码
+# QuickJS binary-object 格式
 
-校验受信任的 QuickJS wire 数据，产生脱离运行时的解码结果。
+binary_object 负责固定 QuickJS 版本的二进制对象读取、格式检查和已支持
+代码子集的准入。它处理字节流、Atom 表、对象图、函数结构和指令映像，
+产出脱离运行时的草稿。
 
-只能由 code/binary_object_publish 消费；中间表示不穿过公开 API，不在解码阶段发布堆对象。
+读取器不创建堆对象，也不把外部字节直接作为可执行代码。独立发布桥
+翻译已准入的草稿，再进入引擎验证与事务发布。完整读取格式与支持执行
+其中的所有行为是不同的能力，未支持的代码形态需要明确拒绝。
 
-## 文件与子目录
+本模块保持私有。中间表示只供 code 内的发布桥使用，公开 API 只提供
+明确限定的 trusted-bytecode 入口，不承诺通用的不可信字节码加载器。
+版本目录、操作码和 Atom 数据共同限定格式解释。
 
-- [atoms.rs](atoms.rs)：Checked atom-index translation for QuickJS 2026-06-04 binary objects.。
-- [bytecode_image/](bytecode_image/README.md)：子模块职责与文件说明。
-- [code.rs](code.rs)：Bounded, heap-independent scanner for QuickJS 2026-06-04 function code.。
-- [function_envelope/](function_envelope/README.md)：子模块职责与文件说明。
-- [function_translate/](function_translate/README.md)：子模块职责与文件说明。
-- [graph/](graph/README.md)：子模块职责与文件说明。
-- [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
-- [ordinary_leaf/](ordinary_leaf/README.md)：子模块职责与文件说明。
-- [ordinary_leaf.rs](ordinary_leaf.rs)：Archive-side admission and lowering for an ordinary synchronous leaf.。
-- [pinned_atoms.rs](pinned_atoms.rs)：Release-pinned QuickJS atom manifest used by the binary-object format.。
-- [pinned_opcodes.rs](pinned_opcodes.rs)：Release-pinned QuickJS final-bytecode opcode catalog.。
-- [read_cursor.rs](read_cursor.rs)：Shared checked-read surface for complete BC5 inputs.。
-- [scalar_script.rs](scalar_script.rs)：Narrow semantic admission for trusted scalar-script BC5 objects.。
-- [wire.rs](wire.rs)：Pure wire primitives for QuickJS 2026-06-04 binary objects.。
+整体发布责任见[code 介绍](../README.md)；
+[边界检查工具](../../../../scripts/checks/binary_object/README.md)
+说明如何验证真实发布路径和畸形输入的拒绝边界。

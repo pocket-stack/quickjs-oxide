@@ -35,10 +35,17 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let source = match self.native_to_js_string(realm, &arguments.readable[0])? {
-            NativeConversion::Value(source) => source,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        RawResume { realm }.string(
+            self,
+            self.native_to_js_string(realm, &arguments.readable[0])?,
+        )
+    }
+
+    fn raw_json_from_string(
+        &self,
+        realm: ContextId,
+        source: crate::engine::value::JsString,
+    ) -> Result<Completion, RuntimeError> {
         let valid_boundary = source
             .code_unit_at(0)
             .zip(source.code_unit_at(source.len().saturating_sub(1)))
@@ -122,4 +129,23 @@ impl Runtime {
 
 fn is_valid_raw_json_boundary(unit: u16) -> bool {
     matches!(unit, 0x61..=0x7a | 0x30..=0x39 | 0x2d | 0x22)
+}
+
+pub(crate) struct RawResume {
+    realm: ContextId,
+}
+impl RawResume {
+    pub(crate) fn new(realm: ContextId) -> Self {
+        Self { realm }
+    }
+    pub(crate) fn string(
+        self,
+        runtime: &Runtime,
+        reply: NativeConversion<crate::engine::value::JsString>,
+    ) -> Result<Completion, RuntimeError> {
+        match reply {
+            NativeConversion::Value(source) => runtime.raw_json_from_string(self.realm, source),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+        }
+    }
 }

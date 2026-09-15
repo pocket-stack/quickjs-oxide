@@ -5,24 +5,21 @@ import re
 from copy import deepcopy
 
 from ..evidence import publication as evidence
+from ..layout import validate_link
 
 
 def check(ctx):
+    layout_path = "src/engine/code/function/layout.rs"
+    validate_link(ctx, layout_path)
     ctx.require_normalized_code_sha256(
-        "published-executable-owner",
-        "Execution snapshots must pair immutable metadata with their owning Runtime root",
-        ctx.rust_code_only(ctx.read_source("src/engine/code/executable.rs")),
-        "d1a410c0ca1911d654a48ba91c15a4130e179e8823fe41024b02a5e5078bea07",
+        "published-frame-layout",
+        "frame layout must borrow the authenticated classifications and preserve actual argument and operand capacities",
+        ctx.rust_code_only(ctx.read_source(layout_path)),
+        "d4a55e91e2b1a47c5c52cb8a9cfe88a3654aa2f99f1a1c8cc1bbce47be351ac9",
     )
-    # The owning wrapper is the only path from a draft to verified publication.
-    # Authenticate constructors too: checking a consumer call alone would allow
-    # the wrapper to stop invoking its role-specific verifier.
-    ctx.require_normalized_code_sha256(
-        "published-function-verification",
-        "VerifiedFunction must own its exact draft and authenticate each publication role",
-        ctx.rust_code_only(ctx.read_source("src/engine/code/bytecode_publish/verified.rs")),
-        "c1058806ecf500e426b76862985341a2e1e50d0d9a1127b4724e64fd3946197c",
-    )
+    from .publication_contracts import check_executable, check_verified
+    check_executable(ctx)
+    check_verified(ctx)
     if ctx.consumer_exists:
         consumer_production_code = ctx.consumer_code.split("#[cfg(test)]", 1)[0]
         consumer_top_level_item_pattern = re.compile(
@@ -716,7 +713,7 @@ def check(ctx):
                     + ctx.location(ctx.consumer_relative, ctx.consumer_source, ctx.match.start()),
                 )
 
-    ctx.bytecode_publish_relative = "src/engine/code/bytecode_publish.rs"
+    ctx.bytecode_publish_relative = "src/engine/code/verify/mod.rs"
 
     bytecode_publish_source = ctx.read_source(ctx.bytecode_publish_relative)
 
@@ -758,6 +755,20 @@ def check(ctx):
             "verify_unlinked_ordinary_leaf must enter the generic verifier through only the distinct TrustedOrdinaryLeaf role",
         )
 
+    # Authenticate the executed entry, including its unconditional role check.
+    tree_entry, ctx._, ctx._ = ctx.unique_braced_item(
+        bytecode_publish_code,
+        re.compile(r"(?m)^fn verify_unlinked_tree_with_root\b[^{};]*\{"),
+        "ordinary-leaf-verifier-dispatch",
+        "publication tree verifier",
+    )
+    ctx.require_normalized_code_sha256(
+        "ordinary-leaf-verifier-dispatch",
+        "the tree walk must authenticate each function role before binding checks",
+        tree_entry.split("let expected_eval_bindings =", 1)[0],
+        "d0f761f691ff8e10804706fa7c16a6299ead8d9d6ae944272bfe3c10d258f992",
+    )
+
     ordinary_verifier_arm_pattern = re.compile(
         r"RootPublication[ \t\n]*::[ \t\n]*TrustedOrdinaryLeaf"
         r"[ \t\n]*=>[ \t\n]*\{"
@@ -776,13 +787,11 @@ def check(ctx):
 
     expected_ordinary_closure_arm = 'RootPublication::TrustedOrdinaryLeaf => { return Err(RuntimeError::Engine(Error::internal("trusted ordinary leaf retained a closure descriptor", ))); }'
 
-    if (
-        len(ordinary_verifier_arms) != 2
-        or ctx.normalized_code_sha256(ordinary_verifier_arms[0])
-            != "78509ea6396da4c20a0ee2b34304ac0224552e20e3b89e4346ab8173810c8c7e"
-        or " ".join(ordinary_verifier_arms[1].split())
-        != " ".join(ctx.rust_code_only(expected_ordinary_closure_arm).split())
-    ):
+    # Both exact arms remain required independently of physical module order.
+    if sorted(ctx.normalized_code_sha256(arm) for arm in ordinary_verifier_arms) != sorted([
+        "78509ea6396da4c20a0ee2b34304ac0224552e20e3b89e4346ab8173810c8c7e",
+        ctx.normalized_code_sha256(ctx.rust_code_only(expected_ordinary_closure_arm)),
+    ]):
         ctx.fail(
             "ordinary-leaf-verifier-role",
             "the dedicated verifier must retain its exact fail-closed metadata/debug/parameter/local/primitive-only checks and closure rejection; "

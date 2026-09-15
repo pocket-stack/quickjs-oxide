@@ -17,3 +17,6 @@ wasm-bindgen = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[features]
+stack-vm = ["quickjs-oxide/stack-vm", "quickjs-oxide-web-host/stack-vm"]

@@ -11,7 +11,6 @@ use crate::engine::code::function::metadata::FunctionKind;
 use crate::engine::code::rooted::FunctionBytecodeRef;
 use crate::engine::heap::ContextId;
 use crate::engine::vm::Completion;
-use crate::engine::vm::frames::ActiveFrameKind;
 
 // QuickJS's optimized C runtime uses a one-MiB default stack budget. Rust
 // debug frames are materially larger and vary across supported Rust/LLVM
@@ -104,7 +103,7 @@ impl Runtime {
     /// JavaScript frame as equally expensive. Recursive execution is proven on
     /// a two-MiB host thread stack, including enough margin to materialize and
     /// catch the overflow error.
-    fn host_stack_would_overflow(&self) -> bool {
+    pub(super) fn host_stack_would_overflow(&self) -> bool {
         let current = current_host_stack_address();
         let active_frames = !self.0.state.borrow().active_frames.is_empty();
         let active_chain = active_frames
@@ -187,90 +186,7 @@ impl Runtime {
         // deterministic call-entry ceiling on recursive native/callback paths.
         // Preserve a catchable JavaScript stack-overflow completion without
         // risking the host stack.
-        let native_stack_weight = |target| match target {
-            // Ordinary Function.prototype.call invocations are represented by
-            // logical ActiveFrameGuards but tail-forwarded in one Rust frame.
-            // Keep their diagnostic frames without double-charging the target
-            // family's proven stack budget.
-            NativeFunctionId::FunctionPrototypeCall => 0,
-            // Array.prototype.toString dynamically enters either Array.join or
-            // TypedArray.join, and user coercions can alternate both kernels.
-            // They therefore share one physical stringification budget.
-            NativeFunctionId::ArrayPrototypeJoin(_)
-            | NativeFunctionId::ArrayPrototypeToString
-            | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 1_usize,
-            // QuickJS's JS_CFUNC_iterator_next path resumes heap-owned
-            // generator state and checks the actual C stack both on native
-            // entry and on generator resume. The default weight of eight
-            // rejects measured yield* chains before our address-based guard.
-            // Keep that guard authoritative while leaving one logical unit
-            // per visible native frame for mixed recursion.
-            NativeFunctionId::GeneratorPrototypeResume(_) => 1,
-            NativeFunctionId::ArrayPrototypeSort
-            | NativeFunctionId::ArrayPrototypeToSorted
-            | NativeFunctionId::TypedArray(
-                TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
-            ) => 4,
-            NativeFunctionId::ArrayPrototypeSlice(_)
-            | NativeFunctionId::ArrayPrototypeToSpliced => 16,
-            NativeFunctionId::ArrayPrototypeFlatten(_) => 9,
-            NativeFunctionId::ObjectGroupBy
-            | NativeFunctionId::ObjectKeys(_)
-            | NativeFunctionId::ObjectGetOwnPropertyDescriptor
-            | NativeFunctionId::ObjectHasOwn
-            | NativeFunctionId::ObjectAssign
-            | NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
-            | NativeFunctionId::StringStatic(_) => 8,
-            // A key-coercion reentry retains the iterator, entry, result and
-            // conversion stacks at once, making this family comparable to the
-            // heaviest slice/splice native paths on a 2 MiB libtest thread.
-            NativeFunctionId::ObjectFromEntries => 16,
-            // Compile can re-enter through pattern/flags ToString. Its frames
-            // are smaller than the RegExp Symbol protocol loops, but eight
-            // nested calls are the proven-safe 2 MiB boundary.
-            NativeFunctionId::RegExp(RegExpNativeKind::Compile) => 8,
-            // The replace protocols alternate through user hooks, exec and
-            // functional replacers. Nine nested protocol entries are required
-            // by the pinned finite-recursion oracle; charge them like compile
-            // while rejecting the tenth before the host stack is endangered.
-            NativeFunctionId::StringPrototypeReplace(_)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => 8,
-            // String receiver/argument conversion and RegExp protocol
-            // callbacks retain native and property-call stacks while
-            // recursively entering these methods.
-            NativeFunctionId::StringPrototypeIncludes(_)
-            | NativeFunctionId::StringPrototypeMatch
-            | NativeFunctionId::StringPrototypeMatchAll
-            | NativeFunctionId::StringPrototypeSearch
-            | NativeFunctionId::StringPrototypeSplit
-            | NativeFunctionId::StringPrototypeSubrange(_)
-            | NativeFunctionId::StringPrototypeRepeat
-            | NativeFunctionId::StringPrototypePad(_)
-            | NativeFunctionId::StringPrototypeTrim(_)
-            | NativeFunctionId::StringPrototypeCase(_)
-            | NativeFunctionId::StringPrototypeNormalize
-            | NativeFunctionId::StringPrototypeLocaleCompare
-            | NativeFunctionId::StringPrototypeCreateHtml(_)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-            | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Split)
-            | NativeFunctionId::RegExpStringIteratorNext => 16,
-            _ => 8,
-        };
-        let active_native_cost = self
-            .0
-            .state
-            .borrow()
-            .active_frames
-            .iter()
-            .filter_map(|frame| {
-                let ActiveFrameKind::Native { target, .. } = frame.kind else {
-                    return None;
-                };
-                Some(native_stack_weight(target))
-            })
-            .sum::<usize>();
+        let active_native_cost = self.0.state.borrow().active_frames.native_cost();
         // A family-only ceiling can be bypassed by alternating different
         // callback-capable builtins. The weighted budget preserves the deeper
         // proven-safe join/sort chains while charging unclassified native
@@ -282,186 +198,150 @@ impl Runtime {
         if active_native_cost.saturating_add(native_stack_weight(target)) > 80 {
             return true;
         }
-        let limit = match target {
-            NativeFunctionId::ArrayPrototypeJoin(_)
-            | NativeFunctionId::ArrayPrototypeToString
-            | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 64,
-            NativeFunctionId::ArrayPrototypeSort
-            | NativeFunctionId::ArrayPrototypeToSorted
-            | NativeFunctionId::TypedArray(
-                TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
-            ) => 16,
-            NativeFunctionId::ArrayPrototypeSlice(_)
-            | NativeFunctionId::ArrayPrototypeToSpliced => 4,
-            NativeFunctionId::ArrayPrototypeFlatten(_) => 8,
-            // Callback reentry retains the iterator and group-array building
-            // stacks together. Reject the ninth family frame so the error can
-            // still be allocated on the default libtest thread.
-            NativeFunctionId::ObjectGroupBy => 8,
-            // The heaviest measured getter-reentry path can exhaust a 2 MiB
-            // host thread while entering the tenth family frame.
-            NativeFunctionId::ObjectKeys(_) => 9,
-            // ToPropertyKey may recursively re-enter through @@toPrimitive.
-            NativeFunctionId::ObjectGetOwnPropertyDescriptor => 9,
-            // This has the same key-coercion reentry shape as the descriptor
-            // static; entering a tenth family frame can exhaust a 2 MiB
-            // libtest thread before the general weighted budget rejects the
-            // following call.
-            NativeFunctionId::ObjectHasOwn => 9,
-            NativeFunctionId::ObjectAssign => 9,
-            NativeFunctionId::ObjectFromEntries => 4,
-            NativeFunctionId::RegExp(RegExpNativeKind::Compile) => 8,
-            NativeFunctionId::StringPrototypeReplace(_)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => 9,
-            // Symbol protocols, receiver and argument conversions can alternate
-            // between these String methods. Reject their shared fifth frame
-            // while leaving weighted room for one callback leaf.
-            NativeFunctionId::StringPrototypeIncludes(_)
-            | NativeFunctionId::StringPrototypeMatch
-            | NativeFunctionId::StringPrototypeMatchAll
-            | NativeFunctionId::StringPrototypeSearch
-            | NativeFunctionId::StringPrototypeSplit
-            | NativeFunctionId::StringPrototypeSubrange(_)
-            | NativeFunctionId::StringPrototypeRepeat
-            | NativeFunctionId::StringPrototypePad(_)
-            | NativeFunctionId::StringPrototypeTrim(_)
-            | NativeFunctionId::StringPrototypeCase(_)
-            | NativeFunctionId::StringPrototypeNormalize
-            | NativeFunctionId::StringPrototypeLocaleCompare
-            | NativeFunctionId::StringPrototypeCreateHtml(_)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-            | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Split)
-            | NativeFunctionId::RegExpStringIteratorNext => 4,
-            // ToString, ToNumber and String.raw's property/conversion path can
-            // all re-enter any other member of this constructor family.
-            NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
-            | NativeFunctionId::StringStatic(_) => 9,
-            _ => return false,
-        };
-
-        let in_family = |candidate| match target {
-            NativeFunctionId::ArrayPrototypeJoin(_)
-            | NativeFunctionId::ArrayPrototypeToString
-            | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => matches!(
-                candidate,
-                NativeFunctionId::ArrayPrototypeJoin(_)
-                    | NativeFunctionId::ArrayPrototypeToString
-                    | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_))
-            ),
-            NativeFunctionId::ArrayPrototypeSort
-            | NativeFunctionId::ArrayPrototypeToSorted
-            | NativeFunctionId::TypedArray(
-                TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
-            ) => matches!(
-                candidate,
-                NativeFunctionId::ArrayPrototypeSort
-                    | NativeFunctionId::ArrayPrototypeToSorted
-                    | NativeFunctionId::TypedArray(
-                        TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted
-                    )
-            ),
-            NativeFunctionId::ArrayPrototypeSlice(_)
-            | NativeFunctionId::ArrayPrototypeToSpliced => {
-                matches!(
-                    candidate,
-                    NativeFunctionId::ArrayPrototypeSlice(_)
-                        | NativeFunctionId::ArrayPrototypeToSpliced
-                )
-            }
-            NativeFunctionId::ArrayPrototypeFlatten(_) => {
-                matches!(candidate, NativeFunctionId::ArrayPrototypeFlatten(_))
-            }
-            NativeFunctionId::ObjectGroupBy => {
-                matches!(candidate, NativeFunctionId::ObjectGroupBy)
-            }
-            NativeFunctionId::ObjectKeys(_) => {
-                matches!(candidate, NativeFunctionId::ObjectKeys(_))
-            }
-            NativeFunctionId::ObjectGetOwnPropertyDescriptor => {
-                matches!(candidate, NativeFunctionId::ObjectGetOwnPropertyDescriptor)
-            }
-            NativeFunctionId::ObjectHasOwn => {
-                matches!(candidate, NativeFunctionId::ObjectHasOwn)
-            }
-            NativeFunctionId::ObjectAssign => {
-                matches!(candidate, NativeFunctionId::ObjectAssign)
-            }
-            NativeFunctionId::ObjectFromEntries => {
-                matches!(candidate, NativeFunctionId::ObjectFromEntries)
-            }
-            NativeFunctionId::RegExp(RegExpNativeKind::Compile) => {
-                matches!(
-                    candidate,
-                    NativeFunctionId::RegExp(RegExpNativeKind::Compile)
-                )
-            }
-            NativeFunctionId::StringPrototypeReplace(_)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => matches!(
-                candidate,
-                NativeFunctionId::StringPrototypeReplace(_)
-                    | NativeFunctionId::RegExp(RegExpNativeKind::Replace)
-            ),
-            NativeFunctionId::StringPrototypeIncludes(_)
-            | NativeFunctionId::StringPrototypeMatch
-            | NativeFunctionId::StringPrototypeMatchAll
-            | NativeFunctionId::StringPrototypeSearch
-            | NativeFunctionId::StringPrototypeSplit
-            | NativeFunctionId::StringPrototypeSubrange(_)
-            | NativeFunctionId::StringPrototypeRepeat
-            | NativeFunctionId::StringPrototypePad(_)
-            | NativeFunctionId::StringPrototypeTrim(_)
-            | NativeFunctionId::StringPrototypeCase(_)
-            | NativeFunctionId::StringPrototypeNormalize
-            | NativeFunctionId::StringPrototypeLocaleCompare
-            | NativeFunctionId::StringPrototypeCreateHtml(_)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-            | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-            | NativeFunctionId::RegExp(RegExpNativeKind::Split)
-            | NativeFunctionId::RegExpStringIteratorNext => matches!(
-                candidate,
-                NativeFunctionId::StringPrototypeIncludes(_)
-                    | NativeFunctionId::StringPrototypeMatch
-                    | NativeFunctionId::StringPrototypeMatchAll
-                    | NativeFunctionId::StringPrototypeSearch
-                    | NativeFunctionId::StringPrototypeSplit
-                    | NativeFunctionId::StringPrototypeSubrange(_)
-                    | NativeFunctionId::StringPrototypeRepeat
-                    | NativeFunctionId::StringPrototypePad(_)
-                    | NativeFunctionId::StringPrototypeTrim(_)
-                    | NativeFunctionId::StringPrototypeCase(_)
-                    | NativeFunctionId::StringPrototypeNormalize
-                    | NativeFunctionId::StringPrototypeLocaleCompare
-                    | NativeFunctionId::StringPrototypeCreateHtml(_)
-                    | NativeFunctionId::RegExp(RegExpNativeKind::Match)
-                    | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
-                    | NativeFunctionId::RegExp(RegExpNativeKind::Search)
-                    | NativeFunctionId::RegExp(RegExpNativeKind::Split)
-                    | NativeFunctionId::RegExpStringIteratorNext
-            ),
-            NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
-            | NativeFunctionId::StringStatic(_) => matches!(
-                candidate,
-                NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
-                    | NativeFunctionId::StringStatic(_)
-            ),
-            _ => false,
+        let Some((family, limit)) = native_stack_family(target) else {
+            return false;
         };
         self.0
             .state
             .borrow()
             .active_frames
-            .iter()
-            .filter(|frame| {
-                let ActiveFrameKind::Native { target, .. } = frame.kind else {
-                    return false;
-                };
-                in_family(target)
-            })
-            .count()
+            .native_family_depth(family)
             >= limit
+    }
+}
+
+pub(super) fn native_stack_weight(target: NativeFunctionId) -> usize {
+    match target {
+        // Ordinary Function.prototype.call invocations are represented by
+        // logical ActiveFrameGuards but tail-forwarded in one Rust frame.
+        // Keep their diagnostic frames without double-charging the target
+        // family's proven stack budget.
+        NativeFunctionId::FunctionPrototypeCall => 0,
+        // Array.prototype.toString dynamically enters either Array.join or
+        // TypedArray.join, and user coercions can alternate both kernels.
+        // They therefore share one physical stringification budget.
+        NativeFunctionId::ArrayPrototypeJoin(_)
+        | NativeFunctionId::ArrayPrototypeToString
+        | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 1_usize,
+        // QuickJS's JS_CFUNC_iterator_next path resumes heap-owned
+        // generator state and checks the actual C stack both on native
+        // entry and on generator resume. The default weight of eight
+        // rejects measured yield* chains before our address-based guard.
+        // Keep that guard authoritative while leaving one logical unit
+        // per visible native frame for mixed recursion.
+        NativeFunctionId::GeneratorPrototypeResume(_) => 1,
+        NativeFunctionId::ArrayPrototypeSort
+        | NativeFunctionId::ArrayPrototypeToSorted
+        | NativeFunctionId::TypedArray(
+            TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
+        ) => 4,
+        NativeFunctionId::ArrayPrototypeSlice(_) | NativeFunctionId::ArrayPrototypeToSpliced => 16,
+        NativeFunctionId::ArrayPrototypeFlatten(_) => 9,
+        NativeFunctionId::ObjectGroupBy
+        | NativeFunctionId::ObjectKeys(_)
+        | NativeFunctionId::ObjectGetOwnPropertyDescriptor
+        | NativeFunctionId::ObjectHasOwn
+        | NativeFunctionId::ObjectAssign
+        | NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
+        | NativeFunctionId::StringStatic(_) => 8,
+        // A key-coercion reentry retains the iterator, entry, result and
+        // conversion stacks at once, making this family comparable to the
+        // heaviest slice/splice native paths on a 2 MiB libtest thread.
+        NativeFunctionId::ObjectFromEntries => 16,
+        // Compile can re-enter through pattern/flags ToString. Its frames
+        // are smaller than the RegExp Symbol protocol loops, but eight
+        // nested calls are the proven-safe 2 MiB boundary.
+        NativeFunctionId::RegExp(RegExpNativeKind::Compile) => 8,
+        // The replace protocols alternate through user hooks, exec and
+        // functional replacers. Nine nested protocol entries are required
+        // by the pinned finite-recursion oracle; charge them like compile
+        // while rejecting the tenth before the host stack is endangered.
+        NativeFunctionId::StringPrototypeReplace(_)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => 8,
+        // String receiver/argument conversion and RegExp protocol
+        // callbacks retain native and property-call stacks while
+        // recursively entering these methods.
+        NativeFunctionId::StringPrototypeIncludes(_)
+        | NativeFunctionId::StringPrototypeMatch
+        | NativeFunctionId::StringPrototypeMatchAll
+        | NativeFunctionId::StringPrototypeSearch
+        | NativeFunctionId::StringPrototypeSplit
+        | NativeFunctionId::StringPrototypeSubrange(_)
+        | NativeFunctionId::StringPrototypeRepeat
+        | NativeFunctionId::StringPrototypePad(_)
+        | NativeFunctionId::StringPrototypeTrim(_)
+        | NativeFunctionId::StringPrototypeCase(_)
+        | NativeFunctionId::StringPrototypeNormalize
+        | NativeFunctionId::StringPrototypeLocaleCompare
+        | NativeFunctionId::StringPrototypeCreateHtml(_)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Match)
+        | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Search)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Split)
+        | NativeFunctionId::RegExpStringIteratorNext => 16,
+        _ => 8,
+    }
+}
+
+pub(super) fn native_stack_family(target: NativeFunctionId) -> Option<(usize, usize)> {
+    match target {
+        NativeFunctionId::ArrayPrototypeJoin(_)
+        | NativeFunctionId::ArrayPrototypeToString
+        | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => Some((0, 64)),
+        NativeFunctionId::ArrayPrototypeSort
+        | NativeFunctionId::ArrayPrototypeToSorted
+        | NativeFunctionId::TypedArray(
+            TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
+        ) => Some((1, 16)),
+        NativeFunctionId::ArrayPrototypeSlice(_) | NativeFunctionId::ArrayPrototypeToSpliced => {
+            Some((2, 4))
+        }
+        NativeFunctionId::ArrayPrototypeFlatten(_) => Some((3, 8)),
+        // Callback reentry retains the iterator and group-array building
+        // stacks together. Reject the ninth family frame so the error can
+        // still be allocated on the default libtest thread.
+        NativeFunctionId::ObjectGroupBy => Some((4, 8)),
+        // The heaviest measured getter-reentry path can exhaust a 2 MiB
+        // host thread while entering the tenth family frame.
+        NativeFunctionId::ObjectKeys(_) => Some((5, 9)),
+        // ToPropertyKey may recursively re-enter through @@toPrimitive.
+        NativeFunctionId::ObjectGetOwnPropertyDescriptor => Some((6, 9)),
+        // This has the same key-coercion reentry shape as the descriptor
+        // static; entering a tenth family frame can exhaust a 2 MiB
+        // libtest thread before the general weighted budget rejects the
+        // following call.
+        NativeFunctionId::ObjectHasOwn => Some((7, 9)),
+        NativeFunctionId::ObjectAssign => Some((8, 9)),
+        NativeFunctionId::ObjectFromEntries => Some((9, 4)),
+        NativeFunctionId::RegExp(RegExpNativeKind::Compile) => Some((10, 8)),
+        NativeFunctionId::StringPrototypeReplace(_)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Replace) => Some((11, 9)),
+        // Symbol protocols, receiver and argument conversions can alternate
+        // between these String methods. Reject their shared fifth frame
+        // while leaving weighted room for one callback leaf.
+        NativeFunctionId::StringPrototypeIncludes(_)
+        | NativeFunctionId::StringPrototypeMatch
+        | NativeFunctionId::StringPrototypeMatchAll
+        | NativeFunctionId::StringPrototypeSearch
+        | NativeFunctionId::StringPrototypeSplit
+        | NativeFunctionId::StringPrototypeSubrange(_)
+        | NativeFunctionId::StringPrototypeRepeat
+        | NativeFunctionId::StringPrototypePad(_)
+        | NativeFunctionId::StringPrototypeTrim(_)
+        | NativeFunctionId::StringPrototypeCase(_)
+        | NativeFunctionId::StringPrototypeNormalize
+        | NativeFunctionId::StringPrototypeLocaleCompare
+        | NativeFunctionId::StringPrototypeCreateHtml(_)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Match)
+        | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Search)
+        | NativeFunctionId::RegExp(RegExpNativeKind::Split)
+        | NativeFunctionId::RegExpStringIteratorNext => Some((12, 4)),
+        // ToString, ToNumber and String.raw's property/conversion path can
+        // all re-enter any other member of this constructor family.
+        NativeFunctionId::PrimitiveConstructor(PrimitiveKind::String)
+        | NativeFunctionId::StringStatic(_) => Some((13, 9)),
+        _ => None,
     }
 }
 
@@ -536,7 +416,9 @@ mod tests {
                                 return yield* (depth?chain(depth-1):[42])
                             }
                             try{
-                                chain(1000).next();
+                                // Infinity remains Infinity after subtraction; a finite
+                                // chain can finish once delegation uses owned frames.
+                                chain(Infinity).next();
                                 return "missing"
                             }catch(error){
                                 return error.name+":"+error.message
@@ -552,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_bytecode_calls_and_constructors_throw_before_host_stack_overflow() {
+    fn infinite_bytecode_calls_and_constructors_throw_and_recover() {
         on_two_mib_stack(|| {
             let runtime = Runtime::new();
             let mut context = runtime.new_context();
@@ -567,9 +449,11 @@ mod tests {
                         }
                         var finite=recurse(8);
                         var callError,constructError;
-                        try{recurse(1000);callError="missing"}
+                        // Infinity stays Infinity after subtraction: exercise
+                        // the execution budget, not an assumed finite depth.
+                        try{recurse(Infinity);callError="missing"}
                         catch(error){callError=error.name+":"+error.message}
-                        try{new Constructor(1000);constructError="missing"}
+                        try{new Constructor(Infinity);constructError="missing"}
                         catch(error){constructError=error.name+":"+error.message}
                         return finite+"|"+callError+"|"+constructError
                     })()"#,

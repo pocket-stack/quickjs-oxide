@@ -5,6 +5,15 @@ use crate::engine::api::context::Context;
 use crate::engine::api::error::{Error, ErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
+use crate::engine::compiler::model::ir::function::FunctionIr;
+use crate::engine::compiler::model::ir::function::FunctionIrOptions;
+use crate::engine::compiler::model::ir::function::FunctionKind;
+use crate::engine::compiler::model::ir::function::FunctionSourceInfo;
+use crate::engine::compiler::model::ir::function::SuperCapabilities;
+use crate::engine::compiler::parser::context::InMode;
+use crate::engine::compiler::parser::context::ModuleDeclarationExport;
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::parser::diagnostics::lex_error;
 
 use crate::engine::code::bytecode::{
     ApplyKind, ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
@@ -35,15 +44,14 @@ use crate::source::text::SourceText;
 
 use super::{
     ACTIVE_FUNCTION_LOCAL_NAME, BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
-    EvalCompileContext, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
-    HOME_OBJECT_LOCAL_NAME, InMode, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS, MAX_LOCAL_VARIABLES,
-    ModuleCompileFailure, ModuleDeclarationExport, ModuleImportAttributeChecker,
-    NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset, SuperCapabilities,
-    THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, compile_script, compile_unlinked_eval_with_filename,
+    EvalCompileContext, HOME_OBJECT_LOCAL_NAME, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
+    MAX_LOCAL_VARIABLES, ModuleCompileFailure, ModuleImportAttributeChecker, NEW_TARGET_LOCAL_NAME,
+    ScopeId, ScopeKind, SourceOffset, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, compile_script,
+    compile_unlinked_eval_with_filename,
     compile_unlinked_module_bytes_with_name_and_attribute_checker,
     compile_unlinked_module_with_filename, compile_unlinked_module_with_name_and_attribute_checker,
     compile_unlinked_script, compile_unlinked_script_source_with_filename,
-    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, lower_unlinked_tree,
+    compile_unlinked_script_with_filename, ensure_closure_variable, lower_unlinked_tree,
     resolve_identifiers, validate_scope_graph, validate_source_length,
 };
 

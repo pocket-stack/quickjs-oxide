@@ -9,14 +9,14 @@
 
 use super::object::ObjectIteratorStep;
 use super::quickjs_to_int64_free;
-use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
+use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::builtins::native::NativeFunctionId;
 
 use crate::engine::heap::{
-    ContextId, HeapError, IteratorConsumerKind, IteratorHelperData, IteratorHelperKind,
-    IteratorRealmData, IteratorResumeKind, ObjectData, ObjectPayload, RawValue,
+    ContextId, IteratorConsumerKind, IteratorHelperData, IteratorHelperKind, IteratorRealmData,
+    IteratorResumeKind, ObjectData,
 };
 use crate::engine::object::shape::PropertyFlags;
 use crate::engine::object::{
@@ -26,20 +26,19 @@ use crate::engine::object::{
 use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
-use crate::engine::vm::call::{NativeArguments, NativeInvocation, NativeInvokeOutcome};
+use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
-mod concat;
-mod entry;
-
-enum IteratorClose {
-    Closed,
-    Throw(Value),
-}
-
-enum HelperStep {
-    Result { value: Value, done: bool },
-    Throw { value: Value, close_outer: bool },
-}
+pub(super) mod array;
+pub(crate) mod collection;
+pub(super) mod concat;
+pub(crate) mod constructor;
+pub(super) mod consume;
+pub(super) mod create;
+pub(crate) mod entry;
+pub(super) mod from;
+pub(super) mod helper;
+pub(super) mod step;
+pub(super) mod wrap;
 
 impl Runtime {
     pub(crate) fn initialize_iterator_intrinsic(
@@ -331,75 +330,16 @@ impl Runtime {
         Ok(NativeConversion::Value(object))
     }
 
-    fn iterator_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            let prototype = self
-                .0
-                .state
-                .borrow()
-                .heap
-                .context(fallback_realm)?
-                .iterator_prototype;
-            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-        })
-    }
-
     pub(crate) fn call_iterator_constructor(
         &self,
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let new_target = match invocation {
-            NativeInvocation::Construct {
-                new_target: Value::Undefined,
-            }
-            | NativeInvocation::Call { .. } => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "constructor requires 'new'",
-                )?));
-            }
-            NativeInvocation::Construct { new_target } => new_target,
-            NativeInvocation::Getter { .. } | NativeInvocation::Setter { .. } => {
-                return Err(RuntimeError::Invariant(
-                    "Iterator constructor received an accessor invocation",
-                ));
-            }
-        };
-        let Value::Object(new_target_object) = &new_target else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "constructor requires 'new'",
-            )?));
-        };
-        let new_target_is_native_iterator = {
-            let state = self.0.state.borrow();
-            matches!(
-                &state.heap.object(new_target_object.object_id())?.payload,
-                ObjectPayload::NativeFunction { data, .. }
-                    if data.target == NativeFunctionId::IteratorConstructor
-            )
-        };
-        if new_target_is_native_iterator {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "abstract class not constructable",
-            )?));
-        }
-        let prototype = match self.iterator_prototype_from_new_target(realm, new_target)? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(Value::Object(
-            self.new_iterator_object(&prototype)?,
-        )))
+        constructor::finish(
+            self,
+            realm,
+            constructor::ConstructorStep::start(self, realm, &invocation)?,
+        )
     }
 
     pub(crate) fn call_iterator_constructor_accessor(
@@ -409,68 +349,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Iterator constructor accessor did not receive a generic invocation",
-            ));
-        };
-        let defining_realm = {
-            let state = self.0.state.borrow();
-            let ObjectPayload::NativeFunction { data, .. } =
-                &state.heap.object(callable.as_object().object_id())?.payload
-            else {
-                return Err(RuntimeError::Invariant(
-                    "Iterator constructor accessor callable lost its native payload",
-                ));
-            };
-            if data.target != NativeFunctionId::IteratorConstructorAccessor {
-                return Err(RuntimeError::Invariant(
-                    "Iterator constructor accessor callable changed target",
-                ));
-            }
-            data.realm.ok_or(RuntimeError::Invariant(
-                "Iterator constructor accessor lost its defining realm",
-            ))?
-        };
-        if arguments.actual_arg_count == 0 {
-            let constructor = self.iterator_realm_data(defining_realm)?.constructor;
-            return Ok(Completion::Return(Value::Object(
-                ObjectRef::from_borrowed_handle(self.clone(), constructor)?,
-            )));
-        }
-        let Some(Value::Object(value)) = arguments.readable.first() else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let Value::Object(receiver) = this_value else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let key = self.intern_property_key("constructor")?;
-        if !self.define_own_property(
-            &receiver,
-            &key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(Value::Object(value.clone())),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(false),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        )? {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "cannot define property",
-            )?));
-        }
-        Ok(Completion::Return(Value::Undefined))
+        constructor::finish(
+            self,
+            realm,
+            constructor::ConstructorStep::accessor(self, realm, callable, &invocation, arguments)?,
+        )
     }
 
     pub(crate) fn call_iterator_from(
@@ -479,71 +362,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Iterator.from did not receive a generic invocation",
-            ));
-        };
-        let input = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Iterator.from argument was not padded",
-            ))?;
-        if !matches!(input, Value::Object(_) | Value::String(_)) {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "Iterator.from called on non-object",
-            )?));
-        }
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let method = match self.get_value_property_in_realm(realm, input.clone(), &iterator_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let iterator = if matches!(method, Value::Undefined | Value::Null) {
-            input
-        } else {
-            let method = match self.iterator_callable_value(realm, method)? {
-                NativeConversion::Value(method) => method,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            match self.call_internal(realm, &method, input, &[])? {
-                Completion::Return(Value::Object(iterator)) => Value::Object(iterator),
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "not an object",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        };
-
-        // QuickJS gets `next` before its OrdinaryIsInstanceOf check.
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_value_property_in_realm(realm, iterator.clone(), &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let constructor = self.iterator_realm_data(realm)?.constructor;
-        let constructor = ObjectRef::from_borrowed_handle(self.clone(), constructor)?;
-        let constructor = CallableRef::from_validated_object(constructor);
-        match self.ordinary_is_instance_of(realm, &constructor, iterator.clone())? {
-            Completion::Return(value) => {
-                if self.value_to_boolean(&value)? {
-                    Ok(Completion::Return(iterator))
-                } else {
-                    Ok(Completion::Return(Value::Object(
-                        self.new_iterator_wrap(realm, &iterator, &next)?,
-                    )))
-                }
-            }
-            Completion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        from::finish(
+            self,
+            realm,
+            from::FromStep::start(self, realm, &invocation, arguments)?,
+        )
     }
 
     fn iterator_callable_value(
@@ -614,109 +437,11 @@ impl Runtime {
         kind: IteratorResumeKind,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let receiver = match self.iterator_receiver(realm, invocation)? {
-            NativeConversion::Value(receiver) => receiver,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let wrap_state = {
-            let state = self.0.state.borrow();
-            state.heap.iterator_wrap_state(receiver.object_id())
-        };
-        let (source, next) = match wrap_state {
-            Ok(state) => state,
-            Err(HeapError::Invariant(_)) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an Iterator Wrap",
-                )?));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let source = self.root_raw_value(&source)?;
-        match kind {
-            IteratorResumeKind::Next => {
-                let method = self.root_raw_value(&next)?;
-                let step = match &source {
-                    Value::Object(source) => self.object_iterator_next(realm, source, method)?,
-                    _ => self.iterator_wrap_primitive_next(realm, source.clone(), method)?,
-                };
-                match step {
-                    ObjectIteratorStep::Yield(value) => Ok(Completion::Return(Value::Object(
-                        self.new_iterator_result(realm, value, false)?,
-                    ))),
-                    ObjectIteratorStep::Done => Ok(Completion::Return(Value::Object(
-                        self.new_iterator_result(realm, Value::Undefined, true)?,
-                    ))),
-                    ObjectIteratorStep::Throw(value) => Ok(Completion::Throw(value)),
-                }
-            }
-            IteratorResumeKind::Return => {
-                let key = self.intern_property_key("return")?;
-                let method = match self.get_value_property_in_realm(realm, source.clone(), &key)? {
-                    Completion::Return(Value::Undefined | Value::Null) => {
-                        return Ok(Completion::Return(Value::Object(
-                            self.new_iterator_result(realm, Value::Undefined, true)?,
-                        )));
-                    }
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                let method = match self.iterator_callable_value(realm, method)? {
-                    NativeConversion::Value(method) => method,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                match self.call_internal(realm, &method, source, &[])? {
-                    Completion::Return(Value::Object(result)) => {
-                        Ok(Completion::Return(Value::Object(result)))
-                    }
-                    Completion::Return(_) => Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "iterator must return an object",
-                    )?)),
-                    Completion::Throw(value) => Ok(Completion::Throw(value)),
-                }
-            }
-        }
-    }
-
-    fn iterator_wrap_primitive_next(
-        &self,
-        realm: ContextId,
-        source: Value,
-        method: Value,
-    ) -> Result<ObjectIteratorStep, RuntimeError> {
-        let method = match self.iterator_callable_value(realm, method)? {
-            NativeConversion::Value(method) => method,
-            NativeConversion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
-        };
-        let result = match self.call_internal(realm, &method, source, &[])? {
-            Completion::Return(result) => result,
-            Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
-        };
-        let Value::Object(result) = result else {
-            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "iterator must return an object",
-            )?));
-        };
-
-        let done_key = self.intern_property_key("done")?;
-        let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => self.value_to_boolean(&value)?,
-            Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
-        };
-        if done {
-            return Ok(ObjectIteratorStep::Done);
-        }
-
-        let value_key = self.intern_property_key("value")?;
-        match self.get_property_in_realm(realm, &result, &value_key)? {
-            Completion::Return(value) => Ok(ObjectIteratorStep::Yield(value)),
-            Completion::Throw(value) => Ok(ObjectIteratorStep::Throw(value)),
-        }
+        wrap::finish(
+            self,
+            realm,
+            wrap::WrapStep::start(self, realm, kind, &invocation)?,
+        )
     }
 
     pub(crate) fn call_iterator_create_helper(
@@ -726,72 +451,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let source = match self.iterator_receiver(realm, invocation)? {
-            NativeConversion::Value(source) => source,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let argument = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Iterator helper argument was not padded",
-            ))?;
-
-        let (callback, count) = match kind {
-            IteratorHelperKind::Drop | IteratorHelperKind::Take => {
-                let number = match self.native_to_number(realm, &argument)? {
-                    NativeConversion::Value(number) => number,
-                    NativeConversion::Throw(value) => {
-                        self.close_iterator_preserving_throw(realm, &source)?;
-                        return Ok(Completion::Throw(value));
-                    }
-                };
-                if number.is_nan() || number == f64::NEG_INFINITY {
-                    self.close_iterator_preserving_throw(realm, &source)?;
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Range,
-                        "must be positive",
-                    )?));
-                }
-                let count = if number == f64::INFINITY {
-                    (1_i64 << 53) - 1
-                } else {
-                    quickjs_to_int64_free(number.trunc())
-                };
-                if count < 0 {
-                    self.close_iterator_preserving_throw(realm, &source)?;
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Range,
-                        "must be positive",
-                    )?));
-                }
-                (Value::Undefined, count)
-            }
-            IteratorHelperKind::Filter | IteratorHelperKind::FlatMap | IteratorHelperKind::Map => {
-                if let NativeConversion::Throw(value) =
-                    self.iterator_callable_value(realm, argument.clone())?
-                {
-                    self.close_iterator_preserving_throw(realm, &source)?;
-                    return Ok(Completion::Throw(value));
-                }
-                (argument, 0)
-            }
-        };
-
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &source, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => {
-                self.close_iterator_preserving_throw(realm, &source)?;
-                return Ok(Completion::Throw(value));
-            }
-        };
-        Ok(Completion::Return(Value::Object(
-            self.new_iterator_helper(realm, &source, &next, &callback, count, kind)?,
-        )))
+        create::finish(
+            self,
+            realm,
+            create::CreateStep::start(self, realm, kind, &invocation, arguments)?,
+        )
     }
 
     fn new_iterator_helper(
@@ -851,77 +515,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let source = match self.iterator_receiver(realm, invocation)? {
-            NativeConversion::Value(source) => source,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let callback_value = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Iterator consumer callback was not padded",
-            ))?;
-        let callback = match self.iterator_callable_value(realm, callback_value)? {
-            NativeConversion::Value(callback) => callback,
-            NativeConversion::Throw(value) => {
-                self.close_iterator_preserving_throw(realm, &source)?;
-                return Ok(Completion::Throw(value));
-            }
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &source, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let mut index = 0_i64;
-        loop {
-            let item = match self.object_iterator_next(realm, &source, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    let value = match kind {
-                        IteratorConsumerKind::Every => Value::Bool(true),
-                        IteratorConsumerKind::Some => Value::Bool(false),
-                        IteratorConsumerKind::Find | IteratorConsumerKind::ForEach => {
-                            Value::Undefined
-                        }
-                    };
-                    return Ok(Completion::Return(value));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let selected = match self.call_internal(
+        consume::finish(
+            self,
+            realm,
+            consume::ConsumeStep::start(
+                self,
                 realm,
-                &callback,
-                Value::Undefined,
-                &[item.clone(), Value::number(index as f64)],
-            )? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &source)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            index = index.wrapping_add(1);
-
-            let early = match kind {
-                IteratorConsumerKind::Every => {
-                    (!self.value_to_boolean(&selected)?).then_some(Value::Bool(false))
-                }
-                IteratorConsumerKind::Some => self
-                    .value_to_boolean(&selected)?
-                    .then_some(Value::Bool(true)),
-                IteratorConsumerKind::Find => self.value_to_boolean(&selected)?.then_some(item),
-                IteratorConsumerKind::ForEach => None,
-            };
-            if let Some(value) = early {
-                return Ok(match self.iterator_close_normal(realm, &source)? {
-                    IteratorClose::Closed => Completion::Return(value),
-                    IteratorClose::Throw(value) => Completion::Throw(value),
-                });
-            }
-        }
+                consume::ConsumeKind::Predicate(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_iterator_reduce(
@@ -930,77 +534,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let source = match self.iterator_receiver(realm, invocation)? {
-            NativeConversion::Value(source) => source,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let callback_value = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Iterator reduce callback was not padded",
-            ))?;
-        let callback = match self.iterator_callable_value(realm, callback_value)? {
-            NativeConversion::Value(callback) => callback,
-            NativeConversion::Throw(value) => {
-                self.close_iterator_preserving_throw(realm, &source)?;
-                return Ok(Completion::Throw(value));
-            }
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &source, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => {
-                self.close_iterator_preserving_throw(realm, &source)?;
-                return Ok(Completion::Throw(value));
-            }
-        };
-
-        let (mut accumulator, mut index) = if arguments.actual_arg_count > 1 {
-            (
-                arguments
-                    .readable
-                    .get(1)
-                    .cloned()
-                    .ok_or(RuntimeError::Invariant(
-                        "Iterator reduce initial value disappeared",
-                    ))?,
-                0_i64,
-            )
-        } else {
-            match self.object_iterator_next(realm, &source, next.clone())? {
-                ObjectIteratorStep::Yield(value) => (value, 1),
-                ObjectIteratorStep::Done => {
-                    let value =
-                        self.new_native_error(realm, NativeErrorKind::Type, "empty iterator")?;
-                    self.close_iterator_preserving_throw(realm, &source)?;
-                    return Ok(Completion::Throw(value));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        };
-
-        loop {
-            let item = match self.object_iterator_next(realm, &source, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => return Ok(Completion::Return(accumulator)),
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            accumulator = match self.call_internal(
+        consume::finish(
+            self,
+            realm,
+            consume::ConsumeStep::start(
+                self,
                 realm,
-                &callback,
-                Value::Undefined,
-                &[accumulator, item, Value::number(index as f64)],
-            )? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &source)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            index = index.wrapping_add(1);
-        }
+                consume::ConsumeKind::Reduce,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_iterator_to_array(
@@ -1008,60 +552,20 @@ impl Runtime {
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let source = match self.iterator_receiver(realm, invocation)? {
-            NativeConversion::Value(source) => source,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &source, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.new_array(realm)?;
-        let mut index = 0_u32;
-        loop {
-            let item = match self.object_iterator_next(realm, &source, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(result)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if let Some(value) = self.create_array_data_property(realm, &result, index, item)? {
-                return Ok(Completion::Throw(value));
-            }
-            index = index.checked_add(1).ok_or_else(|| {
-                RuntimeError::Engine(Error::new(ErrorKind::Range, "invalid array length"))
-            })?;
-        }
-    }
-
-    fn iterator_close_normal(
-        &self,
-        realm: ContextId,
-        iterator: &ObjectRef,
-    ) -> Result<IteratorClose, RuntimeError> {
-        let key = self.intern_property_key("return")?;
-        let method = match self.get_property_in_realm(realm, iterator, &key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(IteratorClose::Throw(value)),
-        };
-        if matches!(method, Value::Undefined | Value::Null) {
-            return Ok(IteratorClose::Closed);
-        }
-        let method = match self.iterator_callable_value(realm, method)? {
-            NativeConversion::Value(method) => method,
-            NativeConversion::Throw(value) => return Ok(IteratorClose::Throw(value)),
-        };
-        match self.call_internal(realm, &method, Value::Object(iterator.clone()), &[])? {
-            Completion::Return(Value::Object(_)) => Ok(IteratorClose::Closed),
-            Completion::Return(_) => Ok(IteratorClose::Throw(self.new_native_error(
+        consume::finish(
+            self,
+            realm,
+            consume::ConsumeStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?)),
-            Completion::Throw(value) => Ok(IteratorClose::Throw(value)),
-        }
+                consume::ConsumeKind::Array,
+                &invocation,
+                &NativeArguments {
+                    actual_arg_count: 0,
+                    readable: Vec::new(),
+                },
+            )?,
+        )
     }
 
     pub(crate) fn call_iterator_helper_resume(
@@ -1070,159 +574,11 @@ impl Runtime {
         mode: IteratorResumeKind,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let helper = match self.iterator_receiver(realm, invocation)? {
-            NativeConversion::Value(helper) => helper,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let state_result = {
-            let state = self.0.state.borrow();
-            state.heap.iterator_helper_state(helper.object_id())
-        };
-        let state = match state_result {
-            Ok(state) => state,
-            Err(HeapError::Invariant(_)) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an Iterator Helper",
-                )?));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if state.executing {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "cannot invoke a running iterator",
-            )?));
-        }
-        if state.done {
-            return Ok(Completion::Return(Value::Object(
-                self.new_iterator_result(realm, Value::Undefined, true)?,
-            )));
-        }
-        self.0
-            .state
-            .borrow_mut()
-            .heap
-            .set_iterator_helper_running(helper.object_id(), true)?;
-
-        let source = ObjectRef::from_borrowed_handle(self.clone(), state.source)?;
-        let step = match self.resume_iterator_helper(realm, &helper, &source, &state, mode) {
-            Ok(step) => step,
-            Err(error) => {
-                self.0
-                    .state
-                    .borrow_mut()
-                    .heap
-                    .set_iterator_helper_running(helper.object_id(), false)?;
-                return Err(error);
-            }
-        };
-        let step = match step {
-            HelperStep::Throw {
-                value,
-                close_outer: true,
-            } => {
-                if let Err(error) = self.close_iterator_preserving_throw(realm, &source) {
-                    self.0
-                        .state
-                        .borrow_mut()
-                        .heap
-                        .set_iterator_helper_running(helper.object_id(), false)?;
-                    return Err(error);
-                }
-                HelperStep::Throw {
-                    value,
-                    close_outer: false,
-                }
-            }
-            step => step,
-        };
-        let done = match (&step, mode) {
-            (_, IteratorResumeKind::Return) => true,
-            (HelperStep::Result { done, .. }, IteratorResumeKind::Next) => *done,
-            // QuickJS marks a `take` helper done before performing the
-            // exhaustion close.  A throwing `return` therefore still
-            // exhausts the helper and later `next()` calls do not close the
-            // source again.
-            (HelperStep::Throw { .. }, IteratorResumeKind::Next) => {
-                state.kind == IteratorHelperKind::Take && state.count == 0
-            }
-        };
-        self.0
-            .state
-            .borrow_mut()
-            .heap
-            .set_iterator_helper_done_and_running(helper.object_id(), done, false)?;
-
-        match step {
-            HelperStep::Result { value, done } => Ok(Completion::Return(Value::Object(
-                self.new_iterator_result(realm, value, done)?,
-            ))),
-            HelperStep::Throw { value, .. } => Ok(Completion::Throw(value)),
-        }
-    }
-
-    fn resume_iterator_helper(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        source: &ObjectRef,
-        state: &IteratorHelperData,
-        mode: IteratorResumeKind,
-    ) -> Result<HelperStep, RuntimeError> {
-        match state.kind {
-            IteratorHelperKind::Drop => {
-                self.resume_iterator_drop(realm, helper, source, state, mode)
-            }
-            IteratorHelperKind::Filter => {
-                self.resume_iterator_filter(realm, helper, source, state, mode)
-            }
-            IteratorHelperKind::FlatMap => {
-                self.resume_iterator_flat_map(realm, helper, source, state, mode)
-            }
-            IteratorHelperKind::Map => self.resume_iterator_map(realm, helper, source, state, mode),
-            IteratorHelperKind::Take => {
-                self.resume_iterator_take(realm, helper, source, state, mode)
-            }
-        }
-    }
-
-    fn helper_method(
-        &self,
-        realm: ContextId,
-        source: &ObjectRef,
-        cached_next: &RawValue,
-        mode: IteratorResumeKind,
-    ) -> Result<Result<Value, Value>, RuntimeError> {
-        if mode == IteratorResumeKind::Next {
-            return Ok(Ok(self.root_raw_value(cached_next)?));
-        }
-        let key = self.intern_property_key("return")?;
-        Ok(match self.get_property_in_realm(realm, source, &key)? {
-            Completion::Return(value) => Ok(value),
-            Completion::Throw(value) => Err(value),
-        })
-    }
-
-    fn helper_step_with_method(
-        &self,
-        realm: ContextId,
-        source: &ObjectRef,
-        method: Value,
-    ) -> Result<HelperStep, RuntimeError> {
-        Ok(match self.object_iterator_next(realm, source, method)? {
-            ObjectIteratorStep::Yield(value) => HelperStep::Result { value, done: false },
-            ObjectIteratorStep::Done => HelperStep::Result {
-                value: Value::Undefined,
-                done: true,
-            },
-            ObjectIteratorStep::Throw(value) => HelperStep::Throw {
-                value,
-                close_outer: false,
-            },
-        })
+        helper::finish(
+            self,
+            realm,
+            helper::HelperResumeStep::start(self, realm, mode, &invocation)?,
+        )
     }
 
     fn set_helper_count(&self, helper: &ObjectRef, count: i64) -> Result<(), RuntimeError> {
@@ -1244,354 +600,6 @@ impl Runtime {
             .heap
             .set_iterator_helper_inner(helper.object_id(), inner.map(ObjectRef::object_id))?;
         state.apply_cleanup(cleanup)
-    }
-
-    fn resume_iterator_drop(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        source: &ObjectRef,
-        state: &IteratorHelperData,
-        mode: IteratorResumeKind,
-    ) -> Result<HelperStep, RuntimeError> {
-        let method = match self.helper_method(realm, source, &state.next, mode)? {
-            Ok(method) => method,
-            Err(value) => {
-                return Ok(HelperStep::Throw {
-                    value,
-                    close_outer: true,
-                });
-            }
-        };
-        let mut count = state.count;
-        while count > 0 {
-            count -= 1;
-            self.set_helper_count(helper, count)?;
-            let step = self.helper_step_with_method(realm, source, method.clone())?;
-            match step {
-                HelperStep::Throw { value, .. } => {
-                    return Ok(HelperStep::Throw {
-                        value,
-                        close_outer: false,
-                    });
-                }
-                HelperStep::Result { done: true, .. } => {
-                    return Ok(HelperStep::Result {
-                        value: Value::Undefined,
-                        done: true,
-                    });
-                }
-                HelperStep::Result { done: false, .. } if mode == IteratorResumeKind::Return => {
-                    return Ok(HelperStep::Result {
-                        value: Value::Undefined,
-                        done: true,
-                    });
-                }
-                HelperStep::Result { done: false, .. } => {}
-            }
-        }
-        self.helper_step_with_method(realm, source, method)
-    }
-
-    fn helper_callback(
-        &self,
-        realm: ContextId,
-        callback: &RawValue,
-        arguments: &[Value],
-    ) -> Result<Completion, RuntimeError> {
-        let callback = match self.iterator_callable_value(realm, self.root_raw_value(callback)?)? {
-            NativeConversion::Value(callback) => callback,
-            NativeConversion::Throw(_) => {
-                return Err(RuntimeError::Invariant(
-                    "Iterator Helper callback lost its callable brand",
-                ));
-            }
-        };
-        self.call_internal(realm, &callback, Value::Undefined, arguments)
-    }
-
-    fn resume_iterator_filter(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        source: &ObjectRef,
-        state: &IteratorHelperData,
-        mode: IteratorResumeKind,
-    ) -> Result<HelperStep, RuntimeError> {
-        let method = match self.helper_method(realm, source, &state.next, mode)? {
-            Ok(method) => method,
-            Err(value) => {
-                return Ok(HelperStep::Throw {
-                    value,
-                    close_outer: true,
-                });
-            }
-        };
-        let mut index = state.count;
-        loop {
-            let step = self.helper_step_with_method(realm, source, method.clone())?;
-            let HelperStep::Result { value, done: false } = step else {
-                return Ok(step);
-            };
-            if mode == IteratorResumeKind::Return {
-                return Ok(HelperStep::Result { value, done: false });
-            }
-            self.set_helper_count(helper, index.wrapping_add(1))?;
-            let selected = match self.helper_callback(
-                realm,
-                &state.callback,
-                &[value.clone(), Value::number(index as f64)],
-            )? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    return Ok(HelperStep::Throw {
-                        value,
-                        close_outer: true,
-                    });
-                }
-            };
-            index = index.wrapping_add(1);
-            if self.value_to_boolean(&selected)? {
-                return Ok(HelperStep::Result { value, done: false });
-            }
-        }
-    }
-
-    fn resume_iterator_map(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        source: &ObjectRef,
-        state: &IteratorHelperData,
-        mode: IteratorResumeKind,
-    ) -> Result<HelperStep, RuntimeError> {
-        let method = match self.helper_method(realm, source, &state.next, mode)? {
-            Ok(method) => method,
-            Err(value) => {
-                return Ok(HelperStep::Throw {
-                    value,
-                    close_outer: true,
-                });
-            }
-        };
-        let step = self.helper_step_with_method(realm, source, method)?;
-        let HelperStep::Result { value, done: false } = step else {
-            return Ok(step);
-        };
-        if mode == IteratorResumeKind::Return {
-            return Ok(HelperStep::Result { value, done: false });
-        }
-        self.set_helper_count(helper, state.count.wrapping_add(1))?;
-        match self.helper_callback(
-            realm,
-            &state.callback,
-            &[value, Value::number(state.count as f64)],
-        )? {
-            Completion::Return(value) => Ok(HelperStep::Result { value, done: false }),
-            Completion::Throw(value) => Ok(HelperStep::Throw {
-                value,
-                close_outer: true,
-            }),
-        }
-    }
-
-    fn resume_iterator_take(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        source: &ObjectRef,
-        state: &IteratorHelperData,
-        mode: IteratorResumeKind,
-    ) -> Result<HelperStep, RuntimeError> {
-        if state.count > 0 {
-            let method = match self.helper_method(realm, source, &state.next, mode)? {
-                Ok(method) => method,
-                Err(value) => {
-                    return Ok(HelperStep::Throw {
-                        value,
-                        close_outer: true,
-                    });
-                }
-            };
-            self.set_helper_count(helper, state.count - 1)?;
-            return self.helper_step_with_method(realm, source, method);
-        }
-        Ok(match self.iterator_close_normal(realm, source)? {
-            IteratorClose::Closed => HelperStep::Result {
-                value: Value::Undefined,
-                done: true,
-            },
-            IteratorClose::Throw(value) => HelperStep::Throw {
-                value,
-                close_outer: false,
-            },
-        })
-    }
-
-    fn flat_map_inner_failure(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        inner: &ObjectRef,
-        original: Value,
-    ) -> Result<HelperStep, RuntimeError> {
-        // QuickJS's `inner_fail` deliberately performs a normal IteratorClose
-        // even though an exception is already pending. A close failure
-        // therefore replaces the original inner-step failure; a successful
-        // close leaves the original failure in place. The selected exception
-        // is subsequently preserved while closing the outer iterator.
-        let value = match self.iterator_close_normal(realm, inner)? {
-            IteratorClose::Closed => original,
-            IteratorClose::Throw(value) => value,
-        };
-        self.set_helper_inner(helper, None)?;
-        Ok(HelperStep::Throw {
-            value,
-            close_outer: true,
-        })
-    }
-
-    fn resume_iterator_flat_map(
-        &self,
-        realm: ContextId,
-        helper: &ObjectRef,
-        source: &ObjectRef,
-        state: &IteratorHelperData,
-        mode: IteratorResumeKind,
-    ) -> Result<HelperStep, RuntimeError> {
-        let mut inner = state
-            .inner
-            .map(|inner| ObjectRef::from_borrowed_handle(self.clone(), inner))
-            .transpose()?;
-        let mut index = state.count;
-        loop {
-            if inner.is_none() {
-                let method = match self.helper_method(realm, source, &state.next, mode)? {
-                    Ok(method) => method,
-                    Err(value) => {
-                        return Ok(HelperStep::Throw {
-                            value,
-                            close_outer: true,
-                        });
-                    }
-                };
-                let step = self.helper_step_with_method(realm, source, method)?;
-                let HelperStep::Result { value, done: false } = step else {
-                    return Ok(step);
-                };
-                if mode == IteratorResumeKind::Return {
-                    return Ok(HelperStep::Result { value, done: false });
-                }
-                self.set_helper_count(helper, index.wrapping_add(1))?;
-                let mapped = match self.helper_callback(
-                    realm,
-                    &state.callback,
-                    &[value, Value::number(index as f64)],
-                )? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => {
-                        return Ok(HelperStep::Throw {
-                            value,
-                            close_outer: true,
-                        });
-                    }
-                };
-                index = index.wrapping_add(1);
-                let Value::Object(mapped_object) = mapped.clone() else {
-                    return Ok(HelperStep::Throw {
-                        value: self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "not an object",
-                        )?,
-                        close_outer: true,
-                    });
-                };
-                let iterator_key =
-                    PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-                let method =
-                    match self.get_property_in_realm(realm, &mapped_object, &iterator_key)? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => {
-                            return Ok(HelperStep::Throw {
-                                value,
-                                close_outer: true,
-                            });
-                        }
-                    };
-                let mapped_iterator = if matches!(method, Value::Undefined | Value::Null) {
-                    mapped_object
-                } else {
-                    let method = match self.iterator_callable_value(realm, method)? {
-                        NativeConversion::Value(method) => method,
-                        NativeConversion::Throw(value) => {
-                            return Ok(HelperStep::Throw {
-                                value,
-                                close_outer: true,
-                            });
-                        }
-                    };
-                    match self.call_internal(realm, &method, mapped, &[])? {
-                        Completion::Return(Value::Object(iterator)) => iterator,
-                        Completion::Return(_) => {
-                            return Ok(HelperStep::Throw {
-                                value: self.new_native_error(
-                                    realm,
-                                    NativeErrorKind::Type,
-                                    "not an object",
-                                )?,
-                                close_outer: true,
-                            });
-                        }
-                        Completion::Throw(value) => {
-                            return Ok(HelperStep::Throw {
-                                value,
-                                close_outer: true,
-                            });
-                        }
-                    }
-                };
-                self.set_helper_inner(helper, Some(&mapped_iterator))?;
-                inner = Some(mapped_iterator);
-            }
-
-            let inner_iterator = inner
-                .as_ref()
-                .expect("flatMap loop materialized an inner iterator");
-            let key_name = match mode {
-                IteratorResumeKind::Next => "next",
-                IteratorResumeKind::Return => "return",
-            };
-            let key = self.intern_property_key(key_name)?;
-            let method = match self.get_property_in_realm(realm, inner_iterator, &key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    return self.flat_map_inner_failure(realm, helper, inner_iterator, value);
-                }
-            };
-            if mode == IteratorResumeKind::Return
-                && matches!(method, Value::Undefined | Value::Null)
-            {
-                let _ = self.iterator_close_normal(realm, inner_iterator)?;
-                self.set_helper_inner(helper, None)?;
-                inner = None;
-                continue;
-            }
-            let step = self.helper_step_with_method(realm, inner_iterator, method)?;
-            match step {
-                HelperStep::Result { done: false, value } => {
-                    return Ok(HelperStep::Result { value, done: false });
-                }
-                HelperStep::Result { done: true, .. } => {
-                    let _ = self.iterator_close_normal(realm, inner_iterator)?;
-                    self.set_helper_inner(helper, None)?;
-                    inner = None;
-                }
-                HelperStep::Throw { value, .. } => {
-                    return self.flat_map_inner_failure(realm, helper, inner_iterator, value);
-                }
-            }
-        }
     }
 }
 

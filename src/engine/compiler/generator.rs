@@ -1,9 +1,13 @@
-use super::{
-    BytecodeFunctionKind, Error, IrOp, Parser, Punctuator, SpannedIrOp, TokenKind,
-    insert_hoist_fragment, source_offset,
-};
+use crate::engine::api::error::Error;
 use crate::engine::code::bytecode::{Instruction, IteratorCallKind};
+use crate::engine::code::function::metadata::FunctionKind as BytecodeFunctionKind;
 use crate::engine::compiler::lexer::Keyword;
+use crate::engine::compiler::lexer::Punctuator;
+use crate::engine::compiler::lexer::TokenKind;
+use crate::engine::compiler::model::ir::{IrOp, SpannedIrOp};
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::parser::diagnostics::source_offset;
+use crate::engine::compiler::relocation::insert_hoist_fragment;
 use crate::engine::value::{JsString, PrimitiveValue as Value};
 
 impl<'source> Parser<'source> {
@@ -16,8 +20,8 @@ impl<'source> Parser<'source> {
         if !matches!(
             function.execution_kind,
             BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
-        ) || function.in_function_body
-            || function.stack_depth != 0
+        ) || function.context.in_function_body
+            || function.context.stack_depth != 0
         {
             return Err(Error::internal(
                 "generator initial yield was inserted in an invalid phase",
@@ -66,7 +70,7 @@ impl<'source> Parser<'source> {
         ) {
             return Err(self.syntax_here("unexpected 'yield' keyword"));
         }
-        if !self.current_ir().in_function_body {
+        if !self.current_ir().context.in_function_body {
             return Err(self.syntax_here("yield in default expression"));
         }
 
@@ -88,9 +92,9 @@ impl<'source> Parser<'source> {
                 self.current_ir().execution_kind == BytecodeFunctionKind::AsyncGenerator;
             self.lower_yield_star(yield_span, asynchronous)?;
             self.anonymous_function_definition = None;
-            self.current_ir_mut().last_member_reference = None;
-            self.current_ir_mut().last_identifier_reference = None;
-            self.current_ir_mut().last_optional_chain = None;
+            self.current_ir_mut().context.last_member_reference = None;
+            self.current_ir_mut().context.last_identifier_reference = None;
+            self.current_ir_mut().context.last_optional_chain = None;
             return Ok(());
         }
 
@@ -107,14 +111,14 @@ impl<'source> Parser<'source> {
         // true discriminator for `.return(value)`. `.throw(value)` resumes via
         // the VM's pending-exception path and never reaches this branch.
         let next = self.emit_instruction(Instruction::IfFalse(u32::MAX))?;
-        let resumed_depth = self.current_ir().stack_depth;
+        let resumed_depth = self.current_ir().context.stack_depth;
         self.emit_return_completion(yield_span, true)?;
         let next_target = self.current_ir().ops.len();
         self.patch_jump(next, next_target)?;
-        self.current_ir_mut().stack_depth = resumed_depth;
-        self.current_ir_mut().last_member_reference = None;
-        self.current_ir_mut().last_identifier_reference = None;
-        self.current_ir_mut().last_optional_chain = None;
+        self.current_ir_mut().context.stack_depth = resumed_depth;
+        self.current_ir_mut().context.last_member_reference = None;
+        self.current_ir_mut().context.last_identifier_reference = None;
+        self.current_ir_mut().context.last_optional_chain = None;
         Ok(())
     }
 
@@ -130,6 +134,7 @@ impl<'source> Parser<'source> {
     ) -> Result<(), Error> {
         let base_depth = self
             .current_ir()
+            .context
             .stack_depth
             .checked_sub(1)
             .ok_or_else(|| Error::internal("yield* has no delegate operand"))?;
@@ -174,7 +179,7 @@ impl<'source> Parser<'source> {
 
         // `.return(value)` and `.throw(value)` both resume with a non-zero
         // discriminator. QuickJS uses 2 for throw; ordinary return uses 1.
-        self.current_ir_mut().stack_depth = base_depth + 5;
+        self.current_ir_mut().context.stack_depth = base_depth + 5;
         let return_target = self.current_ir().ops.len();
         self.patch_jump(return_resume, return_target)?;
         self.emit_instruction(Instruction::PushI32(2))?;
@@ -203,7 +208,7 @@ impl<'source> Parser<'source> {
         }
         self.emit_return_completion(yield_span, true)?;
 
-        self.current_ir_mut().stack_depth = base_depth + 4;
+        self.current_ir_mut().context.stack_depth = base_depth + 4;
         let throw_target = self.current_ir().ops.len();
         self.patch_jump(throw_resume, throw_target)?;
         self.emit_instruction(Instruction::IteratorCall(IteratorCallKind::ThrowWithValue))?;
@@ -233,7 +238,7 @@ impl<'source> Parser<'source> {
         let end_target = self.current_ir().ops.len();
         self.patch_jump(initial_done, end_target)?;
         self.patch_jump(throw_done, end_target)?;
-        self.current_ir_mut().stack_depth = base_depth + 4;
+        self.current_ir_mut().context.stack_depth = base_depth + 4;
         self.emit_instruction(Instruction::GetField(value))?;
         for _ in 0..3 {
             self.emit_instruction(Instruction::Nip)?;

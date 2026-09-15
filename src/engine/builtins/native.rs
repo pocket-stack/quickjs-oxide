@@ -1960,12 +1960,61 @@ impl NativeFunctionId {
 /// Per-object native callable metadata. The own `length` property remains an
 /// independent ordinary property and may be modified without affecting
 /// `min_readable_args`, just as in QuickJS.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy)]
 pub struct NativeFunctionData {
+    /// Constructor-only identity. Never mutate a live payload's target: the
+    /// sealed operation below is derived together with it. Replacement uses
+    /// NativeFunctionData::new so both facts remain consistent.
     pub target: NativeFunctionId,
     /// `None` exists only during `%Function.prototype%` realm bootstrap.
     pub realm: Option<ContextId>,
     pub min_readable_args: u8,
+    #[cfg(feature = "stack-vm")]
+    operation: Option<super::continuation::NativeOperation>,
+}
+impl NativeFunctionData {
+    pub(crate) fn new(
+        target: NativeFunctionId,
+        realm: Option<ContextId>,
+        min_readable_args: u8,
+    ) -> Self {
+        Self {
+            target,
+            realm,
+            min_readable_args,
+            #[cfg(feature = "stack-vm")]
+            operation: super::continuation::NativeOperation::for_target(target),
+        }
+    }
+    /// Immutable dispatch fact established with the native payload, never a
+    /// cache of a runtime property lookup or mutable function length.
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn operation(&self) -> Option<super::continuation::NativeOperation> {
+        self.operation
+    }
+}
+impl std::fmt::Debug for NativeFunctionData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFunctionData")
+            .field("target", &self.target)
+            .field("realm", &self.realm)
+            .field("min_readable_args", &self.min_readable_args)
+            .finish()
+    }
+}
+// The dispatch fact is derived only from target; equality/hash intentionally
+// preserve the public metadata identity, including non-stack builds.
+impl PartialEq for NativeFunctionData {
+    fn eq(&self, other: &Self) -> bool {
+        (self.target, self.realm, self.min_readable_args)
+            == (other.target, other.realm, other.min_readable_args)
+    }
+}
+impl Eq for NativeFunctionData {}
+impl Hash for NativeFunctionData {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.target, self.realm, self.min_readable_args).hash(state);
+    }
 }
 
 #[cfg(all(test, feature = "test262-host"))]

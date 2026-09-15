@@ -53,10 +53,13 @@ impl Context {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
-        match self
+        #[cfg(feature = "stack-vm")]
+        let result = crate::engine::vm::entry::own(&self.runtime, self.realm, object, key)?;
+        #[cfg(not(feature = "stack-vm"))]
+        let result = self
             .runtime
-            .internal_get_own_property(self.realm, object, key)?
-        {
+            .internal_get_own_property(self.realm, object, key)?;
+        match result {
             NativeConversion::Value(value) => Ok(value),
             NativeConversion::Throw(value) => {
                 self.runtime.set_pending_exception(value)?;
@@ -71,6 +74,17 @@ impl Context {
         key: &PropertyKey,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<bool, RuntimeError> {
+        #[cfg(feature = "stack-vm")]
+        {
+            return self.finish_property_bool(crate::engine::vm::entry::define(
+                &self.runtime,
+                self.realm,
+                object,
+                key,
+                descriptor,
+            )?);
+        }
+        #[cfg(not(feature = "stack-vm"))]
         match self
             .runtime
             .internal_define_own_property(self.realm, object, key, descriptor)?
@@ -91,6 +105,15 @@ impl Context {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Value, RuntimeError> {
+        #[cfg(feature = "stack-vm")]
+        let completion = crate::engine::vm::entry::get(
+            &self.runtime,
+            self.realm,
+            object,
+            key,
+            Value::Object(object.clone()),
+        )?;
+        #[cfg(not(feature = "stack-vm"))]
         let completion =
             self.runtime
                 .internal_get(self.realm, object, key, Value::Object(object.clone()))?;
@@ -103,6 +126,10 @@ impl Context {
         key: &PropertyKey,
         receiver: Value,
     ) -> Result<Value, RuntimeError> {
+        #[cfg(feature = "stack-vm")]
+        let completion =
+            crate::engine::vm::entry::get(&self.runtime, self.realm, object, key, receiver)?;
+        #[cfg(not(feature = "stack-vm"))]
         let completion = self
             .runtime
             .internal_get(self.realm, object, key, receiver)?;
@@ -115,6 +142,18 @@ impl Context {
         key: &PropertyKey,
         value: Value,
     ) -> Result<bool, RuntimeError> {
+        #[cfg(feature = "stack-vm")]
+        {
+            return self.finish_property_bool(crate::engine::vm::entry::set(
+                &self.runtime,
+                self.realm,
+                object,
+                key,
+                value,
+                Value::Object(object.clone()),
+            )?);
+        }
+        #[cfg(not(feature = "stack-vm"))]
         match self.runtime.internal_set(
             self.realm,
             object,
@@ -140,6 +179,18 @@ impl Context {
         value: Value,
         receiver: Value,
     ) -> Result<bool, RuntimeError> {
+        #[cfg(feature = "stack-vm")]
+        {
+            return self.finish_property_bool(crate::engine::vm::entry::set(
+                &self.runtime,
+                self.realm,
+                object,
+                key,
+                value,
+                receiver,
+            )?);
+        }
+        #[cfg(not(feature = "stack-vm"))]
         match self
             .runtime
             .internal_set(self.realm, object, key, value, receiver)?
@@ -148,6 +199,19 @@ impl Context {
             NativeConversion::Value(
                 InternalSetResult::Rejected(_) | InternalSetResult::RejectedProxyTrap,
             ) => Ok(false),
+            NativeConversion::Throw(value) => {
+                self.runtime.set_pending_exception(value)?;
+                Err(RuntimeError::Exception)
+            }
+        }
+    }
+    #[cfg(feature = "stack-vm")]
+    fn finish_property_bool(
+        &mut self,
+        result: NativeConversion<bool>,
+    ) -> Result<bool, RuntimeError> {
+        match result {
+            NativeConversion::Value(value) => Ok(value),
             NativeConversion::Throw(value) => {
                 self.runtime.set_pending_exception(value)?;
                 Err(RuntimeError::Exception)

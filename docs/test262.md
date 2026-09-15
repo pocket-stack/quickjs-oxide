@@ -64,3 +64,14 @@ the stored message and location cannot drift into an Oxide-only oracle.
 Historical per-milestone profiles, copied shell gates, and result vectors are
 not executable policy. They are preserved in the release archive listed in
 [`dev-support/test262/archive/index.tsv`](../dev-support/test262/archive/index.tsv).
+
+## 栈 VM 的显式测试配置
+
+`./scripts/test262/test-test262.sh --stack-vm --full` 使用同一冻结 Test262 向量验收
+非默认 VM；省略 `--stack-vm` 验收默认配置。两者不修改 admission、skip 或期望值。
+构建读取 Cargo compiler-artifact 的实际 features，并将配置、源码指纹和二进制哈希
+写入 `target/test262-runner-{default|stack-vm}.json`。栈 VM 的完整结果另存为
+`target/test262-stack-vm-full.{tsv,jsonl}`，避免覆盖默认结果。
+完整执行先认证当前 runner 与报告的源码指纹，再对冻结 receipt 校验结果字节。
+若源码指纹不同，仅在临时副本中还原首行的来源字段，然后比较原冻结 SHA-256；
+其他 metadata 和逐用例结果必须完全一致，保存的原报告仍保留当前源码指纹。

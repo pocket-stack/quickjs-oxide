@@ -42,6 +42,8 @@ impl Runtime {
         program: Rc<CompiledRegExp>,
         matched: RegExpMatch,
     ) -> Result<Value, RuntimeError> {
+        #[cfg(feature = "profiling")]
+        crate::engine::api::profiling::record_owned_execution_event("regexp_result.build");
         let capture_count = matched.captures().len();
         if usize::from(program.capture_count()) != capture_count {
             return Err(RuntimeError::Invariant(
@@ -148,6 +150,8 @@ impl Runtime {
         named: &NamedCaptures,
         indices: bool,
     ) -> Result<ObjectRef, RuntimeError> {
+        #[cfg(feature = "profiling")]
+        crate::engine::api::profiling::record_owned_execution_event("regexp_result.groups_layout");
         let entries = named
             .values
             .iter()
@@ -180,6 +184,8 @@ impl Runtime {
         object: &ObjectRef,
         properties: &[(&str, Value)],
     ) -> Result<(), RuntimeError> {
+        #[cfg(feature = "profiling")]
+        crate::engine::api::profiling::record_owned_execution_event("regexp_result.array_layout");
         let keys = properties
             .iter()
             .map(|(name, _)| self.intern_property_key(name))
@@ -280,6 +286,66 @@ Object.keys(right.groups).join(",") === "x"
     fn named_groups_force_standard_string_replace_through_get_substitution() {
         assert_eval_true(
             r#"/b/[Symbol.replace]("b", "<$<x>>") === "<$<x>>" && /(?<x>b)/[Symbol.replace]("b", "<$<x>>") === "<b>""#,
+        );
+    }
+    #[test]
+    fn global_match_private_output_ignores_prototype_setters_and_keeps_callback_order() {
+        assert_eval_true(
+            r#"
+(function () {
+    var calls = 0, trace = "", setterCalls = 0;
+    var re = {flags: "g", lastIndex: 0, exec: function () {
+        trace += "e";
+        if (calls++ === 2) return null;
+        return {get 0() { trace += "g"; return {toString: function () {
+            trace += "s"; return "a";
+        }}; }};
+    }};
+    Object.defineProperty(Array.prototype, "0", {
+        configurable: true, set: function () { setterCalls++; }
+    });
+    var result;
+    try { result = RegExp.prototype[Symbol.match].call(re, "aa"); }
+    finally { delete Array.prototype["0"]; }
+    var first = Object.getOwnPropertyDescriptor(result, "0");
+    return trace === "egsegse" && setterCalls === 0 && result.length === 2 &&
+        result[0] === "a" && result[1] === "a" && first.writable &&
+        first.enumerable && first.configurable &&
+        Object.getPrototypeOf(result) === Array.prototype;
+})()
+"#,
+        );
+    }
+
+    #[test]
+    fn split_private_output_preserves_capture_identity_and_limit_order() {
+        assert_eval_true(
+            r#"
+(function () {
+    var token = {}, trace = "", setterCalls = 0;
+    var splitter = {lastIndex: 0, exec: function () {
+        trace += "e";
+        if (this.lastIndex === 0) return null;
+        this.lastIndex = 2;
+        return {length: 3, get 1() { trace += "a"; return token; },
+            get 2() { trace += "b"; throw "must not read past limit"; }};
+    }};
+    var re = {flags: "", constructor: {[Symbol.species]: function () {
+        trace += "c"; return splitter;
+    }}};
+    Object.defineProperty(Array.prototype, "1", {
+        configurable: true, set: function () { setterCalls++; }
+    });
+    var result;
+    try { result = RegExp.prototype[Symbol.split].call(re, "abc", 2); }
+    finally { delete Array.prototype["1"]; }
+    var capture = Object.getOwnPropertyDescriptor(result, "1");
+    return trace === "ceea" && setterCalls === 0 && result.length === 2 &&
+        result[0] === "a" && result[1] === token && capture.writable &&
+        capture.enumerable && capture.configurable &&
+        Object.getPrototypeOf(result) === Array.prototype;
+})()
+"#,
         );
     }
 }

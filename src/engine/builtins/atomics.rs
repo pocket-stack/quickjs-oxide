@@ -19,9 +19,12 @@ use std::time::Duration;
 
 use super::*;
 
+mod operation;
 #[cfg(test)]
 mod tests;
 mod waiter;
+#[cfg(feature = "stack-vm")]
+pub(crate) use operation::{AtomicsResume, AtomicsStep};
 
 fn with_atomics_seq_cst<R>(operation: impl FnOnce() -> R) -> R {
     waiter::with_seq_cst(operation)
@@ -32,6 +35,12 @@ enum AtomicAccessMode {
     Operation,
     Notify,
     Wait,
+}
+
+struct AtomicAccessPreparation {
+    snapshot: TypedArraySnapshot,
+    buffer: BufferAccessToken,
+    old_length: u32,
 }
 
 struct AtomicAccess {
@@ -178,13 +187,12 @@ impl Runtime {
     /// waiter list. `Wait` rejects an ordinary backing before index,
     /// expected-value, or timeout coercion, while a shared backing continues
     /// through the pinned wait sequence.
-    fn atomics_get_access(
+    fn atomics_prepare_access(
         &self,
         realm: ContextId,
         typed_array: &Value,
-        index: &Value,
         mode: AtomicAccessMode,
-    ) -> Result<NativeConversion<AtomicAccess>, RuntimeError> {
+    ) -> Result<NativeConversion<AtomicAccessPreparation>, RuntimeError> {
         let Value::Object(object) = typed_array else {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
@@ -236,10 +244,25 @@ impl Runtime {
         // QuickJS snapshots p->u.array.count before ToIndex because the
         // conversion may resize or detach the backing buffer.
         let old_length = self.typed_array_state_from_snapshot(snapshot)?.length;
-        let index = match self.native_to_index(realm, index)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
+        Ok(NativeConversion::Value(AtomicAccessPreparation {
+            snapshot,
+            buffer: buffer_access,
+            old_length,
+        }))
+    }
+
+    fn atomics_finish_access(
+        &self,
+        realm: ContextId,
+        prepared: AtomicAccessPreparation,
+        index: u64,
+        mode: AtomicAccessMode,
+    ) -> Result<NativeConversion<AtomicAccess>, RuntimeError> {
+        let AtomicAccessPreparation {
+            snapshot,
+            buffer: buffer_access,
+            old_length,
+        } = prepared;
         if index >= u64::from(old_length) {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
@@ -305,63 +328,16 @@ impl Runtime {
         operation: AtomicsOperationKind,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let typed_array = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Atomics TypedArray was not readable",
-        ))?;
-        let index = arguments
-            .readable
-            .get(1)
-            .ok_or(RuntimeError::Invariant("Atomics index was not readable"))?;
-        let access = match self.atomics_get_access(
+        operation::finish(
+            self,
             realm,
-            typed_array,
-            index,
-            AtomicAccessMode::Operation,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        if operation == AtomicsOperationKind::Load {
-            return Ok(Completion::Return(self.atomics_load(&access)?));
-        }
-
-        let operand = match self.typed_array_convert_element(
-            realm,
-            access.snapshot.element,
-            arguments
-                .readable
-                .get(2)
-                .ok_or(RuntimeError::Invariant("Atomics operand was not readable"))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let replacement = if operation == AtomicsOperationKind::CompareExchange {
-            match self.typed_array_convert_element(
+            operation::AtomicsStep::start(
+                self,
                 realm,
-                access.snapshot.element,
-                arguments.readable.get(3).ok_or(RuntimeError::Invariant(
-                    "Atomics replacement was not readable",
-                ))?,
-            )? {
-                NativeConversion::Value(value) => Some(value),
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        } else {
-            None
-        };
-
-        match self.atomics_revalidate_after_value(realm, &access)? {
-            NativeConversion::Value(()) => {}
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        }
-        Ok(Completion::Return(self.atomics_modify(
-            &access,
-            operation,
-            operand,
-            replacement,
-        )?))
+                AtomicsNativeKind::Operation(operation),
+                arguments,
+            )?,
+        )
     }
 
     fn atomics_load(&self, access: &AtomicAccess) -> Result<Value, RuntimeError> {
@@ -430,61 +406,11 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let access = match self.atomics_get_access(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Atomics.store view was not readable",
-            ))?,
-            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "Atomics.store index was not readable",
-            ))?,
-            AtomicAccessMode::Operation,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let input = arguments.readable.get(2).ok_or(RuntimeError::Invariant(
-            "Atomics.store value was not readable",
-        ))?;
-        let stored_value = if access.snapshot.element.is_bigint() {
-            match self.native_to_bigint(realm, input)? {
-                NativeConversion::Value(value) => Value::BigInt(value),
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        } else {
-            let number = match self.native_to_number(realm, input)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let integer = if number.is_nan() {
-                0.0
-            } else {
-                let integer = number.trunc();
-                if integer == 0.0 { 0.0 } else { integer }
-            };
-            Value::number(integer)
-        };
-        let bytes = match self.typed_array_convert_element(
-            realm,
-            access.snapshot.element,
-            &stored_value,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(_) => {
-                return Err(RuntimeError::Invariant(
-                    "primitive Atomics.store value failed its second conversion",
-                ));
-            }
-        };
-        match self.atomics_revalidate_after_value(realm, &access)? {
-            NativeConversion::Value(()) => {}
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        }
-
-        let width = usize::from(access.snapshot.element.byte_length());
-        let offset = atomic_absolute_byte_offset(&access)?;
-        with_atomics_seq_cst(|| self.write_buffer_word(&access.buffer, offset, &bytes[..width]))?;
-        Ok(Completion::Return(stored_value))
+            operation::AtomicsStep::start(self, realm, AtomicsNativeKind::Store, arguments)?,
+        )
     }
 
     fn call_atomics_is_lock_free(
@@ -492,20 +418,11 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let number = match self.native_to_number(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Atomics.isLockFree size was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let size = atomic_to_int32_sat(number);
-        Ok(Completion::Return(Value::Bool(matches!(
-            size,
-            1 | 2 | 4 | 8
-        ))))
+            operation::AtomicsStep::start(self, realm, AtomicsNativeKind::IsLockFree, arguments)?,
+        )
     }
 
     fn call_atomics_pause(
@@ -544,40 +461,45 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let access = match self.atomics_get_access(
+        operation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Atomics.wait view was not readable",
-            ))?,
-            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "Atomics.wait index was not readable",
-            ))?,
-            AtomicAccessMode::Wait,
-        )? {
-            NativeConversion::Value(access) => access,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+            operation::AtomicsStep::start(self, realm, AtomicsNativeKind::Wait, arguments)?,
+        )
+    }
 
-        let expected = match self.typed_array_convert_element(
+    fn call_atomics_notify(
+        &self,
+        realm: ContextId,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        operation::finish(
+            self,
             realm,
-            access.snapshot.element,
-            arguments.readable.get(2).ok_or(RuntimeError::Invariant(
-                "Atomics.wait expected value was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let timeout = match self.native_to_number(
-            realm,
-            arguments.readable.get(3).ok_or(RuntimeError::Invariant(
-                "Atomics.wait timeout was not readable",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => atomic_wait_timeout(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+            operation::AtomicsStep::start(self, realm, AtomicsNativeKind::Notify, arguments)?,
+        )
+    }
+}
 
+impl Runtime {
+    fn atomics_store_converted(
+        &self,
+        access: &AtomicAccess,
+        stored_value: Value,
+        bytes: [u8; 8],
+    ) -> Result<Completion, RuntimeError> {
+        let width = usize::from(access.snapshot.element.byte_length());
+        let offset = atomic_absolute_byte_offset(&access)?;
+        with_atomics_seq_cst(|| self.write_buffer_word(&access.buffer, offset, &bytes[..width]))?;
+        Ok(Completion::Return(stored_value))
+    }
+    fn atomics_wait_converted(
+        &self,
+        realm: ContextId,
+        access: &AtomicAccess,
+        expected: [u8; 8],
+        timeout: Option<Duration>,
+    ) -> Result<Completion, RuntimeError> {
         // QuickJS deliberately checks the host policy after every observable
         // conversion, even when the current memory value would be unequal.
         if !self.can_block() {
@@ -611,39 +533,11 @@ impl Runtime {
             result,
         ))))
     }
-
-    fn call_atomics_notify(
+    fn atomics_notify_converted(
         &self,
-        realm: ContextId,
-        arguments: &NativeArguments,
+        access: &AtomicAccess,
+        count: i32,
     ) -> Result<Completion, RuntimeError> {
-        let access = match self.atomics_get_access(
-            realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "Atomics.notify view was not readable",
-            ))?,
-            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "Atomics.notify index was not readable",
-            ))?,
-            AtomicAccessMode::Notify,
-        )? {
-            NativeConversion::Value(access) => access,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let count_value = arguments.readable.get(2).ok_or(RuntimeError::Invariant(
-            "Atomics.notify count was not readable",
-        ))?;
-        let count = if matches!(count_value, Value::Undefined) {
-            i32::MAX
-        } else {
-            let number = match self.native_to_number(realm, count_value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            atomic_to_int32_sat(number).clamp(0, i32::MAX)
-        };
-
         if count == 0 || !access.buffer.is_shared() {
             return Ok(Completion::Return(Value::Int(0)));
         }

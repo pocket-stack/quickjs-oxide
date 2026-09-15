@@ -32,14 +32,24 @@ impl Runtime {
             realm,
             object,
             key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
+            &Self::public_class_field_descriptor(value),
         )?;
+        Self::finish_public_class_field_definition(outcome)
+    }
+
+    pub(crate) fn public_class_field_descriptor(value: Value) -> OrdinaryPropertyDescriptor {
+        OrdinaryPropertyDescriptor {
+            value: DescriptorField::Present(value),
+            writable: DescriptorField::Present(true),
+            enumerable: DescriptorField::Present(true),
+            configurable: DescriptorField::Present(true),
+            ..OrdinaryPropertyDescriptor::new()
+        }
+    }
+
+    pub(crate) fn finish_public_class_field_definition(
+        outcome: NativeConversion<InternalDefineResult>,
+    ) -> Result<PropertyDefineOutcome, RuntimeError> {
         match outcome {
             NativeConversion::Value(InternalDefineResult::Defined) => {
                 Ok(PropertyDefineOutcome::Defined(true))
@@ -214,6 +224,22 @@ impl Runtime {
         constructor: Value,
         receiver: Value,
     ) -> Result<Completion, RuntimeError> {
+        let Some(initializer) =
+            self.begin_class_instance_initializer(caller_realm, constructor, &receiver)?
+        else {
+            return Ok(Completion::Return(Value::Undefined));
+        };
+        self.call_internal(caller_realm, &initializer, receiver, &[])
+    }
+
+    /// Authenticate and install the instance brand once, before the selected
+    /// initializer is invoked. This preparation cannot call JavaScript.
+    pub(crate) fn begin_class_instance_initializer(
+        &self,
+        caller_realm: ContextId,
+        constructor: Value,
+        receiver: &Value,
+    ) -> Result<Option<CallableRef>, RuntimeError> {
         let (constructor, constructor_realm) = self.class_constructor_object(constructor)?;
         if caller_realm != constructor_realm {
             return Err(RuntimeError::Invariant(
@@ -221,7 +247,7 @@ impl Runtime {
             ));
         }
         let prototype = self.published_class_prototype(&constructor)?;
-        let Value::Object(receiver_object) = &receiver else {
+        let Value::Object(receiver_object) = receiver else {
             return Err(RuntimeError::Invariant(
                 "class instance initializer receiver is not an Object",
             ));
@@ -238,7 +264,7 @@ impl Runtime {
                 .bytecode_class_instance_initializer(constructor.object_id())?
         };
         let Some(initializer) = initializer else {
-            return Ok(Completion::Return(Value::Undefined));
+            return Ok(None);
         };
         let initializer = ObjectRef::from_borrowed_handle(self.clone(), initializer)?;
         let (initializer, initializer_realm, private_brand) = self.class_initializer_callable(
@@ -256,7 +282,7 @@ impl Runtime {
         if private_brand {
             self.add_private_method_brand(&prototype, receiver_object)?;
         }
-        self.call_internal(caller_realm, &initializer, receiver, &[])
+        Ok(Some(initializer))
     }
 
     pub(crate) fn run_class_static_initializer(
@@ -265,6 +291,19 @@ impl Runtime {
         constructor: Value,
         initializer: Value,
     ) -> Result<Completion, RuntimeError> {
+        let (initializer, receiver) =
+            self.begin_class_static_initializer(caller_realm, constructor, initializer)?;
+        self.call_internal(caller_realm, &initializer, receiver, &[])
+    }
+
+    /// Commit the one-shot static initialization state and HomeObject before
+    /// scheduling its body. This preparation cannot invoke JavaScript.
+    pub(crate) fn begin_class_static_initializer(
+        &self,
+        caller_realm: ContextId,
+        constructor: Value,
+        initializer: Value,
+    ) -> Result<(CallableRef, Value), RuntimeError> {
         let (constructor, constructor_realm) = self.class_constructor_object(constructor)?;
         if caller_realm != constructor_realm {
             return Err(RuntimeError::Invariant(
@@ -295,7 +334,7 @@ impl Runtime {
             self.ensure_private_brand_home(&constructor)?;
             self.add_private_method_brand(&constructor, &constructor)?;
         }
-        self.call_internal(caller_realm, &initializer, Value::Object(constructor), &[])
+        Ok((initializer, Value::Object(constructor)))
     }
 
     pub(crate) fn call_class_static_block(
@@ -305,6 +344,19 @@ impl Runtime {
         this_value: Value,
         block: Value,
     ) -> Result<Completion, RuntimeError> {
+        let block =
+            self.begin_class_static_block(caller_realm, static_initializer, &this_value, block)?;
+        self.call_internal(caller_realm, &block, this_value, &[])
+    }
+
+    /// Authenticate a fresh block and attach the parent's HomeObject once.
+    pub(crate) fn begin_class_static_block(
+        &self,
+        caller_realm: ContextId,
+        static_initializer: &ObjectRef,
+        this_value: &Value,
+        block: Value,
+    ) -> Result<CallableRef, RuntimeError> {
         let (parent, parent_realm, _) = self.class_initializer_callable(
             Value::Object(static_initializer.clone()),
             ClassInitializerKind::StaticElements,
@@ -319,7 +371,7 @@ impl Runtime {
         if block_private_brand
             || caller_realm != parent_realm
             || block_realm != parent_realm
-            || this_value != Value::Object(home_object.clone())
+            || *this_value != Value::Object(home_object.clone())
             || self
                 .bytecode_function_home_object(block.as_object())?
                 .is_some()
@@ -329,7 +381,7 @@ impl Runtime {
             ));
         }
         self.install_object_literal_home_object(&block, &home_object)?;
-        self.call_internal(caller_realm, &block, this_value, &[])
+        Ok(block)
     }
 }
 

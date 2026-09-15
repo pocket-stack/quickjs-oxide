@@ -1,12 +1,17 @@
-# 模块实例与执行
+# JavaScript 模块
 
-负责模块加载接口、实例、连接、命名空间、求值、动态导入和顶层 await。
+modules 负责 ECMAScript 模块实例及依赖图，从加载请求、链接到求值，
+维护 live bindings、模块命名空间、循环依赖和顶层 await。动态 import
+以及异步依赖的完成也在这条模块生命周期中处理。
 
-应用提供来源与加载策略；code 拥有模块草稿，heap 保存记录，jobs 驱动延后完成。
+应用通过 ModuleLoader 提供名称规范化、属性校验与源码加载策略。
+code 提供模块草稿和已发布代码，heap 保存实例记录，VM 执行模块代码，
+jobs 承接延后完成。模块层决定图的状态转换和错误传播，不自行实现
+文件系统或浏览器加载器。
 
-## 文件与子目录
+加载回调可以使用发起请求的 Context 重入引擎。请求顺序、可见模块身份、
+失败状态和抛出值的 Object/Symbol 身份需要保持一致；不能把任意 JS
+异常简化为字符串，也不能重复执行已完成的加载阶段。
 
-- [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
-- [namespace.rs](namespace.rs)：ECMAScript Module Namespace Exotic Object storage helpers.。
-- [tests/](tests/README.md)：子模块职责与文件说明。
-- [tests.rs](tests.rs)：模块回归测试。
+模块与统一 VM 驱动的集成见[迁移清单](../../../docs/primitive-vm-migration.md)。
+加载、链接和异步图调度仍属于本模块。

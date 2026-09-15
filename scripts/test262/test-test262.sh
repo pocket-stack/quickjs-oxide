@@ -11,7 +11,7 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 default_spec=dev-support/test262/current.conf
 
 usage() {
-    printf 'usage: %s [--spec FILE] [--check|--runner-provenance|--focused|--full]\n' "${0##*/}"
+    printf 'usage: %s [--spec FILE] [--stack-vm] [--check|--runner-provenance|--focused|--full]\n' "${0##*/}"
     printf '  --check    authenticate the baseline and report source freshness\n'
     printf '  --runner-provenance  build and authenticate the current Rust runner\n'
     printf '  --focused  rerun and byte-compare the focused milestone receipt\n'
@@ -20,11 +20,19 @@ usage() {
 
 die() { echo "error: $*" >&2; exit 1; }
 
+vm_configuration=default
+vm_features=()
 mode=check
 spec_arg=$default_spec
 mode_seen=false
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --stack-vm)
+            [[ "$vm_configuration" == default ]] || { usage >&2; exit 2; }
+            vm_configuration=stack-vm
+            vm_features=(--features stack-vm)
+            shift
+            ;;
         --spec)
             [[ $# -ge 2 ]] || { usage >&2; exit 2; }
             spec_arg=$2
@@ -293,8 +301,35 @@ verify_report() {
         || die "$prefix report metadata drifted"
     verify_json_projection "$report" "$json" "$expected_variants" \
         "$expected_summary" "$expected_engine_semantics_sha256" "$report_schema"
-    check_file "$report" "$expected_tsv_lines" "$expected_tsv_sha" "$prefix TSV receipt"
-    check_file "$json" "$expected_jsonl_lines" "$expected_jsonl_sha" "$prefix JSONL receipt"
+    if [[ "$prefix" == full && "$expected_engine_semantics_sha256" != "$(spec_value engine_semantics_sha256)" ]]; then
+        # Authenticate current provenance above, then compare every result byte
+        # against the frozen receipt with only its first-line source identity restored.
+        # The current-source reports remain untouched and retain their real provenance.
+        python3 - "$report" "$json" "$tmp" "$expected_engine_semantics_sha256" \
+            "$(spec_value engine_semantics_sha256)" <<'PY_RECEIPT_IDENTITY'
+from pathlib import Path
+import sys
+for source, kind in [(sys.argv[1], "tsv"), (sys.argv[2], "jsonl")]:
+    first, separator, body = Path(source).read_bytes().partition(b"\n")
+    assert separator, "receipt metadata line is missing"
+    current = sys.argv[4].encode()
+    baseline = sys.argv[5].encode()
+    if kind == "tsv":
+        marker = b"engine_semantics_sha256=" + current
+        replacement = b"engine_semantics_sha256=" + baseline
+    else:
+        marker = b'"engine_semantics_sha256":"' + current + b'"'
+        replacement = b'"engine_semantics_sha256":"' + baseline + b'"'
+    assert first.count(marker) == 1, "receipt source identity is not unique"
+    (Path(sys.argv[3]) / ("full-source-normalized." + kind)).write_bytes(
+        first.replace(marker, replacement, 1) + separator + body)
+PY_RECEIPT_IDENTITY
+        check_file "$tmp/full-source-normalized.tsv" "$expected_tsv_lines" "$expected_tsv_sha" "$prefix TSV result bytes"
+        check_file "$tmp/full-source-normalized.jsonl" "$expected_jsonl_lines" "$expected_jsonl_sha" "$prefix JSONL result bytes"
+    else
+        check_file "$report" "$expected_tsv_lines" "$expected_tsv_sha" "$prefix TSV receipt"
+        check_file "$json" "$expected_jsonl_lines" "$expected_jsonl_sha" "$prefix JSONL receipt"
+    fi
     [[ "$(report_variants "$report")" == "$expected_variants" \
         && "$(report_runnable "$report")" == "$expected_eligible" \
         && "$expected_eligible" == "$expected_runnable" \
@@ -405,6 +440,10 @@ output_dir=$root/target
     || die 'target output directory must not be a symbolic link'
 full_report=$output_dir/test262-full.tsv
 full_json=$output_dir/test262-full.jsonl
+if [[ "$vm_configuration" == stack-vm ]]; then
+    full_report=$output_dir/test262-stack-vm-full.tsv
+    full_json=$output_dir/test262-stack-vm-full.jsonl
+fi
 
 check_file "$engine_fingerprint_tool" "$(spec_value engine_fingerprint_tool_lines)" \
     "$(spec_value engine_fingerprint_tool_sha256)" 'engine fingerprint tool'
@@ -504,7 +543,14 @@ esac
 build_host=$(rustc -vV | awk '$1=="host:" { print $2; found++ } END { if (found!=1) exit 1 }')
 QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256=$workspace_engine_semantics_sha256 \
     cargo build --locked --release --target "$build_host" \
-    --target-dir "$target_dir" -p quickjs-oxide-test262 --bin run-test262
+    --target-dir "$target_dir" -p quickjs-oxide-test262 --bin run-test262 \
+    "${vm_features[@]}" --message-format json-render-diagnostics > "$tmp/runner-build.jsonl"
+python3 - "$tmp/runner-build.jsonl" "$vm_configuration" <<'PY_BUILD'
+import json, sys
+artifacts = [r for line in open(sys.argv[1]) if (r := json.loads(line)).get("reason") == "compiler-artifact" and r.get("target", {}).get("name") == "run-test262"]
+assert len(artifacts) == 1, "expected one authenticated runner artifact"
+assert ("stack-vm" in artifacts[0]["features"]) == (sys.argv[2] == "stack-vm"), "runner VM feature mismatch"
+PY_BUILD
 assert_workspace_engine_unchanged 'runner build'
 built_runner=$target_dir/$build_host/release/run-test262
 [[ -f "$built_runner" && -x "$built_runner" && ! -L "$built_runner" ]] \
@@ -541,6 +587,14 @@ assert_workspace_engine_unchanged 'runner authentication'
 runner_sha256=$(sha256_file "$runner")
 printf 'Rust Test262 runner provenance passed: engine_semantics_sha256=%s binary_sha256=%s\n' \
     "$workspace_engine_semantics_sha256" "$runner_sha256"
+
+python3 - "$output_dir/test262-runner-$vm_configuration.json" "$tmp/runner-build.jsonl" "$vm_configuration" "$workspace_engine_semantics_sha256" "$runner_sha256" <<'PY_RECEIPT'
+import json, sys
+artifact = next(r for line in open(sys.argv[2]) if (r := json.loads(line)).get("reason") == "compiler-artifact" and r.get("target", {}).get("name") == "run-test262")
+with open(sys.argv[1], "w") as output:
+    json.dump(dict(vm_configuration=sys.argv[3], features=artifact["features"], engine_semantics_sha256=sys.argv[4], binary_sha256=sys.argv[5]), output, indent=2)
+    output.write("\n")
+PY_RECEIPT
 
 if [[ "$mode" == runner-provenance ]]; then
     exit 0

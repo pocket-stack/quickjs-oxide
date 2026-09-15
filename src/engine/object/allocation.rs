@@ -602,10 +602,33 @@ impl Runtime {
     /// handle failures remain explicit errors.
     pub fn as_callable(&self, object: &ObjectRef) -> Result<Option<CallableRef>, RuntimeError> {
         let _operation = self.operation();
+        if !self.object_has_call_capability(object)? {
+            return Ok(None);
+        }
+        Ok(Some(CallableRef::from_validated_object(object.clone())))
+    }
+
+    /// The inner error returns the unchanged non-callable owner so callers can
+    /// continue Proxy classification without retaining a second object root.
+    pub(crate) fn try_into_callable(
+        &self,
+        object: ObjectRef,
+    ) -> Result<Result<CallableRef, ObjectRef>, RuntimeError> {
+        let _operation = self.operation();
+        if self.object_has_call_capability(&object)? {
+            Ok(Ok(CallableRef::from_validated_object(object)))
+        } else {
+            Ok(Err(object))
+        }
+    }
+
+    /// Shared payload authority. Both callers hold an operation boundary and
+    /// keep the root alive through the immutable heap lookup and promotion.
+    fn object_has_call_capability(&self, object: &ObjectRef) -> Result<bool, RuntimeError> {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("object"));
         }
-        let callable = matches!(
+        Ok(matches!(
             self.0
                 .state
                 .borrow()
@@ -619,11 +642,7 @@ impl Runtime {
                     is_callable: true,
                     ..
                 })
-        );
-        if !callable {
-            return Ok(None);
-        }
-        Ok(Some(CallableRef::from_validated_object(object.clone())))
+        ))
     }
 
     /// Instantiate one runtime-owned bytecode node as a callable object in the
@@ -776,5 +795,100 @@ impl Runtime {
             slots.push(root);
         }
         self.new_bytecode_closure_with_slots(caller_realm, function, &slots)
+    }
+}
+
+#[cfg(test)]
+mod owned_callable_tests {
+    use super::*;
+    use crate::engine::vm::call::DirectCallTarget;
+
+    #[test]
+    fn owned_and_borrowed_callable_promotion_share_payload_rules() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        for source in [
+            "(function(){})",
+            "Math.min",
+            "(function(){}).bind(null)",
+            "new Proxy(function(){},{apply(){throw 'not during classification';}})",
+            "(()=>{let r=Proxy.revocable(function(){},{});r.revoke();return r.proxy;})()",
+        ] {
+            let Value::Object(object) = context.eval(source).unwrap() else {
+                panic!("expected object");
+            };
+            let id = object.object_id();
+            let before = std::rc::Rc::strong_count(&runtime.0);
+            let borrowed = runtime.as_callable(&object).unwrap().unwrap();
+            assert_eq!(std::rc::Rc::strong_count(&runtime.0), before + 1);
+            assert_eq!(borrowed.as_object().object_id(), id);
+            drop(borrowed);
+            let owned = runtime.try_into_callable(object).unwrap().unwrap();
+            // This measures Runtime handle owners, not GC edge counts: promotion
+            // transports the existing handle instead of cloning a second one.
+            assert_eq!(std::rc::Rc::strong_count(&runtime.0), before);
+            assert_eq!(owned.as_object().object_id(), id);
+        }
+        for source in ["({})", "new Proxy({}, {})"] {
+            let Value::Object(object) = context.eval(source).unwrap() else {
+                panic!("expected object");
+            };
+            let id = object.object_id();
+            assert!(runtime.as_callable(&object).unwrap().is_none());
+            let object = runtime.try_into_callable(object).unwrap().unwrap_err();
+            assert_eq!(object.object_id(), id);
+        }
+    }
+
+    #[test]
+    fn owned_direct_call_promotion_preserves_domain_and_proxy_errors() {
+        let runtime = Runtime::new();
+        let foreign = Runtime::new();
+        let object = foreign.new_object(None).unwrap();
+        assert!(matches!(
+            runtime.direct_call_target_from_value(Value::Object(object)),
+            Err(RuntimeError::WrongRuntime("call target"))
+        ));
+        assert!(matches!(
+            runtime.direct_call_target_from_value(Value::Int(1)),
+            Err(RuntimeError::Engine(_))
+        ));
+        assert!(matches!(
+            runtime.direct_call_target_from_value(Value::Object(runtime.new_object(None).unwrap())),
+            Err(RuntimeError::Engine(_))
+        ));
+        let mut context = runtime.new_context();
+        let value = context
+            .eval("new Proxy({}, {get(){throw 'not during classification';}})")
+            .unwrap();
+        assert!(matches!(
+            runtime.direct_call_target_from_value(value).unwrap(),
+            DirectCallTarget::NonCallableProxy(_)
+        ));
+        let value = context
+            .eval("new Proxy(function(){}, {get(){throw 'not during classification';}})")
+            .unwrap();
+        assert!(matches!(
+            runtime.direct_call_target_from_value(value).unwrap(),
+            DirectCallTarget::Callable(_)
+        ));
+    }
+
+    #[test]
+    fn owned_callable_promotion_keeps_the_operation_cleanup_boundary() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let Value::Object(object) = context.eval("(function(){})").unwrap() else {
+            panic!("expected function");
+        };
+        let doomed = runtime.new_object(None).unwrap();
+        {
+            let _state = runtime.0.state.borrow();
+            drop(doomed);
+        }
+        assert!(runtime.0.deferred_references.has_pending());
+        let callable = runtime.try_into_callable(object).unwrap().unwrap();
+        assert!(!runtime.0.deferred_references.has_pending());
+        assert!(callable.belongs_to(&runtime));
     }
 }

@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn dynamic_import_load_and_finish_are_distinct_fifo_jobs_with_gc_roots() {
+    #[cfg(all(feature = "stack-vm", feature = "profiling"))]
+    let profile = crate::engine::api::profiling::CostProfile::start();
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let (loader, loads, _) = MapModuleLoader::new([(
@@ -44,10 +46,19 @@ fn dynamic_import_load_and_finish_are_distinct_fifo_jobs_with_gc_roots() {
         Completion::Return(Value::Int(42))
     );
     assert!(!runtime.is_job_pending());
+    #[cfg(all(feature = "stack-vm", feature = "profiling"))]
+    {
+        let snapshot = profile.snapshot();
+        assert_eq!(snapshot.legacy_dispatches, 0);
+        assert_eq!(snapshot.owned_bridge_exits, 0);
+        assert_eq!(snapshot.owned_sync_call_bridges, 0);
+    }
 }
 
 #[test]
 fn dynamic_import_waits_for_a_pending_tla_evaluation_and_reuses_it() {
+    #[cfg(all(feature = "stack-vm", feature = "profiling"))]
+    let profile = crate::engine::api::profiling::CostProfile::start();
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     context
@@ -140,6 +151,13 @@ fn dynamic_import_waits_for_a_pending_tla_evaluation_and_reuses_it() {
         "globalThis.__dynamicTlaLog.join(',') === 'start,end'",
     );
     assert!(!runtime.is_job_pending());
+    #[cfg(all(feature = "stack-vm", feature = "profiling"))]
+    {
+        let snapshot = profile.snapshot();
+        assert_eq!(snapshot.legacy_dispatches, 0);
+        assert_eq!(snapshot.owned_bridge_exits, 0);
+        assert_eq!(snapshot.owned_sync_call_bridges, 0);
+    }
 }
 
 #[test]

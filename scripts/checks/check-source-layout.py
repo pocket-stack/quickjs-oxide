@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check candidate-A source ownership, module reachability and directory guides."""
+"""Check source ownership, module reachability and the public API boundary."""
 from pathlib import Path
 import re
 import sys
@@ -19,7 +19,7 @@ if {p.name for p in src.glob("*.rs")} != {"lib.rs"}:
 if {p.name for p in src.iterdir() if p.is_dir()} != {"engine", "source", "regexp"}:
     errors.append("src directories must be engine, source and regexp")
 if {p.name for p in (src / "engine").iterdir() if p.is_dir()} != expected:
-    errors.append("engine directories must match candidate A responsibilities")
+    errors.append("engine directories must match the declared responsibilities")
 
 # The embedding boundary is explicit; old root aliases and implementation
 # modules must not silently become public again.
@@ -32,19 +32,6 @@ if set(re.findall(r"\bpub\s+mod\s+(\w+)", engine_code)) != {"api"}:
 for source_file in src.rglob("*.rs"):
     if re.search(r"use\s+crate::engine::heap::runtime::\*", ctx.rust_code_only(source_file.read_text())):
         errors.append(f"{source_file.relative_to(root)} must import actual owners, not the runtime facade")
-
-directories = [src] + sorted(p for p in src.rglob("*") if p.is_dir())
-for directory in directories:
-    readme = directory / "README.md"
-    if not readme.is_file() or not readme.read_text().strip():
-        errors.append(f"{directory.relative_to(root)} needs a nonempty README.md")
-        continue
-    for link in re.findall(r"\]\(([^)]+)\)", readme.read_text()):
-        if "://" in link or link.startswith("#"):
-            continue
-        target = link.split("#", 1)[0]
-        if target and not (directory / target).exists():
-            errors.append(f"{readme.relative_to(root)} has a missing local link: {target}")
 
 pending = [src / "lib.rs"]
 seen = set()
@@ -88,4 +75,4 @@ for path in sorted(all_sources - seen):
 if errors:
     print("\n".join("error: " + error for error in errors), file=sys.stderr)
     raise SystemExit(1)
-print(f"Source layout passed: {len(all_sources)} reachable Rust files; {len(directories)} directory READMEs.")
+print(f"Source layout passed: {len(all_sources)} reachable Rust files.")

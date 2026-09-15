@@ -771,10 +771,15 @@ fn mixed_string_and_regexp_split_recursion_guard_is_catchable_and_recovers() {
                 )
                 .unwrap();
 
-            for (entry, kind, safe_depth, overflow_depth) in [
-                ("String.prototype.split", 0, 3, 4),
-                ("RegExp @@split", 1, 3, 4),
-            ] {
+            // The legacy engine uses the original physical native-frame ceiling.
+            // Owned callbacks retain the unchanged logical-frame budget instead:
+            // a long finite chain completes, while -1 never reaches the base case.
+            #[cfg(not(feature = "stack-vm"))]
+            let (safe_depth, overflow_depth) = (3, 4);
+            #[cfg(feature = "stack-vm")]
+            let (safe_depth, overflow_depth) = (256, -1);
+
+            for (entry, kind) in [("String.prototype.split", 0), ("RegExp @@split", 1)] {
                 assert_eq!(
                     context
                         .eval(&format!("mixedSplitRecurse({kind},{safe_depth}).length"))
@@ -792,7 +797,7 @@ fn mixed_string_and_regexp_split_recursion_guard_is_catchable_and_recovers() {
                         ))
                         .unwrap(),
                     string_value("InternalError:stack overflow"),
-                    "the first unsafe mixed split frame was not rejected from {entry}",
+                    "the mixed split recursion limit was not enforced from {entry}",
                 );
             }
             assert_eq!(

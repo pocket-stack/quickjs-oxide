@@ -4,6 +4,9 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+const stackVm = process.argv[2] === "--stack-vm";
+assert.deepEqual(process.argv.slice(2), stackVm ? ["--stack-vm"] : []);
+
 const require = createRequire(import.meta.url);
 const metricsModulePath = path.resolve(
   process.cwd(),
@@ -136,7 +139,7 @@ const deepYieldStar = evaluate(`
     function* chain(depth) {
       return yield* (depth ? chain(depth - 1) : [42]);
     }
-    return chain(20).next().value;
+    return chain(${stackVm ? 1000 : 20}).next().value;
   })()
 `);
 assert.deepEqual(
@@ -151,7 +154,7 @@ const caughtYieldStarOverflow = evaluate(`
     }
     var observed;
     try {
-      chain(1000).next();
+      chain(${stackVm ? "Infinity" : 1000}).next();
       observed = "missing";
     } catch (error) {
       observed = error.name + ":" + error.message;

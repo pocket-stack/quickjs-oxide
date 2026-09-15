@@ -9,6 +9,14 @@ from ..evidence import source_ownership as evidence
 
 
 def check(ctx):
+    # The moved verifier tests may call private entry points only behind their
+    # actual cfg(test) module declaration; a tests.rs filename is not authority.
+    verifier_root = ctx.rust_code_only(ctx.read_source("src/engine/code/verify/mod.rs"))
+    verifier_tests_gated = re.search(
+        r"(?m)^#\[cfg\(test\)\]\s*mod tests;", verifier_root
+    ) is not None
+    if not verifier_tests_gated:
+        ctx.fail("ordinary-leaf-verifier-test-gate", "verifier tests must remain cfg(test)-only")
     production_sources: list[Path] = []
     for relative in ("src", "apps", "adapters", "conformance", "examples", "tests"):
         src_root = ctx.root / relative
@@ -93,7 +101,9 @@ def check(ctx):
                     + ctx.location(ctx.relative, ctx.source, ctx.match.start()),
                 )
 
-        if ctx.relative not in {ctx.bytecode_publish_relative, "src/engine/code/bytecode_publish/verified.rs"}:
+        if ctx.relative not in {ctx.bytecode_publish_relative, "src/engine/code/verify/verified.rs"} and not (
+            ctx.relative == "src/engine/code/verify/tests.rs" and verifier_tests_gated
+        ):
             for ctx.match in re.finditer(r"\bverify_unlinked_ordinary_leaf\b", ctx.code):
                 ctx.fail(
                     "ordinary-leaf-verifier-consumer-set",

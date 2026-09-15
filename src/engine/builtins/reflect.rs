@@ -12,7 +12,6 @@ use crate::engine::api::runtime_error::RuntimeError;
 
 use crate::engine::builtins::native::{NativeFunctionId, ReflectKind};
 use crate::engine::heap::{AutoInitProperty, ContextId, HeapError, ObjectPayload, PropertySlot};
-use crate::engine::object::operations::{InternalDefineResult, InternalSetResult};
 use crate::engine::object::shape::PropertyFlags;
 use crate::engine::object::{
     DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
@@ -56,6 +55,19 @@ impl Runtime {
                         operation: "snapshotting fast Array values",
                     })?;
                 values.extend_from_slice(dense);
+                #[cfg(feature = "profiling")]
+                {
+                    crate::engine::api::profiling::record_call_buffer_capacity(
+                        "arguments.fast_raw",
+                        0,
+                        values.capacity(),
+                        size_of::<crate::engine::heap::RawValue>(),
+                    );
+                    crate::engine::api::profiling::record_call_buffer_initialized(
+                        "arguments.fast_raw",
+                        values.len(),
+                    );
+                }
                 values
             } else {
                 let (mapped, fast_len) = match &object_data.payload {
@@ -70,6 +82,19 @@ impl Runtime {
                     RuntimeError::Invariant("fast argument length does not fit usize")
                 })?;
                 let mut ordered = vec![None; capacity];
+                #[cfg(feature = "profiling")]
+                {
+                    crate::engine::api::profiling::record_call_buffer_capacity(
+                        "arguments.fast_ordering",
+                        0,
+                        ordered.capacity(),
+                        size_of::<Option<crate::engine::heap::RawValue>>(),
+                    );
+                    crate::engine::api::profiling::record_call_buffer_initialized(
+                        "arguments.fast_ordering",
+                        ordered.len(),
+                    );
+                }
                 for (entry, slot) in shape.entries().iter().zip(&object_data.slots) {
                     let Some(index) = state.atoms.array_index(entry.atom)? else {
                         continue;
@@ -118,11 +143,38 @@ impl Runtime {
             }
         };
 
-        raw_values
+        #[cfg(feature = "profiling")]
+        {
+            // The Arguments ordering collect may reuse its input allocation;
+            // observe this raw buffer without inventing a second allocation.
+            crate::engine::api::profiling::record_call_buffer_observed(
+                "arguments.fast_raw",
+                raw_values.capacity(),
+                size_of::<crate::engine::heap::RawValue>(),
+            );
+            crate::engine::api::profiling::record_call_raw_buffer_copies(
+                "arguments.fast_raw",
+                &raw_values,
+            );
+        }
+        let values = raw_values
             .iter()
             .map(|value| self.root_raw_value(value))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Some)
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(feature = "profiling")]
+        {
+            // This iterator borrows raw_values and cannot reuse its backing Vec.
+            crate::engine::api::profiling::record_call_buffer_observed(
+                "arguments.fast_rooted",
+                values.capacity(),
+                size_of::<Value>(),
+            );
+            crate::engine::api::profiling::record_call_buffer_copies(
+                "arguments.fast_rooted",
+                &values,
+            );
+        }
+        Ok(Some(values))
     }
 
     /// Install the global `Reflect` `JS_OBJECT_DEF` equivalent. The object is
@@ -201,52 +253,72 @@ impl Runtime {
     /// two Reflect call/construct paths. Nullish exceptions remain a caller
     /// decision: this kernel always requires an object, as upstream does once
     /// it has entered `build_arg_list`.
+    /// Classify an Array argument carrier without invoking length or index getters.
+    /// None leaves the caller free to choose an explicit property-reading protocol.
+    pub(crate) fn prepare_fast_array_arguments(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+    ) -> Result<Option<NativeConversion<Vec<Value>>>, RuntimeError> {
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("object"));
+        }
+        let array = {
+            let state = self.0.state.borrow();
+            let data = state.heap.object(object.object_id())?;
+            matches!(
+                (data.kind, &data.payload),
+                (
+                    crate::engine::heap::ObjectKind::Array,
+                    ObjectPayload::Array { .. }
+                )
+            )
+        };
+        if !array {
+            return Ok(None);
+        }
+        let key = self.intern_property_key("length")?;
+        let Some(crate::engine::object::CompleteOrdinaryPropertyDescriptor::Data { value, .. }) =
+            self.get_own_property(object, &key)?
+        else {
+            return Err(RuntimeError::Invariant(
+                "Array argument carrier has no data length",
+            ));
+        };
+        let length = match value {
+            Value::Int(value) if value >= 0 => u64::try_from(value).unwrap(),
+            Value::Float(value)
+                if value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0 =>
+            {
+                value as u64
+            }
+            _ => {
+                return Err(RuntimeError::Invariant(
+                    "Array argument carrier has an invalid length",
+                ));
+            }
+        };
+        if length > MAX_APPLY_ARGUMENTS {
+            return Ok(Some(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "too many arguments in function call (only 65534 allowed)",
+            )?)));
+        }
+        self.fast_array_like_values(object, length as u32)
+            .map(|values| values.map(NativeConversion::Value))
+    }
+
     pub(crate) fn build_array_like_argument_list(
         &self,
         realm: ContextId,
         array_argument: &Value,
     ) -> Result<NativeConversion<Vec<Value>>, RuntimeError> {
-        let Value::Object(array_like) = array_argument else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a object",
-            )?));
-        };
-
-        let length_key = self.intern_property_key("length")?;
-        let length_value = match self.get_property_in_realm(realm, array_like, &length_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let length = match self.native_to_length(realm, &length_value)? {
-            NativeConversion::Value(length) => length,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if length > MAX_APPLY_ARGUMENTS {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Range,
-                "too many arguments in function call (only 65534 allowed)",
-            )?));
-        }
-
-        let length = usize::try_from(length)
-            .map_err(|_| RuntimeError::Invariant("argument-list length does not fit usize"))?;
-        let fast_len = u32::try_from(length)
-            .map_err(|_| RuntimeError::Invariant("argument-list length does not fit u32"))?;
-        if let Some(values) = self.fast_array_like_values(array_like, fast_len)? {
-            return Ok(NativeConversion::Value(values));
-        }
-        let mut forwarded = Vec::with_capacity(length);
-        for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
-            match self.get_property_in_realm(realm, array_like, &key)? {
-                Completion::Return(value) => forwarded.push(value),
-                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-            }
-        }
-        Ok(NativeConversion::Value(forwarded))
+        super::function::arguments::finish(
+            self,
+            realm,
+            super::function::arguments::ArgumentsStep::start(self, realm, array_argument.clone())?,
+        )
     }
 
     pub(crate) fn call_reflect(
@@ -282,35 +354,24 @@ impl Runtime {
         }
     }
 
-    fn reflect_object_argument(
-        &self,
-        realm: ContextId,
-        arguments: &NativeArguments,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        match arguments.readable.first() {
-            Some(Value::Object(object)) => Ok(NativeConversion::Value(object.clone())),
-            Some(_) => Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?)),
-            None => Err(RuntimeError::Invariant(
-                "Reflect target argv was not padded",
-            )),
-        }
-    }
-
     fn call_reflect_apply(
         &self,
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let target = self.callable_from_value(arguments.readable[0].clone())?;
-        let forwarded = match self.build_array_like_argument_list(realm, &arguments.readable[2])? {
-            NativeConversion::Value(values) => values,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        self.call_internal(realm, &target, arguments.readable[1].clone(), &forwarded)
+        super::function::invoke::finish(
+            self,
+            realm,
+            super::function::invoke::InvokeStep::start(
+                self,
+                realm,
+                super::function::invoke::InvokeKind::ReflectApply,
+                &NativeInvocation::Call {
+                    this_value: Value::Undefined,
+                },
+                arguments,
+            )?,
+        )
     }
 
     fn call_reflect_construct(
@@ -318,41 +379,19 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let target_value = arguments.readable[0].clone();
-
-        // Pinned QuickJS validates an explicit third argument before touching
-        // argsList, but leaves target validation until after argsList.
-        let explicit_new_target = if arguments.actual_arg_count > 2 {
-            let value = arguments
-                .readable
-                .get(2)
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Reflect.construct newTarget argv was not readable",
-                ))?;
-            if !matches!(value, Value::Object(_)) {
-                return Ok(Completion::Throw(
-                    self.new_not_constructor_error(realm, &value)?,
-                ));
-            }
-            Some(match self.constructor_from_value(realm, value)? {
-                NativeConversion::Value(constructor) => constructor,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            })
-        } else {
-            None
-        };
-
-        let forwarded = match self.build_array_like_argument_list(realm, &arguments.readable[1])? {
-            NativeConversion::Value(values) => values,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let target = match self.constructor_from_value(realm, target_value)? {
-            NativeConversion::Value(constructor) => constructor,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let new_target = explicit_new_target.unwrap_or_else(|| target.clone());
-        self.construct_constructor_internal(realm, &target, &new_target, &forwarded)
+        super::function::invoke::finish(
+            self,
+            realm,
+            super::function::invoke::InvokeStep::start(
+                self,
+                realm,
+                super::function::invoke::InvokeKind::ReflectConstruct,
+                &NativeInvocation::Call {
+                    this_value: Value::Undefined,
+                },
+                arguments,
+            )?,
+        )
     }
 
     fn call_reflect_define_property(
@@ -360,28 +399,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(realm, arguments.readable[1].clone())? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let descriptor =
-            match self.native_to_property_descriptor(realm, arguments.readable[2].clone())? {
-                NativeConversion::Value(descriptor) => descriptor,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        match self.internal_define_own_property(realm, &object, &key, &descriptor)? {
-            NativeConversion::Value(InternalDefineResult::Defined) => {
-                Ok(Completion::Return(Value::Bool(true)))
-            }
-            NativeConversion::Value(
-                InternalDefineResult::RejectedOrdinary(_) | InternalDefineResult::RejectedProxyTrap,
-            ) => Ok(Completion::Return(Value::Bool(false))),
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Define, arguments)?,
+        )
     }
 
     fn call_reflect_delete_property(
@@ -389,18 +412,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(realm, arguments.readable[1].clone())? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(match self.internal_delete_property(realm, &object, &key)? {
-            NativeConversion::Value(deleted) => Completion::Return(Value::Bool(deleted)),
-            NativeConversion::Throw(value) => Completion::Throw(value),
-        })
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Delete, arguments)?,
+        )
     }
 
     fn call_reflect_get(
@@ -408,20 +425,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let receiver = if arguments.actual_arg_count > 2 {
-            arguments.readable[2].clone()
-        } else {
-            Value::Object(object.clone())
-        };
-        let key = match self.native_to_property_key(realm, arguments.readable[1].clone())? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        self.internal_get(realm, &object, &key, receiver)
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Get, arguments)?,
+        )
     }
 
     fn call_reflect_get_own_property_descriptor(
@@ -429,19 +438,11 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(realm, arguments.readable[1].clone())? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(
-            match self.object_get_own_property_descriptor_value(realm, &object, &key)? {
-                NativeConversion::Value(value) => Completion::Return(value),
-                NativeConversion::Throw(value) => Completion::Throw(value),
-            },
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Descriptor, arguments)?,
         )
     }
 
@@ -450,16 +451,16 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(match self.internal_get_prototype_of(realm, &object)? {
-            NativeConversion::Value(prototype) => {
-                Completion::Return(prototype.map_or(Value::Null, Value::Object))
-            }
-            NativeConversion::Throw(value) => Completion::Throw(value),
-        })
+        super::object::prototype::finish(
+            self,
+            realm,
+            super::object::prototype::BuiltinPrototypeStep::start(
+                self,
+                realm,
+                super::object::prototype::BuiltinPrototypeKind::ReflectGet,
+                arguments,
+            )?,
+        )
     }
 
     fn call_reflect_has(
@@ -467,15 +468,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(realm, arguments.readable[1].clone())? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        self.has_property_in_realm(realm, &object, &key)
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Has, arguments)?,
+        )
     }
 
     fn call_reflect_is_extensible(
@@ -483,14 +481,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(match self.internal_is_extensible(realm, &object)? {
-            NativeConversion::Value(extensible) => Completion::Return(Value::Bool(extensible)),
-            NativeConversion::Throw(value) => Completion::Throw(value),
-        })
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Extensible, arguments)?,
+        )
     }
 
     fn call_reflect_own_keys(
@@ -498,21 +494,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let keys = match self.internal_own_property_keys(realm, &object)? {
-            NativeConversion::Value(keys) => keys,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let values = keys
-            .iter()
-            .map(|key| self.object_property_key_value(key))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Completion::Return(Value::Object(
-            self.new_array_from_values(realm, values)?,
-        )))
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Keys, arguments)?,
+        )
     }
 
     fn call_reflect_prevent_extensions(
@@ -520,14 +507,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(match self.internal_prevent_extensions(realm, &object)? {
-            NativeConversion::Value(accepted) => Completion::Return(Value::Bool(accepted)),
-            NativeConversion::Throw(value) => Completion::Throw(value),
-        })
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Prevent, arguments)?,
+        )
     }
 
     fn call_reflect_set(
@@ -535,29 +520,12 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let receiver = if arguments.actual_arg_count > 3 {
-            arguments.readable[3].clone()
-        } else {
-            Value::Object(object.clone())
-        };
-        let key = match self.native_to_property_key(realm, arguments.readable[1].clone())? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let value = arguments.readable[2].clone();
-        match self.internal_set(realm, &object, &key, value, receiver)? {
-            NativeConversion::Value(InternalSetResult::Accepted) => {
-                Ok(Completion::Return(Value::Bool(true)))
-            }
-            NativeConversion::Value(
-                InternalSetResult::Rejected(_) | InternalSetResult::RejectedProxyTrap,
-            ) => Ok(Completion::Return(Value::Bool(false))),
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        use super::object::property::{self, PropertyKind, PropertyStep};
+        property::finish(
+            self,
+            realm,
+            PropertyStep::start(self, realm, PropertyKind::Set, arguments)?,
+        )
     }
 
     fn call_reflect_set_prototype_of(
@@ -565,26 +533,61 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.reflect_object_argument(realm, arguments)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let prototype = match &arguments.readable[1] {
-            Value::Object(prototype) => Some(prototype),
-            Value::Null => None,
-            _ => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-        };
-        Ok(
-            match self.internal_set_prototype_of(realm, &object, prototype)? {
-                NativeConversion::Value(accepted) => Completion::Return(Value::Bool(accepted)),
-                NativeConversion::Throw(value) => Completion::Throw(value),
-            },
+        super::object::prototype::finish(
+            self,
+            realm,
+            super::object::prototype::BuiltinPrototypeStep::start(
+                self,
+                realm,
+                super::object::prototype::BuiltinPrototypeKind::ReflectSet,
+                arguments,
+            )?,
         )
+    }
+}
+
+#[cfg(test)]
+mod argument_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn array_argument_preflight_keeps_getters_out_of_the_fast_path() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        for source in [
+            "({get length(){throw 99}})",
+            "Object.defineProperty([1],'0',{get(){throw 99}})",
+            "Object.assign(Object.create({get 0(){throw 99}}),{length:1})",
+        ] {
+            let Value::Object(object) = context.eval(source).unwrap() else {
+                panic!("expected carrier")
+            };
+            assert!(
+                runtime
+                    .prepare_fast_array_arguments(context.realm, &object)
+                    .unwrap()
+                    .is_none(),
+                "{source}"
+            );
+        }
+        let Value::Object(object) = context.eval("[40,2]").unwrap() else {
+            panic!("expected array")
+        };
+        let Some(NativeConversion::Value(values)) = runtime
+            .prepare_fast_array_arguments(context.realm, &object)
+            .unwrap()
+        else {
+            panic!("expected snapshot")
+        };
+        assert_eq!(values, vec![Value::Int(40), Value::Int(2)]);
+        let Value::Object(oversized) = context.eval("Array(65535)").unwrap() else {
+            panic!("expected array")
+        };
+        assert!(matches!(
+            runtime
+                .prepare_fast_array_arguments(context.realm, &oversized)
+                .unwrap(),
+            Some(NativeConversion::Throw(_))
+        ));
     }
 }

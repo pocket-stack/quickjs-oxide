@@ -717,3 +717,26 @@ fn trusted_quickjs_ordinary_fused_predicates_distinguish_htmldda() {
         Value::Bool(false)
     );
 }
+
+#[cfg(all(feature = "stack-vm", feature = "profiling"))]
+#[test]
+fn trusted_binary_callable_runs_on_the_owned_context_entry_after_gc() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let profile = crate::engine::api::profiling::CostProfile::start();
+    let function = context
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_LEAF_42_BC5, 0)
+        .unwrap();
+    runtime.run_gc().unwrap();
+    assert_eq!(
+        context
+            .call(&function, Value::Undefined, &[Value::Int(3), Value::Int(3)])
+            .unwrap(),
+        Value::Int(42)
+    );
+    let snapshot = profile.snapshot();
+    assert!(snapshot.owned_instructions > 0);
+    assert_eq!(snapshot.legacy_dispatches, 0);
+    assert_eq!(snapshot.owned_bridge_exits, 0);
+    assert_eq!(snapshot.owned_sync_call_bridges, 0);
+}

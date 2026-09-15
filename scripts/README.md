@@ -22,7 +22,7 @@ with their owner. The BC5 gates share `checks/lib/bc5-gate-primitives.mjs`; admi
 generators share `test262/test262-admission-data.mjs`. Avoid a generic shared
 utilities directory until unrelated owners actually need the same contract.
 
-Handwritten Unicode algorithms live in `src/unicode*.rs`; generated production
+Handwritten Unicode algorithms live in `src/source/unicode/`; generated production
 tables live in `src/source/unicode/generated/unicode/`. Product builds consume those checked-in
 tables without running generators or compiling the QuickJS reference. Test262
 generated evidence remains in `dev-support/test262/generated/`.

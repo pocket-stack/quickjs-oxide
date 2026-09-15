@@ -6,14 +6,11 @@
 //! behavior.  `Set` and the weak collections deliberately remain separate
 //! follow-up slices rather than weakening the Map brand here.
 
-use super::object::ObjectIteratorStep;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
-use crate::engine::builtins::native::{
-    ArrayPushKind, MapIteratorKind, MapNativeKind, NativeFunctionId,
-};
+use crate::engine::builtins::native::{MapIteratorKind, MapNativeKind, NativeFunctionId};
 use crate::engine::heap::{
     ContextId, HeapError, MapRealmData, ObjectData, ObjectPayload, RawValue,
 };
@@ -25,7 +22,10 @@ use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation, NativeInvokeOutcome};
+#[cfg(test)]
 use crate::engine::vm::frames::ActiveCollectionRecord;
+
+pub(crate) mod callback;
 
 impl Runtime {
     pub(crate) fn initialize_map_intrinsic(
@@ -222,7 +222,10 @@ impl Runtime {
         Ok(())
     }
 
-    fn map_realm_data(&self, realm: ContextId) -> Result<MapRealmData, RuntimeError> {
+    pub(in crate::engine::builtins) fn map_realm_data(
+        &self,
+        realm: ContextId,
+    ) -> Result<MapRealmData, RuntimeError> {
         self.0
             .state
             .borrow()
@@ -232,7 +235,10 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant("realm has no Map intrinsics"))
     }
 
-    fn new_map_object(&self, prototype: &ObjectRef) -> Result<ObjectRef, RuntimeError> {
+    pub(in crate::engine::builtins) fn new_map_object(
+        &self,
+        prototype: &ObjectRef,
+    ) -> Result<ObjectRef, RuntimeError> {
         let _operation = self.operation();
         if !prototype.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("Map prototype"));
@@ -256,21 +262,13 @@ impl Runtime {
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 
-    fn new_map_in_realm(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
+    pub(in crate::engine::builtins) fn new_map_in_realm(
+        &self,
+        realm: ContextId,
+    ) -> Result<ObjectRef, RuntimeError> {
         let prototype = self.map_realm_data(realm)?.prototype;
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
         self.new_map_object(&prototype)
-    }
-
-    fn map_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            let prototype = self.map_realm_data(fallback_realm)?.prototype;
-            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-        })
     }
 
     pub(crate) fn call_map_native(
@@ -318,126 +316,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Map constructor did not receive a constructor invocation",
-            ));
-        };
-        let prototype = match self.map_prototype_from_new_target(realm, new_target)? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let map = self.new_map_object(&prototype)?;
-        if arguments.actual_arg_count == 0 {
-            return Ok(Completion::Return(Value::Object(map)));
-        }
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant("Map iterable argv was not padded"))?;
-        if matches!(iterable, Value::Null | Value::Undefined) {
-            return Ok(Completion::Return(Value::Object(map)));
-        }
-
-        let set_key = self.intern_property_key("set")?;
-        let adder = match self.get_property_in_realm(realm, &map, &set_key)? {
-            Completion::Return(Value::Object(adder)) => match self.as_callable(&adder)? {
-                Some(adder) => adder,
-                None => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "set/add is not a function",
-                    )?));
-                }
-            },
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "set/add is not a function",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let method =
-            match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(Value::Object(method)) => match self.as_callable(&method)? {
-                    Some(method) => method,
-                    None => {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "value is not iterable",
-                        )?));
-                    }
-                },
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "value is not iterable",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let iterator = match self.call_internal(realm, &method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let zero = self.intern_property_key("0")?;
-        let one = self.intern_property_key("1")?;
-        loop {
-            let item = match self.object_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(Value::Object(item)) => item,
-                ObjectIteratorStep::Yield(_) => {
-                    let value =
-                        self.new_native_error(realm, NativeErrorKind::Type, "not an object")?;
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(map)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let key = match self.get_property_in_realm(realm, &item, &zero)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let value = match self.get_property_in_realm(realm, &item, &one)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            match self.call_internal(realm, &adder, Value::Object(map.clone()), &[key, value])? {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            }
-        }
+        super::iterator::collection::finish(
+            self,
+            realm,
+            super::iterator::collection::CollectionStep::start(
+                self,
+                realm,
+                super::iterator::collection::CollectionKind::Map,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn map_receiver(
@@ -484,14 +373,14 @@ impl Runtime {
         Ok(NativeConversion::Value(object))
     }
 
-    fn normalized_map_key(value: Value) -> Value {
+    pub(in crate::engine::builtins) fn normalized_map_key(value: Value) -> Value {
         match value {
             Value::Float(0.0) => Value::Int(0),
             value => value,
         }
     }
 
-    fn find_map_record(
+    pub(in crate::engine::builtins) fn find_map_record(
         &self,
         map: &ObjectRef,
         key: &Value,
@@ -511,7 +400,7 @@ impl Runtime {
         Ok(Some((index, value)))
     }
 
-    fn set_map_record(
+    pub(in crate::engine::builtins) fn set_map_record(
         &self,
         map: &ObjectRef,
         key: Value,
@@ -686,63 +575,17 @@ impl Runtime {
         arguments: &NativeArguments,
         computed: bool,
     ) -> Result<Completion, RuntimeError> {
-        let map = match self.map_receiver(realm, invocation, false)? {
-            NativeConversion::Value(map) => map,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = Self::normalized_map_key(arguments.readable.first().cloned().ok_or(
-            RuntimeError::Invariant("Map getOrInsert key argv was not padded"),
-        )?);
-        let second = arguments
-            .readable
-            .get(1)
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Map getOrInsert value argv was not padded",
-            ))?;
-        let callback = if computed {
-            let Value::Object(callback) = &second else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a function",
-                )?));
-            };
-            let Some(callback) = self.as_callable(callback)? else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a function",
-                )?));
-            };
-            Some(callback)
-        } else {
-            None
-        };
-        if let Some((_, value)) = self.find_map_record(&map, &key)? {
-            return Ok(Completion::Return(self.root_raw_value(&value)?));
-        }
-        let value = if let Some(callback) = callback {
-            match self.call_internal(
+        callback::finish(
+            self,
+            realm,
+            callback::CallbackStep::start(
+                self,
                 realm,
-                &callback,
-                Value::Undefined,
-                std::slice::from_ref(&key),
-            )? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        } else {
-            second
-        };
-        if computed {
-            // Pinned QuickJS removes a callback-created entry before appending
-            // the callback result, so insertion order and overwrite behavior
-            // are both observable.
-            self.delete_map_record(&map, &key)?;
-        }
-        self.set_map_record(&map, key, value.clone())?;
-        Ok(Completion::Return(value))
+                callback::CallbackKind::Insert { computed },
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_map_for_each(
@@ -751,67 +594,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let map = match self.map_receiver(realm, invocation, false)? {
-            NativeConversion::Value(map) => map,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let callback = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Map.prototype.forEach callback argv was not padded",
-        ))?;
-        let Value::Object(callback) = callback else {
-            return Ok(Completion::Throw(self.new_native_error(
+        callback::finish(
+            self,
+            realm,
+            callback::CallbackStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(callback) = self.as_callable(callback)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let this_arg = arguments
-            .readable
-            .get(1)
-            .cloned()
-            .unwrap_or(Value::Undefined);
-        let mut index = 0_usize;
-        loop {
-            let record = self
-                .0
-                .state
-                .borrow()
-                .heap
-                .map_records(map.object_id())?
-                .next_at_or_after(index)
-                .map(|(id, record)| (id, record.key.clone(), record.value.clone()));
-            let Some((record_index, key, value)) = record else {
-                break;
-            };
-            index = record_index.checked_add(1).ok_or(RuntimeError::Invariant(
-                "Map forEach record index overflowed",
-            ))?;
-            let key = self.root_raw_value(&key)?;
-            let value = self.root_raw_value(&value)?;
-            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Map {
-                object: map.object_id(),
-                index: record_index,
-            });
-            let callback_result = self.call_internal(
-                realm,
-                &callback,
-                this_arg.clone(),
-                &[value, key, Value::Object(map.clone())],
-            );
-            active_record.finish()?;
-            match callback_result? {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        }
-        Ok(Completion::Return(Value::Undefined))
+                callback::CallbackKind::Each,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn new_map_iterator(
@@ -962,137 +755,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Map.groupBy did not receive a generic invocation",
-            ));
-        };
-        let callback = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "Map.groupBy callback argv was not padded",
-        ))?;
-        let Value::Object(callback) = callback else {
-            return Ok(Completion::Throw(self.new_native_error(
+        super::object::iteration::finish(
+            self,
+            realm,
+            super::object::iteration::IterationStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(callback) = self.as_callable(callback)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Map.groupBy iterable argv was not padded",
-            ))?;
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let method =
-            match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(Value::Object(method)) => match self.as_callable(&method)? {
-                    Some(method) => method,
-                    None => {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "value is not iterable",
-                        )?));
-                    }
-                },
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "value is not iterable",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let iterator = match self.call_internal(realm, &method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let groups = self.new_map_in_realm(realm)?;
-        let callback_this = Value::Object(self.global_object_for_realm(realm)?);
-        let mut index = 0_u64;
-        loop {
-            if index >= MAX_SAFE_INTEGER {
-                let exception =
-                    self.new_native_error(realm, NativeErrorKind::Type, "too many elements")?;
-                self.close_iterator_preserving_throw(realm, &iterator)?;
-                return Ok(Completion::Throw(exception));
-            }
-            let value = match self.object_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(groups)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let key = match self.call_internal(
-                realm,
-                &callback,
-                callback_this.clone(),
-                &[value.clone(), Value::number(index as f64)],
-            )? {
-                Completion::Return(value) => Self::normalized_map_key(value),
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let group = match self.find_map_record(&groups, &key)? {
-                Some((_, value)) => match self.root_raw_value(&value)? {
-                    Value::Object(group) => group,
-                    _ => {
-                        return Err(RuntimeError::Invariant(
-                            "Map.groupBy result contained a non-Array group",
-                        ));
-                    }
-                },
-                None => {
-                    let group = self.new_array(realm)?;
-                    self.set_map_record(&groups, key, Value::Object(group.clone()))?;
-                    group
-                }
-            };
-            let push_arguments = NativeArguments {
-                actual_arg_count: 1,
-                readable: vec![value],
-            };
-            match self.call_array_prototype_push(
-                realm,
-                ArrayPushKind::Push,
-                NativeInvocation::Call {
-                    this_value: Value::Object(group),
-                },
-                &push_arguments,
-            )? {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-            index = index.checked_add(1).ok_or(RuntimeError::Invariant(
-                "Map.groupBy index overflowed Uint64",
-            ))?;
-        }
+                super::object::iteration::IterationKind::MapGroup,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 }
 

@@ -62,8 +62,15 @@ def machine_metadata():
             if line.startswith("model name"):
                 cpu = line.split(":", 1)[1].strip()
                 break
+    affinity = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+    governors = {}
+    for cpu_id in affinity or []:
+        path = Path(f"/sys/devices/system/cpu/cpu{cpu_id}/cpufreq/scaling_governor")
+        if path.is_file():
+            governors[str(cpu_id)] = path.read_text().strip()
     return {"platform": platform.platform(), "machine": platform.machine(), "cpu": cpu,
             "logical_cpus": os.cpu_count(), "python": platform.python_version(),
+            "cpu_affinity": affinity, "scaling_governors": governors,
             "runner_sha256": digest(__file__), "repository": git_metadata(ROOT)}
 
 

@@ -69,12 +69,12 @@ expect_rewrite_rejected ordinary-input-prefix-dispatch ordinary-leaf-special-cas
     '    if input.len() > MAX_INPUT_BYTES {' \
     '    if input.starts_with(&[0x05, 0x00]) || input.len() > MAX_INPUT_BYTES {'
 expect_rewrite_rejected ordinary-verifier-strip-bypass ordinary-leaf-verifier-role \
-    src/engine/code/bytecode_publish.rs \
-    '                        || !metadata.strip_variable_debug' \
+    src/engine/code/verify/roles.rs \
+    '                    || !metadata.strip_variable_debug' \
     '                        || false'
 expect_rewrite_rejected ordinary-verifier-debug-bypass ordinary-leaf-verifier-role \
-    src/engine/code/bytecode_publish.rs \
-    '                        || function.debug().is_some()' \
+    src/engine/code/verify/roles.rs \
+    '                    || function.debug().is_some()' \
     '                        || false'
 expect_rewrite_rejected ordinary-verifier-primitive-broadening ordinary-leaf-plain-primitive \
     src/engine/code/function.rs \
@@ -109,22 +109,34 @@ expect_rewrite_rejected scalar-unary-name-widening scalar-unary-operation-shape 
     $'            FunctionUnaryOp::TypeOf => Self::TypeOf,\n            FunctionUnaryOp::Neg => Self::TypeOf,'
 
 expect_full_rewrite_rejected published-function-skip-verifier published-function-verification \
-    src/engine/code/bytecode_publish/verified.rs \
+    src/engine/code/verify/verified.rs \
     '        verify_unlinked_ordinary_leaf(&function)?;' \
     '        // skipped by mutation'
 expect_full_rewrite_rejected published-function-public-draft published-function-verification \
-    src/engine/code/bytecode_publish/verified.rs \
+    src/engine/code/verify/verified.rs \
     'pub(crate) struct VerifiedFunction(UnlinkedFunction);' \
     'pub(crate) struct VerifiedFunction(pub(crate) UnlinkedFunction);'
 
-expect_full_rewrite_rejected published-executable-wrong-runtime published-executable-owner \
-    src/engine/code/executable.rs \
-    '        if !function.belongs_to(self) {' \
-    '        if false {'
+if grep -q 'fn snapshot_function_bytecode_owned' "$repository_root/src/engine/code/executable.rs"; then
+    expect_full_rewrite_rejected published-executable-wrong-runtime published-executable-owner \
+        src/engine/code/executable.rs \
+        '        self.snapshot_function_bytecode_owned(function.clone())' \
+        '        self.unchecked_snapshot(function.clone())'
+else
+    expect_full_rewrite_rejected published-executable-wrong-runtime published-executable-owner \
+        src/engine/code/executable.rs \
+        '        if !function.belongs_to(self) {' \
+        '        if false {'
+fi
+if grep -q 'data: Rc<PublishedFunctionData>' "$repository_root/src/engine/code/executable.rs"; then
+    publication_data_type='Rc<PublishedFunctionData>'
+else
+    publication_data_type='PublishedFunctionData'
+fi
 expect_full_rewrite_rejected published-executable-mutable-layout published-executable-owner \
     src/engine/code/executable.rs \
-    '    data: PublishedFunctionData,' \
-    '    pub(crate) data: PublishedFunctionData,'
+    "    data: $publication_data_type," \
+    "    pub(crate) data: $publication_data_type,"
 
 expect_full_rewrite_rejected published-frame-code-substitution published-frame-owner \
     src/engine/vm/host_bridge.rs \
@@ -139,3 +151,43 @@ expect_full_rewrite_rejected published-branch-fixture-check published-static-tar
     src/engine/vm/host_bridge.rs \
     '            return super::activation::checked_target(target, _code_len);' \
     '            return Ok(target as usize);'
+
+expect_rewrite_rejected ordinary-verifier-role-call-bypass ordinary-leaf-verifier-dispatch \
+    src/engine/code/verify/mod.rs \
+    '        roles::verify(function, is_root, root_publication)?;' \
+    '        if false { roles::verify(function, is_root, root_publication)?; }'
+
+expect_rewrite_rejected ordinary-verifier-test-gate-bypass ordinary-leaf-verifier-test-gate \
+    src/engine/code/verify/mod.rs \
+    $'#[cfg(test)]\nmod tests;' \
+    'mod tests;'
+
+expect_rewrite_rejected frame-layout-operand-capacity-bypass published-frame-layout \
+    src/engine/code/function/layout.rs \
+    'usize::from(self.metadata.max_stack)' \
+    '0'
+expect_rewrite_rejected frame-layout-actual-arguments-truncation published-frame-layout \
+    src/engine/code/function/layout.rs \
+    'actual_count.max(usize::from(self.metadata.argument_count))' \
+    'usize::from(self.metadata.argument_count)'
+
+expect_full_rewrite_rejected published-cache-drop-root published-executable-owner \
+    src/engine/code/executable.rs \
+    '            root: std::cell::OnceCell::from(function),' \
+    '            root: Default::default(),'
+expect_full_rewrite_rejected published-cache-wrong-node published-executable-owner \
+    src/engine/code/executable.rs \
+    'let bytecode = state.heap.function_bytecode(function.bytecode_id())?;' \
+    'let bytecode = state.heap.function_bytecode(other.bytecode_id())?;'
+expect_full_rewrite_rejected published-cache-skip-realm published-executable-owner \
+    src/engine/code/executable.rs \
+    '        state.heap.context(bytecode.realm)?;' \
+    '        // missing realm authentication'
+expect_full_rewrite_rejected published-cache-eval-index-alias published-executable-owner \
+    src/engine/code/executable.rs \
+    'self.index == other.index && Rc::ptr_eq(&self.environments, &other.environments)' \
+    'Rc::ptr_eq(&self.environments, &other.environments)'
+expect_full_rewrite_rejected published-function-timed-dead-verifier published-function-verification \
+    src/engine/code/verify/verified.rs \
+    '        verify_unlinked_tree(&function)?;' \
+    '        if false { verify_unlinked_tree(&function)?; }'

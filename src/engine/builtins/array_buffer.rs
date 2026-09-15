@@ -8,24 +8,41 @@
 
 use super::quickjs_to_int64_free;
 use crate::engine::api::context::Context;
-use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
+use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
+#[cfg(feature = "test262-host")]
+use crate::engine::object::CallableRef;
 
 use crate::engine::builtins::native::{ArrayBufferNativeKind, NativeFunctionId};
 use crate::engine::heap::{
-    ArrayBufferData, ArrayBufferRealmData, ContextId, ObjectData, ObjectId, ObjectPayload,
+    ArrayBufferData, ArrayBufferRealmData, ContextId, ObjectData, ObjectPayload,
 };
 use crate::engine::object::{
-    AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
-    OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
+    AccessorValue, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey,
+    WellKnownSymbol,
 };
 use crate::engine::value::conversion::NativeConversion;
-use crate::engine::value::{JsString, JsStringBuilder, Value};
-use crate::engine::vm::call::{ConstructorRef, NativeArguments, NativeInvocation};
-use crate::engine::vm::{Completion, ToPrimitiveHint};
+use crate::engine::value::{JsString, Value};
+use crate::engine::vm::Completion;
+use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
+pub(in crate::engine::builtins) mod constructor;
 mod data_view;
+#[cfg(feature = "stack-vm")]
+pub(crate) use constructor::BufferConstructorResume;
+pub(crate) use constructor::BufferConstructorStep;
+pub(in crate::engine::builtins) mod slice;
+#[cfg(feature = "stack-vm")]
+pub(crate) use slice::{BufferSliceKind, BufferSliceResume, BufferSliceStep};
+pub(in crate::engine::builtins) mod mutation;
+#[cfg(feature = "stack-vm")]
+pub(crate) use data_view::{
+    DataViewAccessResume, DataViewAccessStep, DataViewConstructorResume, DataViewConstructorStep,
+};
+#[cfg(feature = "stack-vm")]
+pub(crate) use mutation::BufferMutationResume;
+pub(crate) use mutation::BufferMutationStep;
 #[cfg(test)]
 mod tests;
 pub(crate) mod typed_array;
@@ -240,58 +257,19 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "ArrayBuffer constructor did not receive a constructor invocation",
-            ));
-        };
-        let length = match self.native_to_index(
+        constructor::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "ArrayBuffer length argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(length) => length,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let mut max_byte_length = None;
-        if arguments.actual_arg_count >= 2 {
-            if let Some(Value::Object(options)) = arguments.readable.get(1) {
-                let key = self.intern_property_key("maxByteLength")?;
-                let maximum = match self.get_property_in_realm(realm, options, &key)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if !matches!(maximum, Value::Undefined) {
-                    let maximum = match self.native_to_int64(realm, &maximum)? {
-                        NativeConversion::Value(maximum) => maximum,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    // Pinned QuickJS compares the unsigned `len` with this
-                    // signed result in C. Negative maxima therefore survive
-                    // until the post-newTarget 2 GiB implementation limit.
-                    if maximum > MAX_SAFE_INTEGER_I64 || length > maximum as u64 {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Range,
-                            "invalid array buffer max length",
-                        )?));
-                    }
-                    max_byte_length = Some(maximum as u64);
-                }
-            }
-        }
-
-        // Pinned QuickJS performs the observable newTarget.prototype lookup
-        // before rejecting an otherwise unallocatable backing-store length.
-        let prototype = match self.array_buffer_prototype_from_new_target(realm, new_target)? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+            BufferConstructorStep::start(self, realm, &invocation, arguments)?,
+        )
+    }
+    fn finish_array_buffer_construction(
+        &self,
+        realm: ContextId,
+        prototype: ObjectRef,
+        length: u64,
+        max_byte_length: Option<u64>,
+    ) -> Result<Completion, RuntimeError> {
         if length > MAX_ARRAY_BUFFER_LENGTH {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -412,25 +390,24 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "ArrayBuffer.prototype.resize received a constructor invocation",
-            ));
-        };
-        let object = match self.require_array_buffer(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let new_length = match self.native_to_int64(
+        mutation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "ArrayBuffer resize argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(length) => length,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+            BufferMutationStep::start(
+                self,
+                realm,
+                ArrayBufferNativeKind::Resize,
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+    fn finish_array_buffer_resize(
+        &self,
+        realm: ContextId,
+        object: ObjectRef,
+        new_length: i64,
+    ) -> Result<Completion, RuntimeError> {
         let current = self.array_buffer_snapshot(&object)?;
         if current.detached {
             return Ok(Completion::Throw(self.new_native_error(
@@ -477,93 +454,65 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "ArrayBuffer.prototype.slice received a constructor invocation",
-            ));
-        };
-        let source = match self.require_array_buffer(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        slice::finish(
+            self,
+            realm,
+            slice::BufferSliceStep::start(
+                self,
+                realm,
+                slice::BufferSliceKind::Array,
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+
+    pub(in crate::engine::builtins) fn array_buffer_slice_source(
+        &self,
+        realm: ContextId,
+        value: Value,
+    ) -> Result<NativeConversion<(ObjectRef, i64)>, RuntimeError> {
+        let source = match self.require_array_buffer(realm, value)? {
+            NativeConversion::Value(source) => source,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         let initial = self.array_buffer_snapshot(&source)?;
         if initial.detached {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",
             )?));
         }
-        let length = i64::from(initial.byte_length);
-        let start = match self.native_to_int64_clamp(
-            realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "ArrayBuffer slice start argument was not padded",
-            ))?,
-            0,
-            length,
-            length,
-        )? {
-            NativeConversion::Value(start) => start,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let end = if arguments.actual_arg_count < 2
-            || matches!(arguments.readable.get(1), Some(Value::Undefined))
-        {
-            length
-        } else {
-            match self.native_to_int64_clamp(
+        Ok(NativeConversion::Value((
+            source,
+            i64::from(initial.byte_length),
+        )))
+    }
+    pub(in crate::engine::builtins) fn allocate_array_buffer_slice(
+        &self,
+        realm: ContextId,
+        new_length: u32,
+    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
+        let prototype = self.array_buffer_default_prototype(realm)?;
+        let Some(object) = self.new_array_buffer_object(&prototype, new_length, None)? else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
-                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                    "ArrayBuffer slice end argument was not padded",
-                ))?,
-                0,
-                length,
-                length,
-            )? {
-                NativeConversion::Value(end) => end,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
+                NativeErrorKind::Internal,
+                "out of memory",
+            )?));
         };
-        let new_length = u32::try_from((end - start).max(0)).map_err(|_| {
-            RuntimeError::Invariant("validated ArrayBuffer slice length overflowed u32")
-        })?;
+        Ok(NativeConversion::Value(object))
+    }
 
-        let species = match self.array_buffer_species_constructor(realm, &source)? {
-            NativeConversion::Value(species) => species,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let target = if let Some(constructor) = species {
-            match self.construct_constructor_internal(
-                realm,
-                &constructor,
-                &constructor,
-                &[Value::Int(i32::try_from(new_length).expect(
-                    "ArrayBuffer slice length is bounded by i32::MAX",
-                ))],
-            )? {
-                Completion::Return(Value::Object(object)) => object,
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "ArrayBuffer object expected",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        } else {
-            let prototype = self.array_buffer_default_prototype(realm)?;
-            let Some(object) = self.new_array_buffer_object(&prototype, new_length, None)? else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Internal,
-                    "out of memory",
-                )?));
-            };
-            object
-        };
-
+    pub(in crate::engine::builtins) fn finish_array_buffer_slice(
+        &self,
+        realm: ContextId,
+        source: ObjectRef,
+        target: ObjectRef,
+        start: i64,
+        new_length: u32,
+    ) -> Result<Completion, RuntimeError> {
         if target.object_id() == source.object_id() {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -638,32 +587,24 @@ impl Runtime {
         arguments: &NativeArguments,
         to_fixed_length: bool,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "ArrayBuffer transfer received a constructor invocation",
-            ));
-        };
-        let source = match self.require_array_buffer(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let initial = self.array_buffer_snapshot(&source)?;
-        let new_length = if arguments.actual_arg_count == 0
-            || matches!(arguments.readable.first(), Some(Value::Undefined))
-        {
-            u64::from(initial.byte_length)
+        let kind = if to_fixed_length {
+            ArrayBufferNativeKind::TransferToFixedLength
         } else {
-            match self.native_to_index(
-                realm,
-                arguments.readable.first().ok_or(RuntimeError::Invariant(
-                    "ArrayBuffer transfer argument was not padded",
-                ))?,
-            )? {
-                NativeConversion::Value(length) => length,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
+            ArrayBufferNativeKind::Transfer
         };
-
+        mutation::finish(
+            self,
+            realm,
+            BufferMutationStep::start(self, realm, kind, &invocation, arguments)?,
+        )
+    }
+    fn finish_array_buffer_transfer(
+        &self,
+        realm: ContextId,
+        source: ObjectRef,
+        new_length: u64,
+        to_fixed_length: bool,
+    ) -> Result<Completion, RuntimeError> {
         let current = self.array_buffer_snapshot(&source)?;
         if current.detached {
             return Ok(Completion::Throw(self.new_native_error(
@@ -714,56 +655,6 @@ impl Runtime {
             )?));
         }
         Ok(Completion::Return(Value::Object(target)))
-    }
-
-    fn array_buffer_species_constructor(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-    ) -> Result<NativeConversion<Option<ConstructorRef>>, RuntimeError> {
-        let constructor_key = self.intern_property_key("constructor")?;
-        let constructor = match self.get_property_in_realm(realm, object, &constructor_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(constructor, Value::Undefined) {
-            return Ok(NativeConversion::Value(None));
-        }
-        let Value::Object(constructor) = constructor else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let species_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Species));
-        let species = match self.get_property_in_realm(realm, &constructor, &species_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(species, Value::Undefined | Value::Null) {
-            return Ok(NativeConversion::Value(None));
-        }
-        let Value::Object(_) = &species else {
-            return Ok(NativeConversion::Throw(
-                self.new_not_constructor_error(realm, &species)?,
-            ));
-        };
-        self.constructor_from_value(realm, species)
-            .map(|result| match result {
-                NativeConversion::Value(constructor) => NativeConversion::Value(Some(constructor)),
-                NativeConversion::Throw(value) => NativeConversion::Throw(value),
-            })
-    }
-
-    fn array_buffer_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            self.array_buffer_default_prototype(fallback_realm)
-        })
     }
 
     fn array_buffer_default_prototype(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {

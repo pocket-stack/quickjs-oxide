@@ -668,7 +668,7 @@ impl Heap {
                         };
                         if *bytecode != function
                             || instance.slots.iter().copied().collect::<Option<Vec<_>>>()
-                                != Some(closure_slots.clone())
+                                != Some(closure_slots.to_vec())
                         {
                             return Err(HeapError::Invariant(
                                 "loaded-module callable does not match its source instance",

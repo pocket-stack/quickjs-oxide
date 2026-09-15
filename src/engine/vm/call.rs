@@ -1,11 +1,29 @@
-use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
+#[cfg(feature = "stack-vm")]
+pub(super) mod ordinary;
+#[cfg(feature = "stack-vm")]
+mod protocol;
+#[cfg(feature = "stack-vm")]
+mod request;
+#[cfg(feature = "stack-vm")]
+pub(in crate::engine::vm) use request::{
+    BytecodeCallRequest, NormalizedCallback, normalize_callback,
+};
+
+mod native;
+#[cfg(feature = "stack-vm")]
+pub(in crate::engine::vm) use native::PreparedNativeCall;
+
+pub(in crate::engine::vm) mod prepare;
+pub(crate) mod prototype;
+pub(in crate::engine::vm) use prepare::PreparedBytecodeFrame;
+
+use crate::engine::api::error::{Error, ErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
 use crate::engine::builtins::native::{NativeCProto, NativeFunctionId};
 use crate::engine::code::function::metadata::ConstructorKind;
 use crate::engine::code::rooted::FunctionBytecodeRef;
-use crate::engine::heap::roots::VarRefRoot;
 
 use crate::engine::heap::{ContextId, ObjectPayload};
 use crate::engine::object::{CallableRef, ObjectRef};
@@ -45,6 +63,16 @@ impl Runtime {
                     let target = *target;
                     let this_value = this_value.clone();
                     let arguments = arguments.clone();
+                    #[cfg(feature = "profiling")]
+                    {
+                        // Cloning this Rc slice shares storage: no raw element
+                        // copy, new allocation, or root retain is inferred.
+                        crate::engine::api::profiling::record_call_buffer_share(
+                            "bound.raw_snapshot",
+                            arguments.len(),
+                            size_of::<crate::engine::heap::RawValue>(),
+                        );
+                    }
                     drop(state);
                     let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
                     let target = CallableRef::from_validated_object(target);
@@ -53,6 +81,18 @@ impl Runtime {
                         .iter()
                         .map(|argument| self.root_raw_value(argument))
                         .collect::<Result<Vec<_>, _>>()?;
+                    #[cfg(feature = "profiling")]
+                    {
+                        crate::engine::api::profiling::record_call_buffer_observed(
+                            "bound.rooted_snapshot",
+                            arguments.capacity(),
+                            size_of::<Value>(),
+                        );
+                        crate::engine::api::profiling::record_call_buffer_copies(
+                            "bound.rooted_snapshot",
+                            &arguments,
+                        );
+                    }
                     return Ok(CallableExecution::Bound {
                         target,
                         this_value,
@@ -114,10 +154,8 @@ impl Runtime {
             }
         };
         let bytecode = FunctionBytecodeRef::from_borrowed_handle(self.clone(), bytecode)?;
-        let closure_slots = closure_slots
-            .into_iter()
-            .map(|id| VarRefRoot::from_borrowed_handle(self.clone(), id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let closure_slots =
+            super::closure::ClosureSlots::shared(callable.as_object().clone(), closure_slots);
         Ok(CallableExecution::Bytecode {
             bytecode,
             closure_slots,
@@ -352,11 +390,25 @@ impl Runtime {
         new_target: &CallableRef,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
+        let (constructor, new_target) =
+            match self.prepare_constructor_pair(caller_realm, constructor, new_target)? {
+                NativeConversion::Value(pair) => pair,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        self.construct_constructor_internal(caller_realm, &constructor, &new_target, arguments)
+    }
+
+    pub(crate) fn prepare_constructor_pair(
+        &self,
+        caller_realm: ContextId,
+        constructor: &CallableRef,
+        new_target: &CallableRef,
+    ) -> Result<NativeConversion<(ConstructorRef, ConstructorRef)>, RuntimeError> {
         if !constructor.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("constructor"));
         }
         if !self.is_constructor(constructor.as_object())? {
-            return Ok(Completion::Throw(self.new_not_constructor_error(
+            return Ok(NativeConversion::Throw(self.new_not_constructor_error(
                 caller_realm,
                 &Value::Object(constructor.as_object().clone()),
             )?));
@@ -365,14 +417,14 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("constructor"));
         }
         if !self.is_constructor(new_target.as_object())? {
-            return Ok(Completion::Throw(self.new_not_constructor_error(
+            return Ok(NativeConversion::Throw(self.new_not_constructor_error(
                 caller_realm,
                 &Value::Object(new_target.as_object().clone()),
             )?));
         }
         let constructor = ConstructorRef::from_validated_callable(constructor);
         let new_target = ConstructorRef::from_validated_callable(new_target);
-        self.construct_constructor_internal(caller_realm, &constructor, &new_target, arguments)
+        Ok(NativeConversion::Value((constructor, new_target)))
     }
 
     pub(crate) fn construct_constructor_internal(
@@ -390,6 +442,76 @@ impl Runtime {
         )
     }
 
+    pub(crate) fn normalize_constructor(
+        &self,
+        caller_realm: ContextId,
+        mut constructor: ConstructorRef,
+        mut new_target: ConstructNewTarget,
+        mut arguments: Vec<Value>,
+    ) -> Result<NativeConversion<NormalizedConstructor>, RuntimeError> {
+        self.0.state.borrow().heap.context(caller_realm)?;
+        if !constructor.as_object().belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("constructor"));
+        }
+        match &new_target {
+            ConstructNewTarget::Validated(target) if !target.as_object().belongs_to(self) => {
+                return Err(RuntimeError::WrongRuntime("constructor"));
+            }
+            ConstructNewTarget::Raw(value) => {
+                self.validate_value_domain(value, "raw construct new target")?
+            }
+            _ => {}
+        }
+        for argument in &arguments {
+            self.validate_value_domain(argument, "construct argument")?;
+        }
+        loop {
+            if !self.is_constructor(constructor.as_object())? {
+                return Ok(NativeConversion::Throw(self.new_not_constructor_error(
+                    caller_realm,
+                    &Value::Object(constructor.as_object().clone()),
+                )?));
+            }
+            if self.is_proxy_object(constructor.as_object())? {
+                return Ok(NativeConversion::Value(NormalizedConstructor {
+                    target: ConstructorTarget::Proxy(constructor),
+                    new_target,
+                    arguments,
+                }));
+            }
+            let callable = self.as_callable(constructor.as_object())?.ok_or_else(|| {
+                RuntimeError::Engine(Error::new(ErrorKind::Type, "not a function"))
+            })?;
+            match self.bytecode_for_callable(&callable)? {
+                CallableExecution::Bound {
+                    target,
+                    arguments: bound,
+                    ..
+                } => {
+                    arguments =
+                        match self.concatenate_bound_arguments(caller_realm, &bound, &arguments)? {
+                            NativeConversion::Value(arguments) => arguments,
+                            NativeConversion::Throw(value) => {
+                                return Ok(NativeConversion::Throw(value));
+                            }
+                        };
+                    new_target.retarget_bound_identity(&constructor, &target);
+                    constructor = ConstructorRef::from_validated_callable(&target);
+                }
+                classification => {
+                    return Ok(NativeConversion::Value(NormalizedConstructor {
+                        target: ConstructorTarget::Ordinary {
+                            callable,
+                            classification,
+                        },
+                        new_target,
+                        arguments,
+                    }));
+                }
+            }
+        }
+    }
+
     pub(crate) fn construct_internal_with_new_target(
         &self,
         caller_realm: ContextId,
@@ -397,143 +519,112 @@ impl Runtime {
         new_target: ConstructNewTarget,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        self.0.state.borrow().heap.context(caller_realm)?;
-        if !constructor.as_object().belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("constructor"));
-        }
-        match &new_target {
-            ConstructNewTarget::Validated(new_target) => {
-                if !new_target.as_object().belongs_to(self) {
-                    return Err(RuntimeError::WrongRuntime("constructor"));
-                }
-            }
-            ConstructNewTarget::Raw(new_target) => {
-                self.validate_value_domain(new_target, "raw construct new target")?;
-            }
-        }
-        for argument in arguments {
-            self.validate_value_domain(argument, "construct argument")?;
-        }
-        let mut constructor = constructor.clone();
-        let mut new_target = new_target;
-        let mut arguments = arguments.to_vec();
-        loop {
-            if !self.is_constructor(constructor.as_object())? {
-                return Ok(Completion::Throw(self.new_not_constructor_error(
-                    caller_realm,
-                    &Value::Object(constructor.as_object().clone()),
-                )?));
-            }
-            if self.is_proxy_object(constructor.as_object())? {
+        let NormalizedConstructor {
+            target,
+            new_target,
+            arguments,
+        } = match self.normalize_constructor(
+            caller_realm,
+            constructor.clone(),
+            new_target,
+            arguments.to_vec(),
+        )? {
+            NativeConversion::Value(result) => result,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let (callable, classification) = match target {
+            ConstructorTarget::Proxy(constructor) => {
                 return self.construct_proxy(caller_realm, &constructor, new_target, &arguments);
             }
-            let callable = self.as_callable(constructor.as_object())?.ok_or_else(|| {
-                RuntimeError::Engine(Error::new(ErrorKind::Type, "not a function"))
-            })?;
-
-            match self.bytecode_for_callable(&callable)? {
-                CallableExecution::Bound {
+            ConstructorTarget::Ordinary {
+                callable,
+                classification,
+            } => (callable, classification),
+        };
+        match classification {
+            CallableExecution::Native {
+                target,
+                realm,
+                min_readable_args,
+            } => {
+                let execution_realm = if target.uses_calling_realm() {
+                    caller_realm
+                } else {
+                    realm
+                };
+                return self.construct_native_function(
+                    &callable,
+                    execution_realm,
                     target,
-                    this_value: _,
-                    arguments: bound_arguments,
-                } => {
-                    arguments = match self.concatenate_bound_arguments(
-                        caller_realm,
-                        &bound_arguments,
-                        &arguments,
-                    )? {
-                        NativeConversion::Value(arguments) => arguments,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    new_target.retarget_bound_identity(&constructor, &target);
-                    constructor = ConstructorRef::from_validated_callable(&target);
-                }
-                CallableExecution::Native {
-                    target,
-                    realm,
                     min_readable_args,
-                } => {
-                    let execution_realm = if target.uses_calling_realm() {
-                        caller_realm
-                    } else {
-                        realm
-                    };
-                    return self.construct_native_function(
-                        &callable,
-                        execution_realm,
-                        target,
-                        min_readable_args,
-                        new_target.value(),
-                        &arguments,
-                    );
+                    new_target.value(),
+                    &arguments,
+                );
+            }
+            CallableExecution::Bytecode {
+                bytecode,
+                closure_slots,
+            } => {
+                let constructor_kind = self
+                    .0
+                    .state
+                    .borrow()
+                    .heap
+                    .function_bytecode(bytecode.bytecode_id())?
+                    .metadata
+                    .constructor_kind;
+                match constructor_kind {
+                    ConstructorKind::None => {
+                        return Err(RuntimeError::Invariant(
+                            "constructor bit disagrees with bytecode constructor metadata",
+                        ));
+                    }
+                    ConstructorKind::Derived => {
+                        let completion = self.execute_bytecode_callable(
+                            caller_realm,
+                            &callable,
+                            Value::Undefined,
+                            new_target.value(),
+                            &arguments,
+                            bytecode,
+                            closure_slots,
+                        )?;
+                        return match completion {
+                            Completion::Return(value @ Value::Object(_)) => {
+                                Ok(Completion::Return(value))
+                            }
+                            Completion::Throw(value) => Ok(Completion::Throw(value)),
+                            Completion::Return(_) => Err(RuntimeError::Invariant(
+                                "derived constructor bytecode returned an unvalidated primitive",
+                            )),
+                        };
+                    }
+                    ConstructorKind::Base => {}
                 }
-                CallableExecution::Bytecode {
+                let raw_new_target = new_target.value();
+                let this_value =
+                    match self.create_from_constructor_value(caller_realm, &raw_new_target)? {
+                        Completion::Return(value) => value,
+                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
+                let completion = self.execute_bytecode_callable(
+                    caller_realm,
+                    &callable,
+                    this_value.clone(),
+                    raw_new_target,
+                    &arguments,
                     bytecode,
                     closure_slots,
-                } => {
-                    let constructor_kind = self
-                        .0
-                        .state
-                        .borrow()
-                        .heap
-                        .function_bytecode(bytecode.bytecode_id())?
-                        .metadata
-                        .constructor_kind;
-                    match constructor_kind {
-                        ConstructorKind::None => {
-                            return Err(RuntimeError::Invariant(
-                                "constructor bit disagrees with bytecode constructor metadata",
-                            ));
-                        }
-                        ConstructorKind::Derived => {
-                            let completion = self.execute_bytecode_callable(
-                                caller_realm,
-                                &callable,
-                                Value::Undefined,
-                                new_target.value(),
-                                &arguments,
-                                bytecode,
-                                closure_slots,
-                            )?;
-                            return match completion {
-                                Completion::Return(value @ Value::Object(_)) => {
-                                    Ok(Completion::Return(value))
-                                }
-                                Completion::Throw(value) => Ok(Completion::Throw(value)),
-                                Completion::Return(_) => Err(RuntimeError::Invariant(
-                                    "derived constructor bytecode returned an unvalidated primitive",
-                                )),
-                            };
-                        }
-                        ConstructorKind::Base => {}
-                    }
-                    let raw_new_target = new_target.value();
-                    let this_value =
-                        match self.create_from_constructor_value(caller_realm, &raw_new_target)? {
-                            Completion::Return(value) => value,
-                            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                        };
-                    let completion = self.execute_bytecode_callable(
-                        caller_realm,
-                        &callable,
-                        this_value.clone(),
-                        raw_new_target,
-                        &arguments,
-                        bytecode,
-                        closure_slots,
-                    )?;
-                    return Ok(match completion {
-                        Completion::Return(value @ Value::Object(_)) => Completion::Return(value),
-                        Completion::Throw(value) => Completion::Throw(value),
-                        Completion::Return(_) => Completion::Return(this_value),
-                    });
-                }
-                CallableExecution::Proxy => {
-                    return Err(RuntimeError::Invariant(
-                        "Proxy constructor bypassed constructor-only dispatch",
-                    ));
-                }
+                )?;
+                return Ok(match completion {
+                    Completion::Return(value @ Value::Object(_)) => Completion::Return(value),
+                    Completion::Throw(value) => Completion::Throw(value),
+                    Completion::Return(_) => Completion::Return(this_value),
+                });
             }
+            CallableExecution::Proxy | CallableExecution::Bound { .. } => Err(
+                RuntimeError::Invariant("constructor dispatch was not normalized"),
+            ),
         }
     }
 
@@ -542,32 +633,11 @@ impl Runtime {
         caller_realm: ContextId,
         new_target: &Value,
     ) -> Result<NativeConversion<ConstructorPrototypeSource>, RuntimeError> {
-        if matches!(new_target, Value::Undefined) {
-            return Ok(NativeConversion::Value(ConstructorPrototypeSource::Realm(
-                caller_realm,
-            )));
-        }
-        let prototype_key = self.intern_property_key("prototype")?;
-        let prototype = match self.get_value_property_in_realm(
+        prototype::finish(
+            self,
             caller_realm,
-            new_target.clone(),
-            &prototype_key,
-        )? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if let Value::Object(prototype) = prototype {
-            return Ok(NativeConversion::Value(
-                ConstructorPrototypeSource::Explicit(prototype),
-            ));
-        }
-        self.function_realm_from_value(caller_realm, new_target)
-            .map(|result| match result {
-                NativeConversion::Value(realm) => {
-                    NativeConversion::Value(ConstructorPrototypeSource::Realm(realm))
-                }
-                NativeConversion::Throw(value) => NativeConversion::Throw(value),
-            })
+            prototype::ProtoSourceStep::start(self, caller_realm, new_target.clone())?,
+        )
     }
 
     pub(crate) fn create_from_constructor_value(
@@ -575,37 +645,40 @@ impl Runtime {
         caller_realm: ContextId,
         new_target: &Value,
     ) -> Result<Completion, RuntimeError> {
-        let prototype =
-            match self.prototype_from_constructor_value(caller_realm, new_target, |realm| {
-                let object_prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
-                Ok(ObjectRef::from_borrowed_handle(
-                    self.clone(),
-                    object_prototype,
-                )?)
-            })? {
-                NativeConversion::Value(prototype) => prototype,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        Ok(Completion::Return(Value::Object(
-            self.new_object(Some(&prototype))?,
-        )))
+        let reply = if matches!(new_target, Value::Undefined) {
+            Completion::Return(Value::Undefined)
+        } else {
+            let key = self.intern_property_key("prototype")?;
+            self.get_value_property_in_realm(caller_realm, new_target.clone(), &key)?
+        };
+        self.create_from_constructor_prototype_reply(caller_realm, new_target, reply)
     }
 
-    pub(crate) fn prototype_from_constructor_value(
+    pub(crate) fn create_from_constructor_prototype_reply(
         &self,
         caller_realm: ContextId,
         new_target: &Value,
-        fallback: impl FnOnce(ContextId) -> Result<ObjectRef, RuntimeError>,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        match self.constructor_prototype_source(caller_realm, new_target)? {
-            NativeConversion::Value(ConstructorPrototypeSource::Explicit(prototype)) => {
-                Ok(NativeConversion::Value(prototype))
+        reply: Completion,
+    ) -> Result<Completion, RuntimeError> {
+        let prototype = match reply {
+            result @ Completion::Throw(_) => return Ok(result),
+            Completion::Return(Value::Object(prototype)) => prototype,
+            Completion::Return(_) => {
+                let realm = if matches!(new_target, Value::Undefined) {
+                    caller_realm
+                } else {
+                    match self.function_realm_from_value(caller_realm, new_target)? {
+                        NativeConversion::Value(realm) => realm,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                };
+                let prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
+                ObjectRef::from_borrowed_handle(self.clone(), prototype)?
             }
-            NativeConversion::Value(ConstructorPrototypeSource::Realm(realm)) => {
-                fallback(realm).map(NativeConversion::Value)
-            }
-            NativeConversion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        };
+        Ok(Completion::Return(Value::Object(
+            self.new_object(Some(&prototype))?,
+        )))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -674,100 +747,44 @@ impl Runtime {
         arguments: &[Value],
         mode: NativeInvokeMode,
     ) -> Result<NativeInvokeOutcome, RuntimeError> {
-        if !callable.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("native callable"));
-        }
-        self.0.state.borrow().heap.context(realm)?;
-
-        // The callable root held by the caller owns the native payload and its
-        // defining-realm edge for the whole invocation. Revalidate the
-        // detached snapshot before recording raw identities in the frame.
-        // Class-call and CFunctionData-style internal functions deliberately
-        // execute in `realm`, which is the calling realm rather than the
-        // separately retained defining realm.
-        {
-            let state = self.0.state.borrow();
-            let object = state.heap.object(callable.as_object().object_id())?;
-            let ObjectPayload::NativeFunction { data, .. } = &object.payload else {
-                return Err(RuntimeError::Invariant(
-                    "native invocation target was not a native function",
-                ));
-            };
-            let defining_realm = data.realm.ok_or(RuntimeError::Invariant(
-                "native function lost its defining realm",
-            ))?;
-            if data.target != target
-                || (matches!(mode, NativeInvokeMode::Ordinary)
-                    && !target.uses_calling_realm()
-                    && defining_realm != realm)
-                || data.min_readable_args != min_readable_args
-            {
-                return Err(RuntimeError::Invariant(
-                    "native invocation metadata changed after snapshot",
-                ));
-            }
-            state.heap.context(defining_realm)?;
-        }
-
-        let actual_arg_count = arguments.len();
-        let available_arg_count = actual_arg_count.max(usize::from(min_readable_args));
-        let mut readable = Vec::with_capacity(available_arg_count);
-        readable.extend_from_slice(arguments);
-        readable.resize(available_arg_count, Value::Undefined);
-        let arguments = NativeArguments {
-            actual_arg_count,
-            readable,
-        };
-        let active_frame = match mode {
-            NativeInvokeMode::Ordinary => self.push_native_active_frame(
-                callable.as_object().clone(),
-                realm,
-                target,
-                actual_arg_count,
-                available_arg_count,
-            )?,
-            NativeInvokeMode::IteratorNextRaw => self.push_native_iterator_next_active_frame(
-                callable.as_object().clone(),
-                realm,
-                target,
-                actual_arg_count,
-                available_arg_count,
-            )?,
-        };
-
-        // JavaScript-style engine errors are materialized in the selected
-        // execution realm while its frame is still visible. A pre-existing
-        // Error returned as an ordinary Throw completion is not captured here:
-        // QuickJS pops the C frame first and lets the enclosing bytecode
-        // exception boundary add any missing stack.
-        let result = (|| {
-            let result = match mode {
-                NativeInvokeMode::Ordinary => self
-                    .dispatch_native_function(callable, target, realm, invocation, &arguments)
-                    .map(NativeInvokeOutcome::Completion),
-                NativeInvokeMode::IteratorNextRaw => {
-                    if target.descriptor().cproto != NativeCProto::IteratorNext {
-                        return Err(RuntimeError::Invariant(
-                            "raw iterator-next dispatch targeted another native cproto",
-                        ));
-                    }
-                    self.dispatch_native_iterator_next_raw(target, realm, invocation, &arguments)
+        let native::PreparedNativeCall {
+            activation,
+            invocation,
+        } = self.prepare_native_invocation(
+            callable,
+            realm,
+            target,
+            min_readable_args,
+            invocation,
+            arguments,
+            mode,
+        )?;
+        let result = match activation.mode {
+            NativeInvokeMode::Ordinary => self
+                .dispatch_native_function(
+                    &activation.callable,
+                    activation.target,
+                    activation.realm,
+                    invocation,
+                    &activation.arguments,
+                )
+                .map(NativeInvokeOutcome::Completion),
+            NativeInvokeMode::IteratorNextRaw => {
+                if activation.target.descriptor().cproto != NativeCProto::IteratorNext {
+                    Err(RuntimeError::Invariant(
+                        "raw iterator-next dispatch targeted another native cproto",
+                    ))
+                } else {
+                    self.dispatch_native_iterator_next_raw(
+                        activation.target,
+                        activation.realm,
+                        invocation,
+                        &activation.arguments,
+                    )
                 }
-            };
-            match result {
-                Err(RuntimeError::Engine(error))
-                    if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
-                {
-                    let kind = NativeErrorKind::from_javascript_error(error.kind())
-                        .expect("guard proved this is a JavaScript-visible native error");
-                    let value = self.new_native_error_from_error(realm, kind, &error)?;
-                    Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)))
-                }
-                result => result,
             }
-        })();
-        active_frame.finish()?;
-        result
+        };
+        activation.finish(result)
     }
 
     pub(crate) fn active_function(&self) -> Result<ObjectRef, RuntimeError> {
@@ -785,6 +802,7 @@ impl Runtime {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum NativeInvocation {
     Call { this_value: Value },
     Construct { new_target: Value },
@@ -792,8 +810,8 @@ pub(crate) enum NativeInvocation {
     Setter { this_value: Value },
 }
 
-pub(crate) enum NativeInvocationAdaptation {
-    Invoke(NativeInvocation),
+pub(crate) enum NativeInvocationAdaptation<I = NativeInvocation> {
+    Invoke(I),
     Complete(Completion),
 }
 
@@ -835,7 +853,7 @@ pub(crate) enum ConstructorPrototypeSource {
 pub(crate) enum CallableExecution {
     Bytecode {
         bytecode: FunctionBytecodeRef,
-        closure_slots: Vec<VarRefRoot>,
+        closure_slots: crate::engine::vm::closure::ClosureSlots,
     },
     Native {
         target: NativeFunctionId,
@@ -919,4 +937,17 @@ impl ConstructNewTarget {
 pub(crate) enum DirectCallTarget {
     Callable(CallableRef),
     NonCallableProxy(ObjectRef),
+}
+
+pub(crate) struct NormalizedConstructor {
+    pub target: ConstructorTarget,
+    pub new_target: ConstructNewTarget,
+    pub arguments: Vec<Value>,
+}
+pub(crate) enum ConstructorTarget {
+    Proxy(ConstructorRef),
+    Ordinary {
+        callable: CallableRef,
+        classification: CallableExecution,
+    },
 }

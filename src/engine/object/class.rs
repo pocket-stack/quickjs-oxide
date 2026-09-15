@@ -48,26 +48,14 @@ impl Runtime {
                     (function_prototype, None, ConstructorKind::Derived)
                 }
                 Value::Object(parent_constructor) => {
-                    if !self.is_constructor(&parent_constructor)? {
-                        return Err(RuntimeError::Engine(Error::new(
-                            ErrorKind::Type,
-                            "parent class must be constructor",
-                        )));
-                    }
+                    self.validate_class_parent(&parent_constructor)?;
                     let prototype_key = self.intern_property_key("prototype")?;
                     let parent_prototype = match self.get_property_in_realm(
                         realm,
                         &parent_constructor,
                         &prototype_key,
                     )? {
-                        Completion::Return(Value::Object(prototype)) => Some(prototype),
-                        Completion::Return(Value::Null) => None,
-                        Completion::Return(_) => {
-                            return Err(RuntimeError::Engine(Error::new(
-                                ErrorKind::Type,
-                                "parent prototype must be an object or null",
-                            )));
-                        }
+                        Completion::Return(value) => Self::class_parent_prototype(value)?,
                         Completion::Throw(value) => {
                             return Ok(DefineClassOutcome::Throw(value));
                         }
@@ -106,6 +94,68 @@ impl Runtime {
             )
         };
 
+        self.finish_class_pair(
+            realm,
+            constructor,
+            name,
+            constructor_parent,
+            prototype_parent,
+            expected_constructor_kind,
+        )
+    }
+
+    pub(crate) fn validate_class_parent(&self, parent: &ObjectRef) -> Result<(), RuntimeError> {
+        if !self.is_constructor(parent)? {
+            return Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "parent class must be constructor",
+            )));
+        }
+        Ok(())
+    }
+
+    fn class_parent_prototype(value: Value) -> Result<Option<ObjectRef>, RuntimeError> {
+        match value {
+            Value::Object(prototype) => Ok(Some(prototype)),
+            Value::Null => Ok(None),
+            _ => Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "parent prototype must be an object or null",
+            ))),
+        }
+    }
+
+    /// Consume the single prototype-read reply; do not read or validate the
+    /// parent again after an observable getter has run.
+    pub(crate) fn finish_derived_class_pair(
+        &self,
+        realm: ContextId,
+        constructor: Value,
+        name: &JsString,
+        parent: ObjectRef,
+        prototype: Value,
+    ) -> Result<DefineClassOutcome, RuntimeError> {
+        let prototype = Self::class_parent_prototype(prototype)?;
+        self.finish_class_pair(
+            realm,
+            constructor,
+            name,
+            parent,
+            prototype,
+            ConstructorKind::Derived,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_class_pair(
+        &self,
+        realm: ContextId,
+        constructor: Value,
+        name: &JsString,
+        constructor_parent: ObjectRef,
+        prototype_parent: Option<ObjectRef>,
+        expected_constructor_kind: ConstructorKind,
+    ) -> Result<DefineClassOutcome, RuntimeError> {
         let constructor = self.callable_from_value(constructor)?;
         self.validate_class_constructor(realm, &constructor, expected_constructor_kind)?;
 

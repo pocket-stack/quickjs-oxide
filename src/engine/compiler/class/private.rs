@@ -7,7 +7,24 @@
 //! side's brand. Aggregate initializer children install the corresponding
 //! brand or consume field identities through `DefinePrivateField`.
 
-use super::super::*;
+use crate::engine::api::error::Error;
+use crate::engine::api::error::ErrorKind;
+use crate::engine::code::bytecode::Instruction;
+use crate::engine::compiler::MAX_LOCAL_VARIABLES;
+use crate::engine::compiler::lexer::Punctuator;
+use crate::engine::compiler::lexer::Span;
+use crate::engine::compiler::model::bindings::BindingKind;
+use crate::engine::compiler::model::bindings::BindingStorage;
+use crate::engine::compiler::model::ir::IrConstant;
+use crate::engine::compiler::model::ir::PrivateFieldAccess;
+use crate::engine::compiler::model::scope::ScopeKind;
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::parser::diagnostics::source_offset;
+use crate::engine::compiler::parser::diagnostics::source_span;
+use crate::engine::compiler::private_reference;
+use crate::engine::value::JsString;
+use crate::engine::value::PrimitiveValue as Value;
+
 use super::{ClassElementState, ClassMethodFlavor};
 use crate::engine::code::bytecode::DefineMethodKind;
 
@@ -18,7 +35,7 @@ impl<'source> Parser<'source> {
         span: Span,
         kind: BindingKind,
     ) -> Result<u16, Error> {
-        let scope = self.current_ir().current_scope;
+        let scope = self.current_ir().context.current_scope;
         if self
             .current_ir()
             .scopes
@@ -73,7 +90,7 @@ impl<'source> Parser<'source> {
                 ));
             }
         };
-        let scope = self.current_ir().current_scope;
+        let scope = self.current_ir().context.current_scope;
         let existing = self.current_ir().binding_id_in_scope(scope, name);
 
         let primary_local = if let Some(binding_id) = existing {
@@ -172,7 +189,7 @@ impl<'source> Parser<'source> {
             )))?;
             self.emit_anonymous_set_name(definition, Instruction::SetName(name_constant))?;
         }
-        let scope = self.current_ir().current_scope;
+        let scope = self.current_ir().context.current_scope;
         self.emit_private_field_operation(
             name.clone(),
             span,
@@ -286,13 +303,27 @@ impl<'source> Parser<'source> {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::engine::compiler::lexer::Lexer;
+
+    use crate::engine::compiler::model::ir::function::FunctionIrOptions;
+    use crate::engine::compiler::model::ir::function::FunctionKind;
+    use crate::engine::compiler::model::ir::function::FunctionSourceInfo;
+    use crate::engine::compiler::model::ir::function::SuperCapabilities;
+
+    use crate::engine::compiler::parser::builder::FunctionBuilder;
+    use crate::engine::compiler::parser::context::InMode;
+    use crate::engine::compiler::parser::context::ModuleDeclarationExport;
+
+    use crate::source::SourceOffset;
+
     use super::*;
 
     fn private_accessor_parser(source: &str) -> Parser<'_> {
         let mut lexer = Lexer::new(source);
         let first_token = lexer.next_token().unwrap();
         let source_span = first_token.span;
-        let root = FunctionIr::new(
+        let root = FunctionBuilder::new(
             None,
             FunctionKind::Script,
             FunctionSourceInfo {
@@ -358,11 +389,11 @@ mod tests {
         let root = &parser.functions[0];
         assert_eq!(root.locals.len(), MAX_LOCAL_VARIABLES);
         assert!(
-            root.binding_id_in_scope(root.current_scope, "#value")
+            root.binding_id_in_scope(root.context.current_scope, "#value")
                 .is_some()
         );
         assert!(
-            root.binding_id_in_scope(root.current_scope, "#value<set>")
+            root.binding_id_in_scope(root.context.current_scope, "#value<set>")
                 .is_none()
         );
     }

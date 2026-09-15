@@ -27,10 +27,15 @@ impl Value {
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::float_cmp)]
     pub fn number(value: f64) -> Self {
-        if value == f64::from(value as i32) && !is_negative_zero(value) {
-            Self::Int(value as i32)
-        } else {
-            Self::Float(value)
+        number::operations::Number::compact(value).into()
+    }
+
+    /// Representation-only Number projection; never performs ToNumber.
+    pub(crate) fn as_number_repr(&self) -> Option<number::operations::Number> {
+        match self {
+            Self::Int(value) => Some(number::operations::Number::Int(*value)),
+            Self::Float(value) => Some(number::operations::Number::Float(*value)),
+            _ => None,
         }
     }
 
@@ -273,5 +278,14 @@ pub(crate) mod conversion;
 impl crate::engine::code::bytecode::TestConstant for Value {
     fn is_string(&self) -> bool {
         matches!(self, Self::String(_))
+    }
+}
+
+impl From<number::operations::Number> for Value {
+    fn from(value: number::operations::Number) -> Self {
+        match value {
+            number::operations::Number::Int(value) => Self::Int(value),
+            number::operations::Number::Float(value) => Self::Float(value),
+        }
     }
 }

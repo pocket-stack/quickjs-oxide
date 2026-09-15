@@ -1,3 +1,4 @@
+use crate::engine::api::error::Error;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::value::Value;
@@ -31,4 +32,60 @@ impl Runtime {
         let _operation = self.operation();
         self.0.state.borrow().pending_exception.is_some()
     }
+}
+
+pub(in crate::engine::vm) fn runtime_error_to_vm_error(error: RuntimeError) -> Error {
+    match error {
+        RuntimeError::Engine(error) => error,
+        error => Error::internal(error.to_string()),
+    }
+}
+
+/// Materialize published binding diagnostics outside the resident driver frame.
+#[cfg(feature = "stack-vm")]
+#[inline(never)]
+pub(super) fn binding_error(
+    runtime: &Runtime,
+    execution: &mut super::execution::RunningExecution,
+    id: super::frame::FrameId,
+    index: u32,
+    redeclaration: bool,
+) -> Result<super::Completion, Error> {
+    use crate::engine::api::error::{ErrorKind, NativeErrorKind};
+    use crate::engine::object::PropertyKey;
+    let frame = execution.frames.current_mut(id)?;
+    let atom = frame
+        .executable
+        .property_key_atoms
+        .as_ref()
+        .and_then(|atoms| atoms.get(index as usize))
+        .copied()
+        .filter(|atom| !atom.is_null())
+        .ok_or_else(|| Error::internal("static name opcode has no linked property key"))?;
+    let key = PropertyKey::from_borrowed_atom(runtime.clone(), atom)
+        .map_err(|error| Error::internal(error.to_string()))?;
+    let (kind, native, prefix, suffix) = if redeclaration {
+        (
+            ErrorKind::Syntax,
+            NativeErrorKind::Syntax,
+            "redeclaration of '",
+            "'",
+        )
+    } else {
+        (
+            ErrorKind::Type,
+            NativeErrorKind::Type,
+            "'",
+            "' is read-only",
+        )
+    };
+    let error = runtime
+        .native_atom_error(kind, prefix, &key, suffix)
+        .map_err(runtime_error_to_vm_error)?;
+    let value = runtime
+        .new_native_error_from_error(frame.executable.realm, native, &error)
+        .map_err(runtime_error_to_vm_error)?;
+    #[cfg(feature = "profiling")]
+    crate::engine::api::profiling::record_owned_instruction(execution.slots.depth(&frame.window));
+    Ok(super::Completion::Throw(value))
 }

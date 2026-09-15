@@ -5,7 +5,6 @@
 //! by lookup and reclaimed at the explicit-GC boundary, matching pinned
 //! QuickJS's weak-object removal pass.
 
-use super::object::ObjectIteratorStep;
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
@@ -24,8 +23,10 @@ use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
+pub(crate) mod computed;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WeakCollectionKind {
+pub(in crate::engine::builtins) enum WeakCollectionKind {
     Map,
     Set,
 }
@@ -35,13 +36,6 @@ impl WeakCollectionKind {
         match self {
             Self::Map => "WeakMap",
             Self::Set => "WeakSet",
-        }
-    }
-
-    const fn adder(self) -> &'static str {
-        match self {
-            Self::Map => "set",
-            Self::Set => "add",
         }
     }
 }
@@ -227,7 +221,7 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant("realm has no WeakSet intrinsics"))
     }
 
-    fn weak_collection_prototype(
+    pub(in crate::engine::builtins) fn weak_collection_prototype(
         &self,
         realm: ContextId,
         kind: WeakCollectionKind,
@@ -238,7 +232,7 @@ impl Runtime {
         })
     }
 
-    fn new_weak_collection_object(
+    pub(in crate::engine::builtins) fn new_weak_collection_object(
         &self,
         prototype: &ObjectRef,
         kind: WeakCollectionKind,
@@ -267,18 +261,6 @@ impl Runtime {
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 
-    fn weak_collection_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-        kind: WeakCollectionKind,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            let prototype = self.weak_collection_prototype(fallback_realm, kind)?;
-            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-        })
-    }
-
     fn call_weak_collection_constructor(
         &self,
         realm: ContextId,
@@ -286,153 +268,21 @@ impl Runtime {
         arguments: &NativeArguments,
         kind: WeakCollectionKind,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "weak collection constructor did not receive a constructor invocation",
-            ));
+        let kind = match kind {
+            WeakCollectionKind::Map => super::iterator::collection::CollectionKind::WeakMap,
+            WeakCollectionKind::Set => super::iterator::collection::CollectionKind::WeakSet,
         };
-        let prototype =
-            match self.weak_collection_prototype_from_new_target(realm, new_target, kind)? {
-                NativeConversion::Value(prototype) => prototype,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let collection = self.new_weak_collection_object(&prototype, kind)?;
-        if arguments.actual_arg_count == 0 {
-            return Ok(Completion::Return(Value::Object(collection)));
-        }
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "weak collection iterable argv was not padded",
-            ))?;
-        if matches!(iterable, Value::Null | Value::Undefined) {
-            return Ok(Completion::Return(Value::Object(collection)));
-        }
-
-        let adder_key = self.intern_property_key(kind.adder())?;
-        let adder = match self.get_property_in_realm(realm, &collection, &adder_key)? {
-            Completion::Return(Value::Object(adder)) => match self.as_callable(&adder)? {
-                Some(adder) => adder,
-                None => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "set/add is not a function",
-                    )?));
-                }
-            },
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "set/add is not a function",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let method =
-            match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(Value::Object(method)) => match self.as_callable(&method)? {
-                    Some(method) => method,
-                    None => {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "value is not iterable",
-                        )?));
-                    }
-                },
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "value is not iterable",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let iterator = match self.call_internal(realm, &method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let zero = self.intern_property_key("0")?;
-        let one = self.intern_property_key("1")?;
-        loop {
-            let item = match self.object_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(item) => item,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(collection)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let arguments = match kind {
-                WeakCollectionKind::Set => vec![item],
-                WeakCollectionKind::Map => {
-                    let item = match item {
-                        Value::Object(item) => item,
-                        item => {
-                            let value = self.new_native_error(
-                                realm,
-                                NativeErrorKind::Type,
-                                "not an object",
-                            )?;
-                            // QuickJS releases the yielded value before
-                            // IteratorClose, which is observable when return()
-                            // performs a collection.
-                            drop(item);
-                            self.close_iterator_preserving_throw(realm, &iterator)?;
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    let key = match self.get_property_in_realm(realm, &item, &zero)? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => {
-                            drop(item);
-                            self.close_iterator_preserving_throw(realm, &iterator)?;
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    let value = match self.get_property_in_realm(realm, &item, &one)? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => {
-                            drop(key);
-                            drop(item);
-                            self.close_iterator_preserving_throw(realm, &iterator)?;
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    vec![key, value]
-                }
-            };
-            let adder_completion =
-                self.call_internal(realm, &adder, Value::Object(collection.clone()), &arguments)?;
-            // Match QuickJS's lifetime boundary: the current element (or
-            // WeakMap key/value pair) is released before IteratorClose.
-            drop(arguments);
-            match adder_completion {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            }
-        }
+        super::iterator::collection::finish(
+            self,
+            realm,
+            super::iterator::collection::CollectionStep::start(
+                self,
+                realm,
+                kind,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn weak_collection_receiver(
@@ -621,6 +471,13 @@ impl Runtime {
                 WeakCollectionKind::Map,
             );
         }
+        if kind == WeakMapNativeKind::GetOrInsertComputed {
+            return computed::finish(
+                self,
+                realm,
+                computed::ComputedStep::start(self, realm, &invocation, arguments)?,
+            );
+        }
         let map = match self.weak_collection_receiver(realm, invocation, WeakCollectionKind::Map)? {
             NativeConversion::Value(map) => map,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -630,49 +487,6 @@ impl Runtime {
             .first()
             .cloned()
             .ok_or(RuntimeError::Invariant("WeakMap key argv was not padded"))?;
-
-        if kind == WeakMapNativeKind::GetOrInsertComputed {
-            let callback_value =
-                arguments
-                    .readable
-                    .get(1)
-                    .cloned()
-                    .ok_or(RuntimeError::Invariant(
-                        "WeakMap computed value argv was not padded",
-                    ))?;
-            let Value::Object(callback) = callback_value else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a function",
-                )?));
-            };
-            let Some(callback) = self.as_callable(&callback)? else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a function",
-                )?));
-            };
-            let Some(key) = self.weak_collection_key(&key_value, "WeakMap key")? else {
-                return self.invalid_weak_key(realm, WeakCollectionKind::Map);
-            };
-            if let Some(value) = self.find_weak_map_record(&map, key)? {
-                return Ok(Completion::Return(self.root_raw_value(&value)?));
-            }
-            let value = match self.call_internal(
-                realm,
-                &callback,
-                Value::Undefined,
-                std::slice::from_ref(&key_value),
-            )? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.delete_weak_map_record(&map, key)?;
-            self.set_weak_map_record(&map, key, value.clone())?;
-            return Ok(Completion::Return(value));
-        }
 
         let key = self.weak_collection_key(&key_value, "WeakMap key")?;
         match kind {

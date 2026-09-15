@@ -376,6 +376,8 @@ pub enum ObjectPayload {
         arguments: Rc<[RawValue]>,
     },
     BytecodeFunction {
+        authentication:
+            std::cell::RefCell<Option<crate::engine::code::runtime::OrdinaryAuthentication>>,
         bytecode: FunctionBytecodeId,
         home_object: Option<ObjectId>,
         /// Hidden instance-field initializer owned by a class constructor.
@@ -388,7 +390,7 @@ pub enum ObjectPayload {
         class_static_initializer_started: bool,
         /// One owned reference per bytecode closure slot, matching QuickJS's
         /// `JSObject.u.func.var_refs[]` ownership.
-        closure_slots: Vec<VarRefId>,
+        closure_slots: std::rc::Rc<[VarRefId]>,
     },
     /// `JS_CLASS_GENERATOR`: the branded result object owns the complete
     /// dormant frame while suspended. `Executing` temporarily moves that
@@ -463,6 +465,8 @@ pub enum ObjectKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectData {
     pub shape: ShapeId,
+    #[cfg(feature = "stack-vm")]
+    pub(crate) used_as_prototype: bool,
     pub slots: Vec<PropertySlot>,
     /// QuickJS's hidden `JS_CLASS_PRIVATE` brand stored on a private method's
     /// HomeObject. The object owns one atom reference independently from any
@@ -497,6 +501,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -515,6 +521,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -536,6 +544,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: false,
@@ -552,6 +562,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -569,6 +581,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -594,6 +608,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -618,6 +634,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -642,6 +660,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -663,6 +683,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -681,6 +703,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -699,6 +723,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -720,6 +746,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -745,6 +773,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -769,6 +799,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -792,6 +824,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -815,6 +849,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -835,6 +871,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -853,6 +891,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -876,6 +916,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -900,6 +942,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -925,6 +969,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -951,6 +997,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -969,6 +1017,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -989,6 +1039,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1016,6 +1068,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1037,6 +1091,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1059,6 +1115,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1082,6 +1140,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1115,6 +1175,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1143,6 +1205,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1169,6 +1233,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1193,6 +1259,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1213,6 +1281,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1225,7 +1295,7 @@ impl ObjectData {
 
     /// Construct a non-constructable runtime-provided function object.
     #[must_use]
-    pub(crate) const fn native_function(
+    pub(crate) fn native_function(
         shape: ShapeId,
         slots: Vec<PropertySlot>,
         target: NativeFunctionId,
@@ -1234,6 +1304,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1241,11 +1313,7 @@ impl ObjectData {
             is_constructor: target.descriptor().cproto.default_is_constructor(),
             kind: ObjectKind::NativeFunction,
             payload: ObjectPayload::NativeFunction {
-                data: NativeFunctionData {
-                    target,
-                    realm: None,
-                    min_readable_args,
-                },
+                data: NativeFunctionData::new(target, None, min_readable_args),
                 internal: None,
             },
         }
@@ -1253,7 +1321,7 @@ impl ObjectData {
 
     /// Construct a native callable whose defining realm is already live.
     #[must_use]
-    pub(crate) const fn bound_native_function(
+    pub(crate) fn bound_native_function(
         shape: ShapeId,
         slots: Vec<PropertySlot>,
         target: NativeFunctionId,
@@ -1263,6 +1331,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1270,11 +1340,7 @@ impl ObjectData {
             is_constructor: target.descriptor().cproto.default_is_constructor(),
             kind: ObjectKind::NativeFunction,
             payload: ObjectPayload::NativeFunction {
-                data: NativeFunctionData {
-                    target,
-                    realm: Some(realm),
-                    min_readable_args,
-                },
+                data: NativeFunctionData::new(target, Some(realm), min_readable_args),
                 internal: None,
             },
         }
@@ -1284,7 +1350,7 @@ impl ObjectData {
     /// capture data.  Allocation retains every raw edge in `internal`; the
     /// caller transfers no public runtime-owning wrapper into the heap.
     #[must_use]
-    pub(crate) const fn bound_internal_native_function(
+    pub(crate) fn bound_internal_native_function(
         shape: ShapeId,
         slots: Vec<PropertySlot>,
         target: NativeFunctionId,
@@ -1295,6 +1361,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1302,11 +1370,7 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::NativeFunction,
             payload: ObjectPayload::NativeFunction {
-                data: NativeFunctionData {
-                    target,
-                    realm: Some(realm),
-                    min_readable_args,
-                },
+                data: NativeFunctionData::new(target, Some(realm), min_readable_args),
                 internal: Some(internal),
             },
         }
@@ -1327,6 +1391,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1344,7 +1410,7 @@ impl ObjectData {
     /// Construct an ordinary bytecode-function object.
     #[must_use]
     #[cfg(test)]
-    pub const fn bytecode_function(
+    pub fn bytecode_function(
         shape: ShapeId,
         slots: Vec<PropertySlot>,
         bytecode: FunctionBytecodeId,
@@ -1354,6 +1420,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1361,11 +1429,12 @@ impl ObjectData {
             is_constructor,
             kind: ObjectKind::BytecodeFunction,
             payload: ObjectPayload::BytecodeFunction {
+                authentication: Default::default(),
                 bytecode,
                 home_object,
                 class_instance_initializer: None,
                 class_static_initializer_started: false,
-                closure_slots: Vec::new(),
+                closure_slots: std::rc::Rc::from([]),
             },
         }
     }
@@ -1374,7 +1443,7 @@ impl ObjectData {
     /// captured-variable cells. Repeated identities are intentional: each
     /// slot contributes one strong reference, as in QuickJS.
     #[must_use]
-    pub const fn bytecode_function_with_closures(
+    pub fn bytecode_function_with_closures(
         shape: ShapeId,
         slots: Vec<PropertySlot>,
         bytecode: FunctionBytecodeId,
@@ -1385,6 +1454,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1392,11 +1463,12 @@ impl ObjectData {
             is_constructor,
             kind: ObjectKind::BytecodeFunction,
             payload: ObjectPayload::BytecodeFunction {
+                authentication: Default::default(),
                 bytecode,
                 home_object,
                 class_instance_initializer: None,
                 class_static_initializer_started: false,
-                closure_slots,
+                closure_slots: closure_slots.into(),
             },
         }
     }
@@ -1412,6 +1484,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1435,6 +1509,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1464,6 +1540,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,
@@ -1488,6 +1566,8 @@ impl ObjectData {
         Self {
             shape,
             slots,
+            #[cfg(feature = "stack-vm")]
+            used_as_prototype: false,
             private_brand_home: None,
             is_html_dda: false,
             extensible: true,

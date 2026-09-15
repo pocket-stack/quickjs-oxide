@@ -27,6 +27,7 @@ pub use crate::engine::object::{
 pub use crate::engine::value::bigint::{BigIntError, JsBigInt};
 pub use crate::engine::value::{JsString, JsStringError, Value};
 
+pub(crate) mod compile;
 pub(crate) mod context;
 
 pub(crate) mod runtime_error;

@@ -18,6 +18,8 @@ default = []
 test262-host = []
 test-support = []
 profiling = []
+# Temporary migration configuration; default switching and bridge removal belong to S10.
+stack-vm = []
 [dev-dependencies]
 quickjs-oxide-host = { workspace = true, features = ["engine-test-support"] }
 

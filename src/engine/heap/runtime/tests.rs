@@ -698,11 +698,11 @@ fn push_named_eval_active_frame(
     .unwrap();
     let function = crate::engine::code::bytecode_publish::VerifiedFunction::eval(
         function,
-        &match kind {
+        crate::engine::api::compile::eval_publication_input(&match kind {
             EvalKind::Direct => EvalCompileContext::direct(false, Vec::new()),
             EvalKind::Indirect => EvalCompileContext::indirect(),
             EvalKind::None => unreachable!(),
-        },
+        }),
     )
     .unwrap();
     let bytecode = runtime
@@ -788,6 +788,8 @@ mod binary_property_keys;
 mod binary_this;
 
 mod binary_calls;
+#[cfg(all(feature = "stack-vm", feature = "profiling"))]
+mod binary_constructor_driver;
 
 mod binary_throw;
 

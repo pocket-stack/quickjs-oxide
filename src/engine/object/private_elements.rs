@@ -235,7 +235,7 @@ impl Runtime {
     /// identity through ordinary value writes.
     pub(crate) fn initialize_private_var_ref(
         &self,
-        root: &VarRefRoot,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
         name: &PrivateNameRef,
     ) -> Result<(), RuntimeError> {
         let _operation = self.operation();
@@ -281,7 +281,7 @@ impl Runtime {
     /// `RawValue::Private` into a `PrivateNameRef`.
     pub(crate) fn private_name_from_raw_var_ref(
         &self,
-        root: &VarRefRoot,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
     ) -> Result<PrivateNameRef, RuntimeError> {
         let _operation = self.operation();
         if !root.belongs_to(self) {
@@ -371,7 +371,7 @@ impl Runtime {
     /// can never escape as a mutable source-visible lexical value.
     pub(crate) fn initialize_private_callable_var_ref(
         &self,
-        root: &VarRefRoot,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
         callable: &CallableRef,
         kind: ClosureVariableKind,
     ) -> Result<(), RuntimeError> {
@@ -416,7 +416,7 @@ impl Runtime {
     /// cell. Generic VarRef reads deliberately reject this representation.
     pub(crate) fn private_callable_from_raw_var_ref(
         &self,
-        root: &VarRefRoot,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
         kind: ClosureVariableKind,
     ) -> Result<CallableRef, RuntimeError> {
         let _operation = self.operation();
@@ -474,7 +474,7 @@ impl Runtime {
     #[cfg(test)]
     pub(crate) fn initialize_private_method_var_ref(
         &self,
-        root: &VarRefRoot,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
         method: &CallableRef,
     ) -> Result<(), RuntimeError> {
         self.initialize_private_callable_var_ref(root, method, ClosureVariableKind::PrivateMethod)
@@ -483,7 +483,7 @@ impl Runtime {
     #[cfg(test)]
     pub(crate) fn private_method_from_raw_var_ref(
         &self,
-        root: &VarRefRoot,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
     ) -> Result<CallableRef, RuntimeError> {
         self.private_callable_from_raw_var_ref(root, ClosureVariableKind::PrivateMethod)
     }

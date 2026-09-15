@@ -1,16 +1,14 @@
+pub(super) mod operation;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::PropertyKeyKind;
 use crate::engine::builtins::native::PrimitiveKind;
 
 use crate::engine::heap::{
-    ContextId, ForInCandidate, ForInIteratorData, ForInProperty, ObjectData, ObjectId,
-    ObjectPayload,
+    ContextId, ForInIteratorData, ForInProperty, ObjectData, ObjectId, ObjectPayload,
 };
 use crate::engine::object::ObjectRef;
-use crate::engine::value::conversion::NativeConversion;
 
-use crate::engine::value::{JsString, Value};
+use crate::engine::value::Value;
 
 impl Runtime {
     /// QuickJS `js_for_in_start`: box non-nullish primitives, snapshot the
@@ -20,23 +18,24 @@ impl Runtime {
         realm: ContextId,
         value: Value,
     ) -> Result<ObjectRef, RuntimeError> {
-        let object = self.for_in_object(realm, value)?;
-        let fast_array_count = object
-            .as_ref()
-            .map(|object| self.for_in_fast_array_count(object))
-            .transpose()?
-            .flatten();
-        let properties = if fast_array_count.is_some() {
-            Vec::new()
-        } else {
-            object
-                .as_ref()
-                .map(|object| self.snapshot_for_in_properties(realm, object))
-                .transpose()?
-                .unwrap_or_default()
+        let step = operation::ForInStep::start(self, realm, value)?;
+        let (value, done) = operation::finish(self, realm, step)?;
+        let (Value::Object(iterator), None) = (value, done) else {
+            return Err(RuntimeError::Invariant(
+                "for-in start returned an invalid result",
+            ));
         };
+        Ok(iterator)
+    }
+
+    fn allocate_for_in_iterator(
+        &self,
+        object: Option<&ObjectRef>,
+        fast_array_count: Option<u32>,
+        properties: Vec<ForInProperty>,
+    ) -> Result<ObjectRef, RuntimeError> {
         let data = ForInIteratorData {
-            object: object.as_ref().map(ObjectRef::object_id),
+            object: object.map(ObjectRef::object_id),
             index: 0,
             properties,
             fast_array: fast_array_count.is_some(),
@@ -72,84 +71,12 @@ impl Runtime {
         realm: ContextId,
         iterator: &ObjectRef,
     ) -> Result<(Value, bool), RuntimeError> {
-        if !iterator.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("for-in iterator"));
-        }
-        loop {
-            let candidate = self
-                .0
-                .state
-                .borrow_mut()
-                .heap
-                .next_for_in_candidate(iterator.object_id())?;
-            match candidate {
-                ForInCandidate::Done => return Ok((Value::Undefined, true)),
-                ForInCandidate::BaseComplete { object, fast_array } => {
-                    let current = ObjectRef::from_borrowed_handle(self.clone(), object)?;
-                    if !self.for_in_prototype_chain_has_enumerable_property(realm, &current)? {
-                        self.store_for_in_level(iterator, None, Vec::new())?;
-                        return Ok((Value::Undefined, true));
-                    }
-                    let refreshed_fast_properties = fast_array
-                        .then(|| self.snapshot_for_in_properties(realm, &current))
-                        .transpose()?;
-                    self.0
-                        .state
-                        .borrow_mut()
-                        .heap
-                        .enter_for_in_prototype_chain(
-                            iterator.object_id(),
-                            refreshed_fast_properties,
-                        )?;
-                    let prototype =
-                        self.for_in_conversion(self.internal_get_prototype_of(realm, &current)?)?;
-                    let properties = prototype
-                        .as_ref()
-                        .map(|prototype| self.snapshot_for_in_properties(realm, prototype))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let next_object = prototype.as_ref().map(ObjectRef::object_id);
-                    self.store_for_in_level(iterator, next_object, properties)?;
-                    if prototype.is_none() {
-                        return Ok((Value::Undefined, true));
-                    }
-                }
-                ForInCandidate::LevelComplete(current_id) => {
-                    let current = ObjectRef::from_borrowed_handle(self.clone(), current_id)?;
-                    let prototype =
-                        self.for_in_conversion(self.internal_get_prototype_of(realm, &current)?)?;
-                    let properties = prototype
-                        .as_ref()
-                        .map(|prototype| self.snapshot_for_in_properties(realm, prototype))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let next_object = prototype.as_ref().map(ObjectRef::object_id);
-                    self.store_for_in_level(iterator, next_object, properties)?;
-                    if prototype.is_none() {
-                        return Ok((Value::Undefined, true));
-                    }
-                }
-                ForInCandidate::ArrayIndex { object, index } => {
-                    let current = ObjectRef::from_borrowed_handle(self.clone(), object)?;
-                    let name = JsString::try_from_utf8(&index.to_string())?;
-                    let key = self.intern_property_key_js_string(&name)?;
-                    if self
-                        .for_in_conversion(self.internal_has_own_property(realm, &current, &key)?)?
-                    {
-                        return Ok((Value::String(name), false));
-                    }
-                }
-                ForInCandidate::Property { object, name } => {
-                    let current = ObjectRef::from_borrowed_handle(self.clone(), object)?;
-                    let key = self.intern_property_key_js_string(&name)?;
-                    if self
-                        .for_in_conversion(self.internal_has_own_property(realm, &current, &key)?)?
-                    {
-                        return Ok((Value::String(name), false));
-                    }
-                }
-            }
-        }
+        let step = operation::ForInStep::next(self, realm, iterator)?;
+        let (value, done) = operation::finish(self, realm, step)?;
+        let done = done.ok_or(RuntimeError::Invariant(
+            "for-in next returned a start result",
+        ))?;
+        Ok((value, done))
     }
 
     /// Mirror the representation-sensitive branch in
@@ -256,35 +183,6 @@ impl Runtime {
         Ok(Some(fast_len))
     }
 
-    /// QuickJS pre-scans the complete live prototype chain before it creates
-    /// the hidden visited set. The actual traversal starts from the base again,
-    /// so Proxy prototype traps are observed in both lookup passes.
-    fn for_in_prototype_chain_has_enumerable_property(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-    ) -> Result<bool, RuntimeError> {
-        let mut current = object.clone();
-        while let Some(prototype) =
-            self.for_in_conversion(self.internal_get_prototype_of(realm, &current)?)?
-        {
-            let keys =
-                self.for_in_conversion(self.internal_own_property_keys(realm, &prototype)?)?;
-            for key in keys {
-                if self.0.state.borrow().atoms.property_key_kind(key.atom())?
-                    == PropertyKeyKind::String
-                    && self.for_in_conversion(
-                        self.internal_snapshot_own_property_is_enumerable(realm, &prototype, &key)?,
-                    )?
-                {
-                    return Ok(true);
-                }
-            }
-            current = prototype;
-        }
-        Ok(false)
-    }
-
     fn for_in_object(
         &self,
         realm: ContextId,
@@ -306,38 +204,6 @@ impl Runtime {
         };
         let prototype = self.primitive_prototype_for_realm(realm, kind)?;
         self.new_primitive_object(&prototype, kind, value).map(Some)
-    }
-
-    fn snapshot_for_in_properties(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-    ) -> Result<Vec<ForInProperty>, RuntimeError> {
-        let mut properties = Vec::new();
-        let keys = self.for_in_conversion(self.internal_own_property_keys(realm, object)?)?;
-        for key in keys {
-            let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-            if kind != PropertyKeyKind::String {
-                continue;
-            }
-            properties.push(ForInProperty {
-                name: self.property_key_to_js_string(&key)?,
-                enumerable: self.for_in_conversion(
-                    self.internal_snapshot_own_property_is_enumerable(realm, object, &key)?,
-                )?,
-            });
-        }
-        Ok(properties)
-    }
-
-    fn for_in_conversion<T>(&self, conversion: NativeConversion<T>) -> Result<T, RuntimeError> {
-        match conversion {
-            NativeConversion::Value(value) => Ok(value),
-            NativeConversion::Throw(value) => {
-                self.set_pending_exception(value)?;
-                Err(RuntimeError::Exception)
-            }
-        }
     }
 
     fn store_for_in_level(

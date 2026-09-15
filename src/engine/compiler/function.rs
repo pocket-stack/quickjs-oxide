@@ -1,11 +1,27 @@
-use super::{
-    AnonymousFunctionDefinition, BytecodeFunctionKind, Error, FunctionId, FunctionIr,
-    FunctionIrOptions, FunctionKind, FunctionSourceInfo, Identifier, IdentifierContext, IrConstant,
-    IrOp, LexContext, ParentLink, Parser, Punctuator, SourceOffset, Span, SpannedIrOp,
-    SuperCapabilities, TokenKind, insert_hoist_fragment, source_offset, source_span,
-    validate_identifier,
-};
+use crate::engine::compiler::parser::diagnostics::IdentifierContext;
+use crate::engine::compiler::parser::diagnostics::source_offset;
+use crate::engine::compiler::parser::diagnostics::source_span;
+use crate::engine::compiler::parser::diagnostics::validate_identifier;
+
+use crate::engine::api::error::Error;
 use crate::engine::code::bytecode::{DefineMethodKind, Instruction};
+use crate::engine::code::function::metadata::FunctionKind as BytecodeFunctionKind;
+use crate::engine::compiler::lexer::Identifier;
+use crate::engine::compiler::lexer::LexContext;
+use crate::engine::compiler::lexer::Punctuator;
+use crate::engine::compiler::lexer::Span;
+use crate::engine::compiler::lexer::TokenKind;
+use crate::engine::compiler::model::ir::function::FunctionIrOptions;
+use crate::engine::compiler::model::ir::function::FunctionKind;
+use crate::engine::compiler::model::ir::function::FunctionSourceInfo;
+use crate::engine::compiler::model::ir::function::ParentLink;
+use crate::engine::compiler::model::ir::function::SuperCapabilities;
+use crate::engine::compiler::model::ir::{FunctionId, IrConstant, IrOp, SpannedIrOp};
+use crate::engine::compiler::parser::builder::FunctionBuilder;
+use crate::engine::compiler::parser::context::AnonymousFunctionDefinition;
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::relocation::insert_hoist_fragment;
+use crate::source::SourceOffset;
 
 pub(super) struct ParsedFunctionDefinition {
     pub(super) constant: u32,
@@ -404,7 +420,7 @@ impl<'source> Parser<'source> {
             .as_ref()
             .map(|(identifier, _)| identifier.value.clone());
         let child = self.functions.len();
-        let parent_scope = self.functions[parent].current_scope;
+        let parent_scope = self.functions[parent].context.current_scope;
         let super_capabilities = match options.kind {
             FunctionKind::Method if options.derived_class_constructor => {
                 SuperCapabilities::CALL_AND_PROPERTY
@@ -420,7 +436,7 @@ impl<'source> Parser<'source> {
         // Parameter initializers are function code. Establish the child before
         // consuming `(` so every initializer, nested closure and pseudo-binding
         // reference is authored in the callee rather than its parent.
-        self.functions.push(FunctionIr::new(
+        self.functions.push(FunctionBuilder::new(
             Some(ParentLink {
                 function: parent,
                 definition_scope: parent_scope,
@@ -688,7 +704,7 @@ impl<'source> Parser<'source> {
         ) {
             self.insert_generator_initial_yield()?;
         }
-        self.functions[child].in_function_body = true;
+        self.functions[child].context.in_function_body = true;
         self.parse_function_body()?;
         let closing_brace = self.current().span;
         self.relex_current_with_context(parent_context)?;

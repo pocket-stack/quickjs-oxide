@@ -139,15 +139,7 @@ impl RuntimeState {
             DeferredRefOp::VarRef(var_ref) => self.release_heap_reference(RawId::VarRef(var_ref)),
             DeferredRefOp::Atom(atom) => self.atoms.release(atom).map(drop).map_err(Into::into),
             DeferredRefOp::ActiveFramePop { token, depth } => {
-                if let Some(position) = self
-                    .active_frames
-                    .iter()
-                    .rposition(|frame| frame.token == token)
-                {
-                    self.active_frames.truncate(position);
-                } else if self.active_frames.len() > depth {
-                    self.active_frames.truncate(depth);
-                }
+                self.active_frames.retire(token, depth);
                 Ok(())
             }
             DeferredRefOp::ActiveCollectionRecordsTruncate { depth } => {

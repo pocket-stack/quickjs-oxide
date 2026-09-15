@@ -310,6 +310,7 @@ fn date_native_payload_owns_only_its_shape_and_defining_realm_edges() {
                 target: stored_target,
                 realm: Some(stored_realm),
                 min_readable_args: 1,
+                ..
             },
             ..
         } if stored_target == target && stored_realm == realm

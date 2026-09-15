@@ -12,18 +12,30 @@ printf '%s\n' 'pub mod runtime;' > "$fixture/src/lib.rs"
 printf '%s\n' '// shared runtime ownership' > "$fixture/src/engine/heap/runtime/mod.rs"
 printf '%s\n' 'mod binary_object;' > "$fixture/src/engine/code/mod.rs"
 cp -- "$repository_root/src/engine/code/bytecode.rs" "$fixture/src/engine/code/bytecode.rs"
+cp -- "$repository_root/src/engine/code/instruction.rs" "$fixture/src/engine/code/instruction.rs"
 cp -- "$repository_root/src/engine/vm/mod.rs" "$fixture/src/engine/vm/mod.rs"
 cp -- "$repository_root/src/engine/value/mod.rs" "$fixture/src/engine/value/mod.rs"
 cp -- "$repository_root/src/engine/atom/mod.rs" "$fixture/src/engine/atom/mod.rs"
 cp -- "$repository_root/src/engine/code/function.rs" "$fixture/src/engine/code/function.rs"
+mkdir -p "$fixture/src/engine/code/function"
+cp -- "$repository_root/src/engine/code/function/layout.rs" "$fixture/src/engine/code/function/layout.rs"
 cp -- "$repository_root/src/engine/value/primitive.rs" "$fixture/src/engine/value/primitive.rs"
 cp -R -- "$repository_root/src/engine/api/context" "$fixture/src/engine/api/context"
-cp -- "$repository_root/src/engine/code/bytecode_publish.rs" \
-    "$fixture/src/engine/code/bytecode_publish.rs"
-mkdir -p -- "$fixture/src/engine/code/bytecode_publish"
-cp -- "$repository_root/src/engine/code/bytecode_publish/verified.rs" \
-    "$fixture/src/engine/code/bytecode_publish/verified.rs"
+mkdir -p -- "$fixture/src/engine/code/verify"
+cp -- "$repository_root/src/engine/code/verify/mod.rs" \
+    "$fixture/src/engine/code/verify/mod.rs"
+cp -- "$repository_root/src/engine/code/verify/verified.rs" \
+    "$fixture/src/engine/code/verify/verified.rs"
+# Publication-domain checks are part of the same compiled verification path.
+for domain in roles parameters bindings modules eval children closures flow operands; do
+    cp -- "$repository_root/src/engine/code/verify/$domain.rs" \
+        "$fixture/src/engine/code/verify/$domain.rs"
+done
 cp -- "$repository_root/src/engine/code/executable.rs" "$fixture/src/engine/code/executable.rs"
+# Lazy publication authenticates the rootless certificate together with its
+# sole OrdinaryCall witness producer; both are dependencies of the fixture.
+mkdir -p -- "$fixture/src/engine/vm/call"
+cp -- "$repository_root/src/engine/vm/call/ordinary.rs" "$fixture/src/engine/vm/call/ordinary.rs"
 printf '%s\n' \
     'mod atoms;' \
     'mod code;' \

@@ -19,7 +19,7 @@ impl VmActivation {
     }
 
     pub(in crate::engine::vm) fn new_in_realm(
-        metadata: FunctionMetadata,
+        layout: crate::engine::code::function::layout::FrameLayout<'_>,
         caller_realm: ContextId,
         callee_realm: ContextId,
         current_function: ObjectRef,
@@ -28,7 +28,7 @@ impl VmActivation {
         callee_global: ObjectRef,
     ) -> Self {
         Self {
-            stack: Vec::with_capacity(usize::from(metadata.max_stack)),
+            stack: Vec::with_capacity(layout.operand_capacity()),
             regions: Vec::new(),
             pc: 0,
             caller_realm: Some(caller_realm),
@@ -37,7 +37,7 @@ impl VmActivation {
             this_value,
             normalized_this: None,
             new_target,
-            strict: metadata.strict,
+            strict: layout.is_strict(),
             callee_global: Some(callee_global),
         }
     }
@@ -139,7 +139,11 @@ impl VmActivation {
             let instruction = code
                 .get(self.pc)
                 .ok_or_else(|| Error::internal("bytecode ended without return"))?;
+            #[cfg(feature = "profiling")]
+            crate::engine::api::profiling::record_legacy_dispatch(self.stack.len());
             host.update_active_bytecode_pc(BytecodePc::new(self.pc))?;
+            #[cfg(feature = "profiling")]
+            crate::engine::api::profiling::record_legacy_pc_publication();
             self.pc = self
                 .pc
                 .checked_add(1)

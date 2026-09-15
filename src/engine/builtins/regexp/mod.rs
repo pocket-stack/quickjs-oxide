@@ -8,23 +8,62 @@
 //! syntax remains a separate parity slice.
 
 mod compile;
+#[cfg(feature = "stack-vm")]
+pub(crate) use compile::{RegExpCompileResume, RegExpCompileStep};
 mod constructor;
+#[cfg(feature = "stack-vm")]
+pub(crate) use constructor::{RegExpConstructorResume, RegExpConstructorStep};
 mod escape;
 mod exec;
+#[cfg(feature = "stack-vm")]
+pub(crate) use exec::{RegExpExecResume, RegExpExecStep};
+mod iterator_next;
+#[cfg(feature = "stack-vm")]
+pub(crate) use iterator_next::{RegExpIteratorResume, RegExpIteratorStep};
 mod match_all;
+mod match_all_protocol;
+#[cfg(feature = "stack-vm")]
+pub(crate) use match_all_protocol::{RegExpMatchAllResume, RegExpMatchAllStep};
 mod match_protocol;
+#[cfg(feature = "stack-vm")]
+pub(crate) use match_protocol::{RegExpMatchResume, RegExpMatchStep};
 mod prototype;
+#[cfg(feature = "stack-vm")]
+pub(crate) use prototype::{RegExpPresentationResume, RegExpPresentationStep};
 mod replace;
+#[cfg(feature = "stack-vm")]
+pub(crate) use replace::{RegExpReplaceResume, RegExpReplaceStep};
 mod result;
 mod search;
+#[cfg(feature = "stack-vm")]
+pub(crate) use search::{RegExpSearchResume, RegExpSearchStep};
+mod species;
+#[cfg(feature = "stack-vm")]
+pub(crate) use species::{RegExpSpeciesResume, RegExpSpeciesStep};
 mod split;
+#[cfg(feature = "stack-vm")]
+pub(crate) use split::{RegExpSplitResume, RegExpSplitStep};
 #[cfg(test)]
 mod tests;
 
 use crate::engine::builtins::native::{RegExpFlagKind, RegExpNativeKind};
 use crate::engine::heap::RegExpRealmData;
 
-use super::*;
+use crate::engine::{
+    api::{runtime::Runtime, runtime_error::RuntimeError},
+    builtins::native::NativeFunctionId,
+    heap::ContextId,
+    object::{
+        AccessorValue, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey,
+        WellKnownSymbol,
+        shape::{PropertyFlags, ShapeEntry},
+    },
+    value::{JsString, Value},
+    vm::{
+        Completion,
+        call::{NativeArguments, NativeInvocation},
+    },
+};
 
 impl Runtime {
     /// Install the linked subset of pinned `js_regexp_funcs` and

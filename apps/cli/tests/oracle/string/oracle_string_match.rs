@@ -684,25 +684,33 @@ fn mixed_string_and_regexp_match_recursion_guard_is_catchable_and_recovers() {
                 )
                 .unwrap();
 
+            // The legacy engine uses the original physical native-frame ceiling.
+            // Owned callbacks retain the unchanged logical-frame budget instead:
+            // a long finite chain completes, while -1 never reaches the base case.
+            #[cfg(not(feature = "stack-vm"))]
+            let (safe_depth, overflow_depth) = (3, 4);
+            #[cfg(feature = "stack-vm")]
+            let (safe_depth, overflow_depth) = (256, -1);
+
             for (entry, kind) in [("String.prototype.match", 0), ("RegExp @@match", 1)] {
                 assert_eq!(
                     context
-                        .eval(&format!("mixedMatchRecurse({kind},3)"))
+                        .eval(&format!("mixedMatchRecurse({kind},{safe_depth})"))
                         .unwrap(),
                     Value::Null,
-                    "the proven-safe four-frame {entry} chain was rejected",
+                    "the proven-safe mixed {entry} chain was rejected",
                 );
                 assert_eq!(
                     context
                         .eval(&format!(
                             r#"(function(){{
-                                try{{mixedMatchRecurse({kind},4);return "missing"}}
+                                try{{mixedMatchRecurse({kind},{overflow_depth});return "missing"}}
                                 catch(error){{return error.name+":"+error.message}}
                             }})()"#,
                         ))
                         .unwrap(),
                     string_value("InternalError:stack overflow"),
-                    "the fifth mixed match frame was not rejected from {entry}",
+                    "the mixed match recursion limit was not enforced from {entry}",
                 );
             }
             assert_eq!(

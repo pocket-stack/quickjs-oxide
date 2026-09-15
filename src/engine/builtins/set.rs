@@ -6,7 +6,6 @@
 //! pinned QuickJS `JS_AddIntrinsicMapSet` implementation, including its
 //! size-dependent branches and mutation-sensitive ordering.
 
-use super::object::ObjectIteratorStep;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
@@ -16,21 +15,16 @@ use crate::engine::builtins::native::{
 };
 use crate::engine::heap::{ContextId, HeapError, ObjectData, ObjectPayload, SetRealmData};
 use crate::engine::object::{
-    AccessorValue, CallableRef, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor,
-    PropertyKey, WellKnownSymbol,
+    AccessorValue, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey,
+    WellKnownSymbol,
 };
 use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation, NativeInvokeOutcome};
-use crate::engine::vm::frames::ActiveCollectionRecord;
 
-struct SetLikeRecord {
-    target: Value,
-    size: i64,
-    has: CallableRef,
-    keys: CallableRef,
-}
+pub(crate) mod callback;
+pub(crate) mod operations;
 
 impl Runtime {
     pub(crate) fn initialize_set_intrinsic(
@@ -247,7 +241,10 @@ impl Runtime {
         Ok(())
     }
 
-    fn set_realm_data(&self, realm: ContextId) -> Result<SetRealmData, RuntimeError> {
+    pub(in crate::engine::builtins) fn set_realm_data(
+        &self,
+        realm: ContextId,
+    ) -> Result<SetRealmData, RuntimeError> {
         self.0
             .state
             .borrow()
@@ -257,7 +254,10 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant("realm has no Set intrinsics"))
     }
 
-    fn new_set_object(&self, prototype: &ObjectRef) -> Result<ObjectRef, RuntimeError> {
+    pub(in crate::engine::builtins) fn new_set_object(
+        &self,
+        prototype: &ObjectRef,
+    ) -> Result<ObjectRef, RuntimeError> {
         let _operation = self.operation();
         if !prototype.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("Set prototype"));
@@ -285,17 +285,6 @@ impl Runtime {
         let prototype = self.set_realm_data(realm)?.prototype;
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
         self.new_set_object(&prototype)
-    }
-
-    fn set_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            let prototype = self.set_realm_data(fallback_realm)?.prototype;
-            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-        })
     }
 
     pub(crate) fn call_set_native(
@@ -351,114 +340,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Set constructor did not receive a constructor invocation",
-            ));
-        };
-        let prototype = match self.set_prototype_from_new_target(realm, new_target)? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let set = self.new_set_object(&prototype)?;
-        if arguments.actual_arg_count == 0 {
-            return Ok(Completion::Return(Value::Object(set)));
-        }
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant("Set iterable argv was not padded"))?;
-        if matches!(iterable, Value::Null | Value::Undefined) {
-            return Ok(Completion::Return(Value::Object(set)));
-        }
-
-        let add_key = self.intern_property_key("add")?;
-        let adder = match self.get_property_in_realm(realm, &set, &add_key)? {
-            Completion::Return(Value::Object(adder)) => match self.as_callable(&adder)? {
-                Some(adder) => adder,
-                None => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "set/add is not a function",
-                    )?));
-                }
-            },
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "set/add is not a function",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let method =
-            match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(Value::Object(method)) => match self.as_callable(&method)? {
-                    Some(method) => method,
-                    None => {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "value is not iterable",
-                        )?));
-                    }
-                },
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "value is not iterable",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let iterator = match self.call_internal(realm, &method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        loop {
-            let item = match self.object_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(set)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let adder_completion = self.call_internal(
+        super::iterator::collection::finish(
+            self,
+            realm,
+            super::iterator::collection::CollectionStep::start(
+                self,
                 realm,
-                &adder,
-                Value::Object(set.clone()),
-                std::slice::from_ref(&item),
-            )?;
-            // QuickJS releases the current iterator value before performing
-            // IteratorClose for an abrupt adder completion. Preserve that
-            // weak-GC-observable lifetime boundary even though Set is strong.
-            drop(item);
-            match adder_completion {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            }
-        }
+                super::iterator::collection::CollectionKind::Set,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn set_receiver(
@@ -687,51 +579,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let callback = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Set.prototype.forEach callback argv was not padded",
-        ))?;
-        let Value::Object(callback) = callback else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(callback) = self.as_callable(callback)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let this_arg = arguments
-            .readable
-            .get(1)
-            .cloned()
-            .unwrap_or(Value::Undefined);
-        let mut index = 0_usize;
-        while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
-            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Set {
-                object: set.object_id(),
-                index: record_index,
-            });
-            let callback_result = self.call_internal(
-                realm,
-                &callback,
-                this_arg.clone(),
-                &[value.clone(), value, Value::Object(set.clone())],
-            );
-            active_record.finish()?;
-            match callback_result? {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        }
-        Ok(Completion::Return(Value::Undefined))
+        callback::finish(
+            self,
+            realm,
+            callback::EachStep::start(self, realm, &invocation, arguments)?,
+        )
     }
 
     fn new_set_iterator(
@@ -875,278 +727,6 @@ impl Runtime {
         Ok(NativeInvokeOutcome::IteratorNextRaw { value, done: false })
     }
 
-    fn get_set_like_record(
-        &self,
-        realm: ContextId,
-        target: Value,
-    ) -> Result<NativeConversion<SetLikeRecord>, RuntimeError> {
-        if matches!(target, Value::Null | Value::Undefined) {
-            let kind = if matches!(target, Value::Null) {
-                "null"
-            } else {
-                "undefined"
-            };
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                &format!("cannot read property 'size' of {kind}"),
-            )?));
-        }
-        let genuine_size = if let Value::Object(object) = &target {
-            if !object.belongs_to(self) {
-                return Err(RuntimeError::WrongRuntime("set-like object"));
-            }
-            let state = self.0.state.borrow();
-            if matches!(
-                state.heap.object(object.object_id())?.payload,
-                ObjectPayload::Set { .. }
-            ) {
-                Some(state.heap.set_size(object.object_id())?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let size = if let Some(size) = genuine_size {
-            i64::try_from(size).map_err(|_| {
-                RuntimeError::Invariant("genuine Set size exceeded signed 64-bit range")
-            })?
-        } else {
-            let size_key = self.intern_property_key("size")?;
-            let size = match self.get_value_property_in_realm(realm, target.clone(), &size_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-            };
-            let size = match self.native_to_number(realm, &size)? {
-                NativeConversion::Value(size) => size,
-                NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-            };
-            if size.is_nan() {
-                return Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    ".size is not a number",
-                )?));
-            }
-            let size = if size < i64::MIN as f64 {
-                i64::MIN
-            } else if size >= 2_f64.powi(63) {
-                i64::MAX
-            } else {
-                size as i64
-            };
-            if size < 0 {
-                return Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Range,
-                    ".size must be positive",
-                )?));
-            }
-            size
-        };
-
-        let has_key = self.intern_property_key("has")?;
-        let has = match self.get_value_property_in_realm(realm, target.clone(), &has_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(has, Value::Undefined) {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                ".has is undefined",
-            )?));
-        }
-        let has = match has {
-            Value::Object(has) => match self.as_callable(&has)? {
-                Some(has) => has,
-                None => {
-                    return Ok(NativeConversion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        ".has is not a function",
-                    )?));
-                }
-            },
-            _ => {
-                return Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    ".has is not a function",
-                )?));
-            }
-        };
-
-        let keys_key = self.intern_property_key("keys")?;
-        let keys = match self.get_value_property_in_realm(realm, target.clone(), &keys_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(keys, Value::Undefined) {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                ".keys is undefined",
-            )?));
-        }
-        let keys = match keys {
-            Value::Object(keys) => match self.as_callable(&keys)? {
-                Some(keys) => keys,
-                None => {
-                    return Ok(NativeConversion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        ".keys is not a function",
-                    )?));
-                }
-            },
-            _ => {
-                return Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    ".keys is not a function",
-                )?));
-            }
-        };
-
-        Ok(NativeConversion::Value(SetLikeRecord {
-            target,
-            size,
-            has,
-            keys,
-        }))
-    }
-
-    fn start_set_like_keys_iterator(
-        &self,
-        realm: ContextId,
-        target: &Value,
-        keys: &CallableRef,
-    ) -> Result<NativeConversion<(Value, Value)>, RuntimeError> {
-        let iterator = match self.call_internal(realm, keys, target.clone(), &[])? {
-            Completion::Return(iterator) => iterator,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(iterator, Value::Null | Value::Undefined) {
-            let kind = if matches!(iterator, Value::Null) {
-                "null"
-            } else {
-                "undefined"
-            };
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                &format!("cannot read property 'next' of {kind}"),
-            )?));
-        }
-        let next_key = self.intern_property_key("next")?;
-        let next = match self.get_value_property_in_realm(realm, iterator.clone(), &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        Ok(NativeConversion::Value((iterator, next)))
-    }
-
-    fn set_like_iterator_next(
-        &self,
-        realm: ContextId,
-        iterator: &Value,
-        next: Value,
-    ) -> Result<ObjectIteratorStep, RuntimeError> {
-        let next = match next {
-            Value::Object(next) => match self.as_callable(&next)? {
-                Some(next) => next,
-                None => {
-                    return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "not a function",
-                    )?));
-                }
-            },
-            _ => {
-                return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a function",
-                )?));
-            }
-        };
-        let result = match self.call_internal(realm, &next, iterator.clone(), &[])? {
-            Completion::Return(Value::Object(result)) => result,
-            Completion::Return(_) => {
-                return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "iterator must return an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
-        };
-        let done_key = self.intern_property_key("done")?;
-        let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => self.value_to_boolean(&value)?,
-            Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
-        };
-        if done {
-            return Ok(ObjectIteratorStep::Done);
-        }
-        let value_key = self.intern_property_key("value")?;
-        match self.get_property_in_realm(realm, &result, &value_key)? {
-            Completion::Return(value) => Ok(ObjectIteratorStep::Yield(value)),
-            Completion::Throw(value) => Ok(ObjectIteratorStep::Throw(value)),
-        }
-    }
-
-    /// Mirror the pinned QuickJS Set-method call sites: they invoke
-    /// `JS_IteratorClose(iter, FALSE)` for an early boolean result but ignore
-    /// its status. The `return` getter/call remains observable, while any
-    /// getter, call, callability, or result-brand failure is swallowed.
-    fn close_set_iterator_for_set_method(
-        &self,
-        realm: ContextId,
-        iterator: &Value,
-    ) -> Result<(), RuntimeError> {
-        let return_key = self.intern_property_key("return")?;
-        let method = match self.get_value_property_in_realm(realm, iterator.clone(), &return_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(_) => return Ok(()),
-        };
-        if matches!(method, Value::Undefined | Value::Null) {
-            return Ok(());
-        }
-        let method = match method {
-            Value::Object(method) => match self.as_callable(&method)? {
-                Some(method) => method,
-                None => return Ok(()),
-            },
-            _ => return Ok(()),
-        };
-        let _ = self.call_internal(realm, &method, iterator.clone(), &[])?;
-        Ok(())
-    }
-
-    fn call_set_like_has(
-        &self,
-        realm: ContextId,
-        record: &SetLikeRecord,
-        value: Value,
-    ) -> Result<NativeConversion<bool>, RuntimeError> {
-        match self.call_internal(
-            realm,
-            &record.has,
-            record.target.clone(),
-            std::slice::from_ref(&value),
-        )? {
-            Completion::Return(value) => {
-                Ok(NativeConversion::Value(self.value_to_boolean(&value)?))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
-    }
-
     fn copy_set_in_realm(
         &self,
         realm: ContextId,
@@ -1160,77 +740,23 @@ impl Runtime {
         Ok(copy)
     }
 
-    fn set_method_operand(
-        &self,
-        arguments: &NativeArguments,
-        operation: &'static str,
-    ) -> Result<Value, RuntimeError> {
-        arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(operation))
-    }
-
     fn call_set_is_disjoint_from(
         &self,
         realm: ContextId,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand = self.set_method_operand(
-            arguments,
-            "Set.prototype.isDisjointFrom operand argv was not padded",
-        )?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) <= other.size {
-            let mut index = 0_usize;
-            while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
-                let active_record =
-                    self.push_active_collection_record(ActiveCollectionRecord::Set {
-                        object: set.object_id(),
-                        index: record_index,
-                    });
-                let has_result = self.call_set_like_has(realm, &other, value);
-                active_record.finish()?;
-                match has_result? {
-                    NativeConversion::Value(true) => {
-                        return Ok(Completion::Return(Value::Bool(false)));
-                    }
-                    NativeConversion::Value(false) => {}
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-            return Ok(Completion::Return(Value::Bool(true)));
-        }
-
-        let (iterator, next) =
-            match self.start_set_like_keys_iterator(realm, &other.target, &other.keys)? {
-                NativeConversion::Value(iterator) => iterator,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        loop {
-            let value = match self.set_like_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => Self::normalized_set_key(value),
-                ObjectIteratorStep::Done => return Ok(Completion::Return(Value::Bool(true))),
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let present = self.find_set_record(&set, &value)?.is_some();
-            // Pinned QuickJS frees the yielded key before invoking return().
-            drop(value);
-            if present {
-                self.close_set_iterator_for_set_method(realm, &iterator)?;
-                return Ok(Completion::Return(Value::Bool(false)));
-            }
-        }
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::Disjoint,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_set_is_subset_of(
@@ -1239,38 +765,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand = self.set_method_operand(
-            arguments,
-            "Set.prototype.isSubsetOf operand argv was not padded",
-        )?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) > other.size {
-            return Ok(Completion::Return(Value::Bool(false)));
-        }
-        let mut index = 0_usize;
-        while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
-            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Set {
-                object: set.object_id(),
-                index: record_index,
-            });
-            let has_result = self.call_set_like_has(realm, &other, value);
-            active_record.finish()?;
-            match has_result? {
-                NativeConversion::Value(true) => {}
-                NativeConversion::Value(false) => {
-                    return Ok(Completion::Return(Value::Bool(false)));
-                }
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        }
-        Ok(Completion::Return(Value::Bool(true)))
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::Subset,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_set_is_superset_of(
@@ -1279,40 +784,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand = self.set_method_operand(
-            arguments,
-            "Set.prototype.isSupersetOf operand argv was not padded",
-        )?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) < other.size {
-            return Ok(Completion::Return(Value::Bool(false)));
-        }
-        let (iterator, next) =
-            match self.start_set_like_keys_iterator(realm, &other.target, &other.keys)? {
-                NativeConversion::Value(iterator) => iterator,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        loop {
-            let value = match self.set_like_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => Self::normalized_set_key(value),
-                ObjectIteratorStep::Done => return Ok(Completion::Return(Value::Bool(true))),
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let present = self.find_set_record(&set, &value)?.is_some();
-            // Pinned QuickJS frees the yielded key before invoking return().
-            drop(value);
-            if !present {
-                self.close_set_iterator_for_set_method(realm, &iterator)?;
-                return Ok(Completion::Return(Value::Bool(false)));
-            }
-        }
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::Superset,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_set_intersection(
@@ -1321,58 +803,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand = self.set_method_operand(
-            arguments,
-            "Set.prototype.intersection operand argv was not padded",
-        )?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) > other.size {
-            let (iterator, next) =
-                match self.start_set_like_keys_iterator(realm, &other.target, &other.keys)? {
-                    NativeConversion::Value(iterator) => iterator,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-            let result = self.new_set_in_realm(realm)?;
-            loop {
-                let value = match self.set_like_iterator_next(realm, &iterator, next.clone())? {
-                    ObjectIteratorStep::Yield(value) => Self::normalized_set_key(value),
-                    ObjectIteratorStep::Done => {
-                        return Ok(Completion::Return(Value::Object(result)));
-                    }
-                    ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if self.find_set_record(&set, &value)?.is_some() {
-                    self.insert_set_record(&result, value)?;
-                }
-            }
-        }
-
-        let result = self.new_set_in_realm(realm)?;
-        let mut index = 0_usize;
-        while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
-            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Set {
-                object: set.object_id(),
-                index: record_index,
-            });
-            let has_result = self.call_set_like_has(realm, &other, value.clone());
-            active_record.finish()?;
-            let present = match has_result? {
-                NativeConversion::Value(present) => present,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if present {
-                self.insert_set_record(&result, value)?;
-            }
-        }
-        Ok(Completion::Return(Value::Object(result)))
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::Intersection,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_set_difference(
@@ -1381,58 +822,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand = self.set_method_operand(
-            arguments,
-            "Set.prototype.difference operand argv was not padded",
-        )?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.copy_set_in_realm(realm, &set)?;
-
-        if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) <= other.size {
-            let mut index = 0_usize;
-            while let Some((record_index, value)) =
-                self.next_live_set_record(&result, &mut index)?
-            {
-                let active_record =
-                    self.push_active_collection_record(ActiveCollectionRecord::Set {
-                        object: result.object_id(),
-                        index: record_index,
-                    });
-                let has_result = self.call_set_like_has(realm, &other, value.clone());
-                active_record.finish()?;
-                let present = match has_result? {
-                    NativeConversion::Value(present) => present,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if present {
-                    self.delete_set_record(&result, &value)?;
-                }
-            }
-            return Ok(Completion::Return(Value::Object(result)));
-        }
-
-        let (iterator, next) =
-            match self.start_set_like_keys_iterator(realm, &other.target, &other.keys)? {
-                NativeConversion::Value(iterator) => iterator,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        loop {
-            let value = match self.set_like_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(result)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.delete_set_record(&result, &value)?;
-        }
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::Difference,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_set_symmetric_difference(
@@ -1441,46 +841,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand = self.set_method_operand(
-            arguments,
-            "Set.prototype.symmetricDifference operand argv was not padded",
-        )?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let SetLikeRecord {
-            target, has, keys, ..
-        } = other;
-        // QuickJS releases this otherwise-unused method before calling keys().
-        drop(has);
-        // QuickJS starts the foreign iterator before copying `this`; getters
-        // and the keys call can therefore mutate what is copied.
-        let (iterator, next) = match self.start_set_like_keys_iterator(realm, &target, &keys)? {
-            NativeConversion::Value(iterator) => iterator,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.copy_set_in_realm(realm, &set)?;
-        loop {
-            let value = match self.set_like_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => Self::normalized_set_key(value),
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(result)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            // The first lookup is deliberately against the current original,
-            // not the copy. Mutating foreign iterators make this observable.
-            if self.find_set_record(&set, &value)?.is_some() {
-                self.delete_set_record(&result, &value)?;
-            } else {
-                self.insert_set_record(&result, value)?;
-            }
-        }
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::SymmetricDifference,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn call_set_union(
@@ -1489,36 +860,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let set = match self.set_receiver(realm, invocation, false)? {
-            NativeConversion::Value(set) => set,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let operand =
-            self.set_method_operand(arguments, "Set.prototype.union operand argv was not padded")?;
-        let other = match self.get_set_like_record(realm, operand)? {
-            NativeConversion::Value(record) => record,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let SetLikeRecord {
-            target, has, keys, ..
-        } = other;
-        // Match QuickJS's explicit JS_FreeValue(has) before invoking keys().
-        drop(has);
-        let (iterator, next) = match self.start_set_like_keys_iterator(realm, &target, &keys)? {
-            NativeConversion::Value(iterator) => iterator,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.copy_set_in_realm(realm, &set)?;
-        loop {
-            let value = match self.set_like_iterator_next(realm, &iterator, next.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(result)));
-                }
-                ObjectIteratorStep::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.insert_set_record(&result, value)?;
-        }
+        operations::finish(
+            self,
+            realm,
+            operations::SetStep::start(
+                self,
+                realm,
+                operations::SetOperation::Union,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 }
 

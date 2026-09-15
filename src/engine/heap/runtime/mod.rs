@@ -30,6 +30,8 @@ pub(crate) static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct RuntimeInner {
     pub(crate) state: RefCell<RuntimeState>,
+    /// Incremental activation count, readable without borrowing heap state.
+    pub(crate) active_frame_depth: Rc<Cell<usize>>,
     pub(crate) deferred_references: super::deferred::DeferredOperations,
     pub(crate) host_services: Rc<dyn HostServices>,
     /// Embedder policy sampled by synchronous Atomics waits. QuickJS leaves
@@ -106,8 +108,9 @@ pub(crate) struct RuntimeState {
     pub(crate) well_known_symbols: HashMap<WellKnownSymbol, Atom>,
     /// Unified QuickJS-style execution-frame chain. Records contain only raw
     /// stable identities and diagnostic state; the corresponding stack-local
-    /// [`ActiveFrameGuard`] owns the object and bytecode roots.
-    pub(crate) active_frames: Vec<ActiveFrameRecord>,
+    /// [`ActiveFrameGuard`] or its authenticated running frame owns the object
+    /// and bytecode roots; the registry never owns Runtime roots.
+    pub(crate) active_frames: crate::engine::vm::frames::ActiveFrames,
     /// Collection records retained across an active user callback. QuickJS
     /// keeps the current Map/Set record alive during `forEach` and direct Set
     /// method traversal, which makes a deletion transiently visible to

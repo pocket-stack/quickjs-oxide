@@ -1,22 +1,41 @@
 //! Validate the completed scope and binding graph before identifier resolution.
+use crate::engine::compiler::model::bindings::{
+    BindingKind, BindingStorage, IrAnnexBinding, SyntheticLocalKind,
+    binding_kind_from_closure_flags, binding_kinds_compatible,
+};
+use crate::engine::compiler::model::ir::function::FunctionKind;
+use crate::engine::compiler::model::ir::function::FunctionTree;
+use crate::engine::compiler::model::ir::function::ParentLink;
+use crate::engine::compiler::model::ir::{IdentifierAccess, IrConstant, IrOp, SpannedIrOp};
+use crate::engine::compiler::model::scope::{ScopeId, ScopeKind};
 
 use super::{
-    ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME, ArgumentsKind, BindingKind, BindingStorage,
-    BytecodeFunctionKind, ClassInitializerKind, ClosureSource, ClosureVariableKind,
-    ClosureVariableName, EVAL_RET_LOCAL_NAME, EVAL_VARIABLE_OBJECT_LOCAL_NAME, Error, ErrorKind,
-    EvalCallerVariableTarget, EvalKind, EvalScopeKind, FINALLY_EVAL_RET_LOCAL_NAME, FunctionKind,
-    FunctionTree, IdentifierAccess, Instruction, IrAnnexBinding, IrConstant, IrOp,
-    ParameterDefaultSource, ParentLink, PseudoBinding, ScopeId, ScopeKind, SpannedIrOp,
-    SyntheticLocalKind, THIS_LOCAL_NAME, Value, WITH_OBJECT_LOCAL_NAME,
-    binding_kind_from_closure_flags, binding_kinds_compatible, function_owns_pseudo_binding,
-    ordered_hoisted_functions,
+    ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME, EVAL_RET_LOCAL_NAME, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
+    FINALLY_EVAL_RET_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME,
 };
+use crate::engine::api::error::Error;
+use crate::engine::api::error::ErrorKind;
+use crate::engine::code::bytecode::ArgumentsKind;
+use crate::engine::code::bytecode::Instruction;
+use crate::engine::code::function::metadata::ClassInitializerKind;
+use crate::engine::code::function::metadata::ClosureSource;
+use crate::engine::code::function::metadata::ClosureVariableKind;
+use crate::engine::code::function::metadata::ClosureVariableName;
+use crate::engine::code::function::metadata::EvalCallerVariableTarget;
+use crate::engine::code::function::metadata::EvalKind;
+use crate::engine::code::function::metadata::EvalScopeKind;
+use crate::engine::code::function::metadata::FunctionKind as BytecodeFunctionKind;
+use crate::engine::code::function::metadata::ParameterDefaultSource;
+use crate::engine::compiler::pseudo_binding::PseudoBinding;
+use crate::engine::compiler::pseudo_binding::THIS_LOCAL_NAME;
+use crate::engine::compiler::pseudo_binding::function_owns_pseudo_binding;
+use crate::engine::compiler::resolution::ordered_hoisted_functions;
+use crate::engine::value::PrimitiveValue as Value;
 
 pub(super) fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
     for (function_id, function) in tree.functions.iter().enumerate() {
         if function.scopes.len() < 2
             || function.var_scope != ScopeId(0)
-            || function.current_scope != function.body_scope
             || function.scopes[0].parent.is_some()
             || function.scopes[0].kind != ScopeKind::FunctionRoot
             || function.scopes[0].is_parameter_initializer
@@ -74,7 +93,7 @@ pub(super) fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
                     && !function.class_constructor
                     && function.class_initializer_kind.is_none()
-                    && function.in_function_body
+                    && function.body_parsed
                     && await_ops == 0
                     && initial_yields == 1 =>
             {
@@ -107,14 +126,14 @@ pub(super) fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         | FunctionKind::Arrow
                 ) && !function.class_constructor
                     && function.class_initializer_kind.is_none()
-                    && function.in_function_body
+                    && function.body_parsed
                     && initial_yields == 0
                     && suspension_ops == 0 => {}
             BytecodeFunctionKind::AsyncGenerator
                 if matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
                     && !function.class_constructor
                     && function.class_initializer_kind.is_none()
-                    && function.in_function_body
+                    && function.body_parsed
                     && initial_yields == 1 =>
             {
                 let initial = function

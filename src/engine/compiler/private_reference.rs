@@ -5,7 +5,29 @@
 //! operation directly to a typed local/closure source so the private atom never
 //! enters the JavaScript-visible operand stack.
 
-use super::*;
+use crate::engine::api::error::Error;
+use crate::engine::code::bytecode::Instruction;
+use crate::engine::code::bytecode::PrivateNameSource;
+use crate::engine::compiler::lexer::Keyword;
+use crate::engine::compiler::lexer::Span;
+use crate::engine::compiler::lexer::TokenKind;
+use crate::engine::compiler::model::bindings::BindingKind;
+use crate::engine::compiler::model::bindings::BindingStorage;
+use crate::engine::compiler::model::bindings::ResolvedBinding;
+use crate::engine::compiler::model::bindings::binding_kinds_compatible;
+use crate::engine::compiler::model::ir::FunctionId;
+use crate::engine::compiler::model::ir::IrOp;
+use crate::engine::compiler::model::ir::PrivateFieldAccess;
+use crate::engine::compiler::model::ir::function::FunctionTree;
+use crate::engine::compiler::model::scope::ScopeId;
+use crate::engine::compiler::parser::context::InMode;
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::parser::diagnostics::lex_error;
+use crate::engine::compiler::parser::diagnostics::source_offset;
+use crate::engine::compiler::parser::diagnostics::syntax_atom_error_without_span;
+use crate::engine::compiler::resolution::capture_binding_path;
+use crate::engine::compiler::resolution::ensure_string_constant;
+use crate::source::SourceOffset;
 
 pub(super) fn private_binding_name(name: &str) -> String {
     let mut binding = String::with_capacity(name.len().saturating_add(1));
@@ -28,7 +50,7 @@ impl<'source> Parser<'source> {
         span: Span,
         site: SourceOffset,
     ) -> Result<usize, Error> {
-        let scope = self.current_ir().current_scope;
+        let scope = self.current_ir().context.current_scope;
         self.emit_at(
             IrOp::PrivateField {
                 name,
@@ -82,7 +104,7 @@ impl<'source> Parser<'source> {
             unreachable!("private-in probe changed the current token")
         };
         let name = private_binding_name(&identifier.value);
-        let scope = self.current_ir().current_scope;
+        let scope = self.current_ir().context.current_scope;
         self.advance()?;
         if !matches!(self.current().kind, TokenKind::Keyword(Keyword::In)) {
             return Err(Error::internal(
@@ -316,8 +338,21 @@ pub(super) fn resolve_private_field_operation(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::engine::api::error::ErrorKind;
     use crate::engine::code::function::UnlinkedFunction;
+    use crate::engine::code::function::metadata::ClassInitializerKind;
+    use crate::engine::code::function::metadata::ClosureVariableKind;
+    use crate::engine::code::function::metadata::ConstructorKind;
+    use crate::engine::code::function::metadata::FunctionKind as BytecodeFunctionKind;
+
+    use crate::engine::compiler::compile_unlinked_script;
+
+    use crate::engine::compiler::model::ir::function::FunctionKind;
+    use crate::engine::compiler::model::scope::ScopeKind;
+
+    use crate::engine::value::JsString;
+
+    use super::*;
 
     fn collect_functions<'a>(function: &'a UnlinkedFunction, out: &mut Vec<&'a UnlinkedFunction>) {
         out.push(function);

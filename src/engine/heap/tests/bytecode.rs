@@ -821,3 +821,62 @@ fn bytecode_static_names_require_complete_owned_string_mappings() {
     heap.release_shape(shape).unwrap();
     assert_eq!(heap.counts().live, 0);
 }
+
+#[cfg(feature = "stack-vm")]
+#[test]
+fn bytecode_publication_rebuilds_fusion_from_the_authenticated_payload() {
+    use crate::engine::code::function::metadata::{ClosureVariableKind, VariableDefinition};
+    let mut heap = Heap::new();
+    let shape = empty_shape(&mut heap);
+    let prototype = leaf(&mut heap, shape);
+    let realm = heap
+        .allocate_context(ContextData::new(
+            prototype, prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+        ))
+        .unwrap();
+    let locals: Rc<[VariableDefinition]> = Rc::from([VariableDefinition {
+        name: None,
+        is_lexical: false,
+        is_const: false,
+        is_parameter_initializer: false,
+        kind: ClosureVariableKind::Normal,
+    }]);
+    let code: Rc<[Instruction]> = Rc::from([
+        Instruction::GetLocal(0),
+        Instruction::Inc,
+        Instruction::PutLocal(0),
+        Instruction::ReturnUndefined,
+    ]);
+    let mut original = bytecode(&code, realm, Vec::new(), Vec::new());
+    original.metadata.local_count = 1;
+    original.local_definitions = locals.clone();
+    // Even a plain draft must receive its plan only after heap verification.
+    assert!(original.fusion.update(0).is_none());
+    let original = heap.allocate_function_bytecode(original).unwrap();
+    let stale = heap.function_bytecode(original).unwrap().fusion.clone();
+    assert!(stale.update(0).is_some());
+    let changed_code: Rc<[Instruction]> = Rc::from([
+        Instruction::GetLocal(0),
+        Instruction::Neg,
+        Instruction::PutLocal(0),
+        Instruction::ReturnUndefined,
+    ]);
+    let mut changed = bytecode(&changed_code, realm, Vec::new(), Vec::new());
+    changed.metadata.local_count = 1;
+    changed.local_definitions = locals;
+    changed.fusion = stale;
+    let changed = heap.allocate_function_bytecode(changed).unwrap();
+    assert!(
+        heap.function_bytecode(changed)
+            .unwrap()
+            .fusion
+            .update(0)
+            .is_none()
+    );
+    heap.release_function_bytecode(changed).unwrap();
+    heap.release_function_bytecode(original).unwrap();
+    heap.release_context(realm).unwrap();
+    heap.release_object(prototype).unwrap();
+    heap.release_shape(shape).unwrap();
+    assert_eq!(heap.counts().live, 0);
+}

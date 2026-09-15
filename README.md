@@ -58,12 +58,12 @@ Neither is a general untrusted-bytecode loader or Feature Parity claim.
 
 ## Status
 
+- [Documentation index](docs/README.md)
 - [Engine module responsibilities](docs/architecture.md)
 - [Current implementation status](docs/status.md)
+- [Stack VM redesign: goals and architecture](docs/primitive-vm-plan.md)
+- [Stack VM redesign: 10-commit implementation plan](docs/primitive-vm-commit-plan.md)
 - [Profiling and external benchmarks](docs/profiling.md)
-- [Data structure improvement plan](docs/data-structure-plan.md)
-- [Published bytecode and VM execution plan](docs/published-execution-plan.md)
-- [Published execution contracts](docs/published-execution-contracts.md)
 - [Pinned Test262 baseline and metric definitions](docs/test262.md)
 - [Parity acceptance contract](docs/parity.md)
 - [Playground build and trust boundary](docs/playground.md)
@@ -90,12 +90,11 @@ npm ci && npx playwright install chromium && npm run test:browser
 The root quickjs-oxide package has three source modules: `source/` for authored
 text and Unicode support, `regexp/` for regex programs and matching, and
 `engine/` for the interpreter's responsibility modules. `src/lib.rs` is the
-only top-level Rust source file. Each source directory documents its ownership
-in a README.
+only top-level Rust source file.
 
 Native and browser providers live in `adapters/`, applications in `apps/`,
 and the Test262 runner in `conformance/test262`. See
-[architecture](docs/architecture.md) and [source guide](src/README.md).
+[architecture](docs/architecture.md) for responsibilities and boundaries.
 
 ```sh
 cargo run -p quickjs-oxide-cli -- -e 'print(6 * 7)'

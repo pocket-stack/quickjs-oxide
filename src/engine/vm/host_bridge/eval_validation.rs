@@ -8,43 +8,15 @@ impl RuntimeVmHost {
         environment: &EvalEnvironment<Atom>,
         caller_strict: bool,
     ) -> Result<(), Error> {
-        if environment.caller_strict != caller_strict {
-            return Err(Error::internal(
-                "eval environment caller strictness disagrees with its bytecode frame",
-            ));
-        }
-        for scope in &environment.scopes {
-            for binding in &scope.bindings {
-                match binding.source {
-                    EvalBindingSource::Local(index) => {
-                        self.locals.get(usize::from(index)).ok_or_else(|| {
-                            Error::internal("eval local binding index is out of bounds")
-                        })?;
-                    }
-                    EvalBindingSource::Argument(index) => {
-                        self.arguments.get(usize::from(index)).ok_or_else(|| {
-                            Error::internal("eval argument binding index is out of bounds")
-                        })?;
-                    }
-                    EvalBindingSource::Closure(index) => {
-                        let descriptor = *self
-                            .executable
-                            .closure_variables
-                            .get(usize::from(index))
-                            .ok_or_else(|| {
-                                Error::internal("eval closure binding index is out of bounds")
-                            })?;
-                        let root = self.closure_slots.get(usize::from(index)).ok_or_else(|| {
-                            Error::internal("eval closure slot index is out of bounds")
-                        })?;
-                        self.runtime
-                            .validate_var_ref_metadata(root, descriptor)
-                            .map_err(|error| Error::internal(error.to_string()))?;
-                    }
-                }
-            }
-        }
-        Ok(())
+        super::super::eval_bindings::validate(
+            &self.runtime,
+            &self.executable,
+            environment,
+            caller_strict,
+            self.locals.len(),
+            self.arguments.len(),
+            &self.closure_slots,
+        )
     }
 }
 
@@ -52,7 +24,7 @@ impl RuntimeVmHost {
 mod tests {
     use super::*;
     use crate::engine::code::function::metadata::{
-        EvalScope, EvalScopeKind, EvalVariableEnvironment,
+        EvalBinding, EvalScope, EvalScopeKind, EvalVariableEnvironment,
     };
 
     #[test]
@@ -96,7 +68,7 @@ mod tests {
             host.validate_eval_frame_bindings(&environment, true)
                 .is_err()
         );
-        host.closure_slots.push(
+        host.closure_slots.test_roots_mut().push(
             runtime
                 .new_var_ref(Value::Int(1), false, false, ClosureVariableKind::Normal)
                 .unwrap(),
@@ -105,7 +77,7 @@ mod tests {
             host.validate_eval_frame_bindings(&environment, true)
                 .is_err()
         );
-        host.closure_slots[0] = runtime
+        host.closure_slots.test_roots_mut()[0] = runtime
             .new_var_ref(Value::Int(1), true, false, ClosureVariableKind::Normal)
             .unwrap();
         host.validate_eval_frame_bindings(&environment, true)

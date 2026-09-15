@@ -725,7 +725,8 @@ function descendUntilOrdinaryOverflow(depth) {
         }
         return depth;
     }
-    stackPromises.push(promise);
+    // Keep Array.push continuation depth from exhausting the probe first.
+    stackPromises[stackPromises.length] = promise;
     try {
         return descendUntilOrdinaryOverflow(depth + 1);
     } catch (error) {

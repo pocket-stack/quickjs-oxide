@@ -1,46 +1,25 @@
 # 语言内置行为
 
-实现 ECMAScript 内置对象与函数，以及 qjs 兼容辅助行为；拥有原生调用选择器与分派。
+builtins 实现 ECMAScript 的内置对象与函数，以及显式启用的 qjs 辅助
+行为。每个内置领域拥有自己的构造、原型方法和算法；原生调用选择器
+将调用分派到这些实现。
 
-使用 value 转换、object 语义和 VM 调用；环境能力通过 host 契约注入。
+一个内置方法通常会交错进行参数转换、属性访问、存储操作和用户回调。
+转换使用 value，属性语义使用 object，执行 JS 使用 VM；这些步骤的
+顺序和中途异常已经产生的效果由内置算法决定，不能由通用存储批处理
+代替。Promise 反应与 jobs、async 驱动也各有自己的职责。
 
-## 文件与子目录
+环境能力通过 host 契约取得，具体系统或浏览器实现位于 adapters。
+内置对象的原始载荷与引用边由 heap 保存；语言行为仍留在这里。
 
-- [array/](array/README.md)：子模块职责与文件说明。
-- [array.rs](array.rs)：Array constructor, prototype, iterator, and sorting intrinsics.。
-- [array_buffer/](array_buffer/README.md)：子模块职责与文件说明。
-- [array_buffer.rs](array_buffer.rs)：`%ArrayBuffer%` backing-store, constructor, resize, detach, and transfer.。
-- [atomics/](atomics/README.md)：子模块职责与文件说明。
-- [atomics.rs](atomics.rs)：Pinned QuickJS `%Atomics%` operations over integer TypedArrays.。
-- [buffer_access.rs](buffer_access.rs)：Borrow-free access tokens for ArrayBuffer-family backing stores.。
-- [date/](date/README.md)：子模块职责与文件说明。
-- [dispatch.rs](dispatch.rs)：指令或原生调用分派。
-- [error/](error/README.md)：Error 系列内置行为、错误对象构造与堆栈生成。
-- [eval.rs](eval.rs)：eval 的类型和操作实现。
-- [function.rs](function.rs)：function 的类型和操作实现。
-- [iterator/](iterator/README.md)：子模块职责与文件说明。
-- [json/](json/README.md)：子模块职责与文件说明。
-- [map.rs](map.rs)：`%Map%`, Map Iterator, and strong ordered-record semantics.。
-- [math/](math/README.md)：子模块职责与文件说明。
-- [math.rs](math.rs)：Pinned QuickJS `Math` intrinsic algorithms.。
-- [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
-- [native.rs](native.rs)：原生内置函数选择器、调用协议与描述符。
-- [object/](object/README.md)：子模块职责与文件说明。
-- [object.rs](object.rs)：Object constructor and prototype intrinsics.。
-- [primitive.rs](primitive.rs)：primitive 的类型和操作实现。
-- [promise/](promise/README.md)：子模块职责与文件说明。
-- [promise.rs](promise.rs)：`%Promise%`, resolving functions, and reaction semantics.。
-- [proxy.rs](proxy.rs)：`%Proxy%` allocation and revocation lifecycle.。
-- [qjs_host.rs](qjs_host.rs)：Optional qjs command-line host functions.。
-- [qjs_value_printer.rs](qjs_value_printer.rs)：Side-effect-free value rendering used by the optional qjs host.。
-- [reflect/](reflect/README.md)：子模块职责与文件说明。
-- [reflect.rs](reflect.rs)：Pinned QuickJS `Reflect` intrinsic algorithms.。
-- [regexp/](regexp/README.md)：子模块职责与文件说明。
-- [replacement.rs](replacement.rs)：Shared replacement-template expansion for String and RegExp intrinsics.。
-- [set.rs](set.rs)：`%Set%`, Set Iterator, and the proposal-era Set methods shipped by QuickJS.。
-- [shared_array_buffer.rs](shared_array_buffer.rs)：`%SharedArrayBuffer%` constructor, grow, slice, and shared-backing bridge.。
-- [string/](string/README.md)：子模块职责与文件说明。
-- [string.rs](string.rs)：String prototype intrinsics beyond the shared primitive-wrapper substrate.。
-- [uri.rs](uri.rs)：QuickJS-compatible URI and legacy escape codecs.。
-- [weak_collection.rs](weak_collection.rs)：`%WeakMap%` / `%WeakSet%` and QuickJS-compatible weak-key behavior.。
-- [weak_ref.rs](weak_ref.rs)：`%WeakRef%` / `%FinalizationRegistry%` and pinned QuickJS weak-target semantics.。
+[缓冲区与视图](array_buffer/README.md)有独立介绍，说明二进制内置的
+共享存储边界。其余小型方法分组使用源码说明。[栈 VM 计划](../../../docs/primitive-vm-plan.md)
+改变内部 JS 回调的推进机制，各内置领域继续拥有其算法与恢复状态。
+
+迁移中的 `continuation` 是 native 算法的封闭登记表；它只选择领域
+step，不保存属性或转换算法。各领域的 Step/Resume 保存阶段与必要 roots，
+旧同步入口及 owned VM 共用同一算法。VM 的 request 模块按领域适配有类型的
+请求和回复，回调由显式子帧推进；无回调叶函数仍直接执行。
+
+S05 同步领域已接入，完整性仍须以[逐调用点账本](../../../docs/primitive-vm-sync-callbacks.md)
+和统一验收为准。Promise/generator 归 S06，模块与真实 host/API 入口归 S07。

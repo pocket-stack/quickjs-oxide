@@ -6,10 +6,12 @@ use crate::engine::code::bytecode::{
 };
 use crate::engine::value::{JsString, Value};
 
+use super::numeric::{number_to_int32, number_to_uint32};
+
 use super::{
     Completion, DefineClassOutcome, DetachedDynamicEnvironmentOperation,
     DetachedEvalVariableOperation, DetachedHost, DirectEvalInvocation, Vm, VmActivation, VmExit,
-    VmHost, VmResume, VmSuspendKind, VmSuspension, number_to_int32, number_to_uint32,
+    VmHost, VmResume, VmSuspendKind, VmSuspension,
 };
 
 #[test]

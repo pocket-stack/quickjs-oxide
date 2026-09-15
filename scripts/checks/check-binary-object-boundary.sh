@@ -71,6 +71,7 @@ source "$boundary_dir/canaries/stage3i.sh"
 source "$boundary_dir/canaries/scalar.sh"
 source "$boundary_dir/canaries/native_plan.sh"
 source "$boundary_dir/canaries/shared_transport.sh"
+source "$boundary_dir/canaries/primitive_vm.sh"
 
 finish_canaries
 

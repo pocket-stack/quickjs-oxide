@@ -5,6 +5,12 @@ with QuickJS 2026-06-04. It is runnable on the command line and as the real
 Rust/WASM engine in the GitHub Pages playground, but it is not yet at Feature
 Parity.
 
+The [architecture guide](architecture.md) describes the current implementation.
+The [stack VM redesign](primitive-vm-plan.md), organized as
+[10 planned commits](primitive-vm-commit-plan.md), is not implemented as of
+2026-09-12. Its target structure and acceptance checklist do not change the
+implemented capabilities or historical validation baseline below.
+
 ## Current baseline
 
 <!-- current-test262-metrics:start -->

@@ -62,9 +62,9 @@ expect_full_rewrite_rejected stage3b-nullish-apply-bypass \
     '        if matches!(argument_array, Value::Undefined | Value::Null) {' \
     '        if false && matches!(argument_array, Value::Undefined | Value::Null) {'
 expect_full_rewrite_rejected stage3b-raw-new-target-collapse \
-    stage3b-raw-construction src/engine/heap/runtime/mod.rs \
-    '            ConstructNewTarget::Raw(new_target) => {' \
-    '            ConstructNewTarget::Validated(new_target) => {'
+    stage3b-raw-construction src/engine/vm/call.rs \
+    $'            ConstructNewTarget::Raw(value) => {' \
+    $'            ConstructNewTarget::Validated(value) => {'
 expect_full_rewrite_rejected stage3b-constructor-callable-narrowing \
     stage3b-constructor-capability src/engine/heap/runtime/mod.rs \
     '            object_data.is_constructor' \
@@ -78,21 +78,21 @@ expect_full_rewrite_rejected stage3b-proxy-before-callable \
     '            if self.is_proxy_object(constructor.as_object())? {' \
     '            if false && self.is_proxy_object(constructor.as_object())? {'
 expect_full_rewrite_rejected stage3b-function-realm-fallback \
-    stage3b-constructor-prototype src/engine/heap/runtime/mod.rs \
-    '        self.function_realm_from_value(caller_realm, new_target)' \
-    '        Ok(NativeConversion::Value(caller_realm))'
+    stage3b-constructor-prototype src/engine/vm/call/prototype.rs \
+    $'runtime.function_realm_from_value(self.0.realm, &self.0.new_target)?' \
+    $'NativeConversion::Value(self.0.realm)'
 expect_full_rewrite_rejected stage3b-native-prototype-helper-bypass \
-    stage3b-native-prototype-family src/engine/builtins/array_buffer.rs \
-    '        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {' \
-    '        self.constructor_prototype_source(realm, &new_target).map(|_| |fallback_realm| {'
+    stage3b-native-prototype-family src/engine/builtins/array_buffer/constructor.rs \
+    $'ProtoSourceStep::start(runtime, realm, new_target)?' \
+    $'ProtoSourceStep::Complete(NativeConversion::Value(ConstructorPrototypeSource::Realm(realm)))'
 expect_full_rewrite_rejected stage3b-proxy-call-layer-capability \
-    stage3b-proxy-call-order src/engine/object/internal_methods.rs \
-    '            if !rooted.data.is_callable {' \
-    '            if false && !rooted.data.is_callable {'
+    stage3b-proxy-call-order src/engine/object/internal_methods/call.rs \
+    '        if !rooted.data.is_callable {' \
+    '        if false && !rooted.data.is_callable {'
 expect_full_rewrite_rejected stage3b-proxy-construct-callable-narrowing \
-    stage3b-proxy-construct-order src/engine/object/internal_methods.rs \
-    '                match self.constructor_from_value(realm, Value::Object(rooted.target.clone()))? {' \
-    '                match self.callable_from_value(Value::Object(rooted.target.clone())) {'
+    stage3b-proxy-construct-order src/engine/object/internal_methods/construct.rs \
+    $'.constructor_from_value(search.realm, Value::Object(rooted.target.clone()))?' \
+    $'.callable_from_value(Value::Object(rooted.target.clone()))?'
 expect_full_rewrite_rejected stage3b-public-raw-construction-leak \
     stage3b-public-construction src/engine/api/context/calls.rs \
     '            .construct_internal(self.realm, constructor, new_target, arguments)' \
@@ -107,9 +107,9 @@ expect_full_rewrite_rejected stage3b-apply-nullish-prework \
     $'        if matches!(argument_array, Value::Undefined | Value::Null) {\n            return self' \
     $'        if matches!(argument_array, Value::Undefined | Value::Null) {\n            let _ = self.build_argument_list(Value::Undefined)?;\n            return self'
 expect_full_rewrite_rejected stage3b-native-prototype-payload \
-    stage3b-native-prototype-family src/engine/builtins/array_buffer.rs \
-    '        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {' \
-    '        self.prototype_from_constructor_value(realm, &Value::Undefined, |fallback_realm| {'
+    stage3b-native-prototype-family src/engine/builtins/array_buffer/constructor.rs \
+    $'ProtoSourceStep::start(runtime, realm, new_target)?' \
+    $'ProtoSourceStep::start(runtime, realm, Value::Undefined)?'
 expect_full_rewrite_table < "$boundary_dir/canaries/stage3c_canaries.txt"
 expect_full_rewrite_rejected stage3c-tail-terminal-fallthrough \
     stage3c-tail-verifier src/engine/code/bytecode.rs \
@@ -137,8 +137,8 @@ expect_full_rewrite_rejected stage3c-publisher-alias-tail-bypass \
     $'    use OrdinaryLeafOp as O;\n    if let O::TailCall(argument_count) = &operation {\n        return Ok(Instruction::Call(*argument_count));\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
 expect_full_rewrite_rejected stage3c-stack-effect-guarded-bypass \
     stage3c-tail-verifier src/engine/code/bytecode.rs \
-    $'    pub const fn stack_effect(&self) -> (usize, usize) {\n        match self {' \
-    $'    pub const fn stack_effect(&self) -> (usize, usize) {\n        if let Self::TailCall(0) | Self::TailCallMethod(0) = self {\n            return (1, 1);\n        }\n        match self {'
+    $'const fn nominal_stack_effect(&self) -> (usize, usize) {\n        match self {' \
+    $'const fn nominal_stack_effect(&self) -> (usize, usize) {\n        if let Self::TailCall(0) | Self::TailCallMethod(0) = self {\n            return (1, 1);\n        }\n        match self {'
 expect_full_rewrite_rejected stage3c-verifier-alias-fallthrough \
     stage3c-tail-verifier src/engine/code/bytecode.rs \
     $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses' \
@@ -184,3 +184,47 @@ expect_full_rewrite_rejected stage3c-required-test-macro-shadow \
     stage3c-runtime-evidence src/engine/heap/runtime/tests.rs \
     $'fn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {\n    assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);' \
     $'fn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {\n    macro_rules! assert_eq { ($($tokens:tt)*) => {}; }\n    assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);'
+
+expect_full_rewrite_rejected instruction-description-stack-bypass published-instruction-contract \
+    src/engine/code/instruction.rs \
+    'let (popped, pushed) = self.nominal_stack_effect();' \
+    'let (popped, pushed) = (0, 0);'
+
+expect_full_rewrite_rejected instruction-description-callback-bypass published-instruction-contract \
+    src/engine/code/instruction.rs \
+    'may_call_js: self.may_call_js(),' \
+    'may_call_js: false,'
+expect_full_rewrite_rejected instruction-description-state-bypass published-instruction-contract \
+    src/engine/code/instruction.rs \
+    'state: self.stack_state_effect(),' \
+    'state: StackStateEffect::ConsumeSuperCall,'
+expect_full_rewrite_rejected instruction-description-static-name-bypass published-instruction-contract \
+    src/engine/code/instruction.rs \
+    $'pub(crate) const fn static_name(self) -> Option<u32> {\n        let mut index = 0;' \
+    $'pub(crate) const fn static_name(self) -> Option<u32> {\n        return None;\n        let mut index = 0;'
+
+if grep -q 'fn stack_contract' "$repository_root/src/engine/code/instruction.rs"; then
+    expect_full_rewrite_rejected instruction-split-stack-bypass published-instruction-contract \
+        src/engine/code/instruction.rs \
+        '            stack: self.stack_contract(),' \
+        '            stack: StackEffect { popped: 0, pushed: 0, state: StackStateEffect::Ordinary },'
+    expect_full_rewrite_rejected instruction-split-effects-bypass published-instruction-contract \
+        src/engine/code/instruction.rs \
+        '            effects: self.potential_effects(),' \
+        '            effects: PotentialEffects { javascript_exception: JsExceptionEffect::None, may_call_js: false, may_allocate: false },'
+    stack_adapter_before=$'pub const fn stack_effect(&self) -> (usize, usize) {\n        self.nominal_stack_effect()'
+else
+    expect_full_rewrite_rejected instruction-direct-control-bypass published-instruction-contract \
+        src/engine/code/instruction.rs \
+        '            control: self.control_effect(),' \
+        '            control: ControlEffect::Next,'
+    expect_full_rewrite_rejected instruction-direct-exception-bypass published-instruction-contract \
+        src/engine/code/instruction.rs \
+        '                javascript_exception: self.javascript_exception_effect(),' \
+        '                javascript_exception: JsExceptionEffect::None,'
+    stack_adapter_before=$'pub const fn stack_effect(&self) -> (usize, usize) {\n        let effect = self.info().stack;\n        (effect.popped, effect.pushed)'
+fi
+expect_full_rewrite_rejected instruction-nominal-adapter-bypass published-instruction-stack-adapter \
+    src/engine/code/bytecode.rs \
+    "$stack_adapter_before" \
+    $'pub const fn stack_effect(&self) -> (usize, usize) {\n        (0, 0)'

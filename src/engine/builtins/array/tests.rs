@@ -209,3 +209,49 @@ fn string_property(
     };
     value.to_utf8_lossy()
 }
+
+#[test]
+fn owned_array_domains_preserve_mutation_and_callback_order() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    for source in [
+        "(()=>{let a=[1,,3];let r=a.map((v,i)=>{if(i===0)a[1]=2;return v*2});return r.join(',')==='2,4,6'})()",
+        "(()=>{let a=[1,2,3];let r=a.filter((v,i)=>{if(i===0)delete a[1];return true});return r.join(',')==='1,3'})()",
+        "(()=>{let seen='';let a=[1,,3];let r=a.reduceRight((x,v,i)=>{seen+=i;return x+v},0);return r===4&&seen==='20'})()",
+        "(()=>{let a=[,2];let seen='';let r=a.find((v,i)=>{seen+=i;return i===0});return r===undefined&&seen==='0'})()",
+        "(()=>{let a=[1,,3];a.unshift(9);return a.length===4&&a[0]===9&&a[1]===1&&!(2 in a)&&a[3]===3})()",
+        "(()=>{let a=[1,,3];let r=a.shift();return r===1&&a.length===2&&!(0 in a)&&a[1]===3})()",
+        "(()=>{let a=[1,,3,4];a.copyWithin(1,0,3);return a.length===4&&a[1]===1&&!(2 in a)&&a[3]===3})()",
+        "(()=>{let a=[1,,3,4];a.reverse();return a[0]===4&&a[1]===3&&!(2 in a)&&a[3]===1})()",
+        "(()=>{let a=[1,,3,4];let d=a.splice(1,2,8,9,10);return d.length===2&&!(0 in d)&&d[1]===3&&a.join(',')==='1,8,9,10,4'})()",
+        "(()=>{let a=[1,,3,4];let r=a.toSpliced(1,1,9);return r.join(',')==='1,9,3,4'&&a.length===4&&!(1 in a)})()",
+        "(()=>{let a=[1,,3];let r=a.with(-1,8);return r.length===3&&r[2]===8&&(1 in r)&&r[1]===undefined})()",
+        "(()=>{let a=[1,[2,,[3]],4];return a.flat(2).join(',')==='1,2,3,4'&&[1,2].flatMap(x=>[x,x]).join(',')==='1,1,2,2'})()",
+        "(()=>{let trace='';let a={length:2,0:{toString(){trace+='a';return 'A'}},1:{toString(){trace+='b';return 'B'}}};let sep={toString(){trace+='s';return ':'}};return Array.prototype.join.call(a,sep)==='A:B'&&trace==='sab'})()",
+        "(()=>{let a=[3,1,2];let r=a.toSorted((x,y)=>x-y);return r.join(',')==='1,2,3'&&a.join(',')==='3,1,2'})()",
+        "(()=>{let a=[1,2];let s={ [Symbol.isConcatSpreadable]:true,length:2,0:3,1:4 };return a.concat(s).join(',')==='1,2,3,4'})()",
+        "(()=>{let log='';let a={length:2,get 0(){log+='0';return 1},get 1(){log+='1';return 2}};let r=Array.prototype.toReversed.call(a);return log==='10'&&r.join(',')==='2,1'})()",
+    ] {
+        assert!(
+            matches!(context.eval(source).unwrap(), Value::Bool(true)),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn rqsort_cursor_orders_partition_insertion_and_large_inputs() {
+    for length in [0, 1, 2, 6, 7, 32, 257, 4096] {
+        let mut values = (0..length)
+            .map(|index| ((index * 37 + 19) % 71, index))
+            .collect::<Vec<_>>();
+        quickjs_rqsort_by(&mut values, |values, left, right| {
+            Ok::<_, ()>(values[left].cmp(&values[right]))
+        })
+        .unwrap();
+        assert!(
+            values.windows(2).all(|pair| pair[0] <= pair[1]),
+            "length {length}"
+        );
+    }
+}

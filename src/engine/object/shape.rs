@@ -116,6 +116,8 @@ impl Error for ShapeError {}
 /// Slot positions are internal and must be looked up again after mutations.
 #[derive(Clone, Debug)]
 pub struct Shape {
+    #[cfg(feature = "stack-vm")]
+    layout_revision: u64,
     prototype: Option<ObjectId>,
     entries: Vec<ShapeEntry>,
     lookup: HashMap<Atom, u32>,
@@ -124,6 +126,17 @@ pub struct Shape {
 }
 
 impl Shape {
+    #[cfg(feature = "stack-vm")]
+    pub(crate) const fn layout_revision(&self) -> u64 {
+        self.layout_revision
+    }
+
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn invalidate_layout(&mut self) {
+        // Saturation permanently disables IC admission; never wrap into stale facts.
+        self.layout_revision = self.layout_revision.saturating_add(1);
+    }
+
     /// Construct validated shape metadata.
     ///
     /// The constructor rejects null or duplicate atoms and proves that every
@@ -151,6 +164,8 @@ impl Shape {
         }
 
         Ok(Self {
+            #[cfg(feature = "stack-vm")]
+            layout_revision: 0,
             prototype,
             entries: ordered,
             lookup,
@@ -305,6 +320,8 @@ impl Shape {
         let mut entries = self.entries.to_vec();
         entries[index].flags = flags;
         Ok(Self {
+            #[cfg(feature = "stack-vm")]
+            layout_revision: 0,
             prototype: self.prototype,
             entries,
             lookup: self.lookup.clone(),

@@ -196,3 +196,59 @@ Omitting `--case` covers all 58 manifest entries. Repeated `--case` options are
 for step-level experiments only. All times include the whole process; these are
 not adaptive harness scores. Preserve build receipts separately and do not run
 benchmarks alongside builds, tests or architecture canaries.
+
+The nondefault owned VM is selected with `build.py --stack-vm`; omitting it builds
+the default VM. The build provenance records the selected `vm_configuration` and
+Cargo features for both plain and profiling binaries. Timing still uses the
+plain binary; profiling remains a separate run.
+
+## Frozen public compilation and original V8 replay
+
+`replay.py` uses the primitive VM baseline receipt's existing 67 source files.
+Compile mode includes every entry. Original mode selects the nine entries with
+score contracts (the original eight suites and their original combined entry).
+Both modes validate source and binary hashes before every run, rotate engine
+order, preserve every stdout/stderr and failed round, and reject a comparison
+if either engine has a failed round. Ratios always mean **after / before**:
+compile elapsed time is lower-is-better; original score is higher-is-better.
+Combined scores come only from the original combined workload, never a subset.
+
+Build the public API probe before starting any timed matrix:
+
+```sh
+python3 scripts/benchmark/build_compile_probe.py --repo . --stack-vm \
+  --output target/candidate-compile
+python3 scripts/benchmark/replay.py --mode compile \
+  --receipt target/primitive-vm-s07-performance/reproduction/workload-receipt.json \
+  --workload-dir target/primitive-vm-s07-performance/reproduction/workloads \
+  --engine pr19=/absolute/baseline/compile-probe \
+  --engine candidate=target/candidate-compile/target/release/oxide-compile-probe \
+  --repeat 10 --output target/candidate-compile-results
+python3 scripts/benchmark/replay.py --mode original \
+  --receipt target/primitive-vm-s07-performance/reproduction/workload-receipt.json \
+  --workload-dir target/primitive-vm-s07-performance/reproduction/workloads \
+  --engine pr19=target/primitive-vm-baseline/pr19-qjs \
+  --engine candidate=/absolute/candidate/qjs \
+  --repeat 5 --timeout 1800 --output target/candidate-original-results
+```
+
+The compile probe uses the same `Context::compile_with_filename` boundary as
+the frozen S07 probe. Source I/O, Runtime/Context creation and teardown remain
+outside its `Instant` interval; it never executes JavaScript. A build with
+`profiling` additionally writes phase attribution to stderr and is rejected by
+the formal replay harness. Preserve separate build/patch/toolchain receipts
+for all binaries. The standalone builder avoids the CLI example dev dependency's
+`test-support` feature, validates all registry dependency checksums against the
+checkout lockfile, and records toolchain/features/flags. Formal stages require all 58 fixed entries with
+10 rounds in addition to the two replay commands above; `--case` subsets only
+support directional experiments. Run each matrix serially with builds, tests,
+profiling, and CPU/memory sampling stopped.
+
+For a frozen source export, pass `--repo /absolute/source-export` and
+`--source-manifest /absolute/source-export.json`; its `files` or `source_files`
+map must describe every exported file by SHA-256. The builder validates the
+complete inventory and contents both before and after compilation, copies the
+receipt alongside the binary metadata, and refuses to use an ancestor Git
+checkout's revision or working diff as the export's identity. Keep build output
+outside the frozen export. `--profiling` requires a source version containing
+the new phase fields; plain probes remain compatible with older baselines.

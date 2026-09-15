@@ -65,6 +65,48 @@ impl Heap {
         Ok(cleanup)
     }
 
+    /// Restricted equivalent of replacement for a mutable, initialized cell
+    /// whose old and new values own no heap/atom/primitive-storage edge.
+    /// Declining leaves both the cell and all pending cleanup untouched.
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn try_replace_immediate_var_ref_value(
+        &mut self,
+        id: VarRefId,
+        replacement: RawValue,
+        expected: Option<(bool, bool, ClosureVariableKind)>,
+    ) -> bool {
+        fn immediate(value: &RawValue) -> bool {
+            matches!(
+                value,
+                RawValue::Undefined
+                    | RawValue::Null
+                    | RawValue::Bool(_)
+                    | RawValue::Int(_)
+                    | RawValue::Float(_)
+            )
+        }
+        if !self.zero_queue.is_empty() || !immediate(&replacement) {
+            return false;
+        }
+        let Ok(cell) = self.var_ref_mut(id) else {
+            return false;
+        };
+        if cell.is_const
+            || cell.kind.is_private()
+            || !immediate(&cell.value)
+            || expected
+                .is_some_and(|metadata| metadata != (cell.is_lexical, cell.is_const, cell.kind))
+            || validate_var_ref_value(cell.kind, cell.is_lexical, cell.is_const, &replacement)
+                .is_err()
+        {
+            return false;
+        }
+        // Same validator as replace_var_ref_value. Both edge sets and atom
+        // cleanup are empty, and the zero queue was empty before mutation.
+        cell.value = replacement;
+        true
+    }
+
     /// Update binding-mode metadata without disturbing the shared value or
     /// any of its retained GC edges.
     pub fn set_var_ref_metadata(
@@ -80,5 +122,50 @@ impl Heap {
         var_ref.is_const = is_const;
         var_ref.kind = kind;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "stack-vm"))]
+mod immediate_write_tests {
+    use super::*;
+
+    #[test]
+    fn immediate_replacement_does_not_drain_an_existing_zero_queue() {
+        let runtime = crate::engine::api::runtime::Runtime::new();
+        let root = runtime
+            .new_var_ref(
+                crate::engine::value::Value::Int(1),
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )
+            .unwrap();
+        let object = runtime.new_object(None).unwrap();
+        let id = object.object_id();
+        runtime.0.state.borrow_mut().heap.retain_object(id).unwrap();
+        drop(object);
+        let mut state = runtime.0.state.borrow_mut();
+        state.heap.release_raw_no_drain(RawId::Object(id)).unwrap();
+        assert!(
+            !state
+                .heap
+                .try_replace_immediate_var_ref_value(root.id(), RawValue::Int(2), None)
+        );
+        assert_eq!(state.heap.zero_queue.len(), 1);
+        assert_eq!(
+            state.heap.var_ref(root.id()).unwrap().value,
+            RawValue::Int(1)
+        );
+        let cleanup = state.heap.drain_zero_queue().unwrap();
+        state.apply_cleanup(cleanup).unwrap();
+        assert!(
+            state
+                .heap
+                .try_replace_immediate_var_ref_value(root.id(), RawValue::Int(2), None)
+        );
+        assert_eq!(
+            state.heap.var_ref(root.id()).unwrap().value,
+            RawValue::Int(2)
+        );
     }
 }

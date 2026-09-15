@@ -251,3 +251,33 @@ fn ordinary_property_typed_access_revalidates_after_conversion() {
         "#,
     );
 }
+
+#[test]
+fn prepared_read_owns_selected_getter_without_repeating_lookup() {
+    use crate::engine::object::ordinary::OrdinaryRead;
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let Value::Object(object) = context
+        .eval("var calls=0; var object={get x(){calls++;return this.marker}}; object")
+        .unwrap()
+    else {
+        panic!("expected object")
+    };
+    let receiver = context.eval("({marker:42})").unwrap();
+    let key = runtime.intern_property_key("x").unwrap();
+    let read = runtime
+        .prepare_ordinary_read(&object, &key, receiver)
+        .unwrap();
+    assert_eq!(context.eval("calls").unwrap(), Value::Int(0));
+    context
+        .eval("delete object.x; Object.defineProperty(object,'x',{get(){calls+=100;return 9}})")
+        .unwrap();
+    let OrdinaryRead::Call { getter, receiver } = read else {
+        panic!("expected getter")
+    };
+    assert_eq!(
+        context.call(&getter, receiver, &[]).unwrap(),
+        Value::Int(42)
+    );
+    assert_eq!(context.eval("calls").unwrap(), Value::Int(1));
+}

@@ -4,7 +4,7 @@
 //! therefore checks for a genuine `ObjectPayload::Date` receiver instead of
 //! accepting the realm's `Date.prototype` object.
 
-use super::calendar::{DateFields, DateInputFields, get_date_fields, set_date_fields, time_clip};
+use super::calendar::{DateFields, DateInputFields, get_date_fields, set_date_fields};
 use super::format::{DateStringKind as DateFormatKind, format_date_string};
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
@@ -18,8 +18,10 @@ use crate::engine::object::ObjectRef;
 use crate::engine::value::conversion::NativeConversion;
 
 use crate::engine::value::{JsString, Value};
+use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
-use crate::engine::vm::{Completion, ToPrimitiveHint};
+
+pub(crate) mod operation;
 
 fn date_format_kind(method: DateStringMethod) -> DateFormatKind {
     match method {
@@ -262,16 +264,19 @@ impl Runtime {
         this_value: &Value,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        // QuickJS performs the brand check before observing argument coercion.
-        let (object, _) = match self.date_this_time_value(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let value = match self.native_to_number(realm, date_argument(arguments, 0)?)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        self.set_date_this_time_value(&object, time_clip(value))
+        operation::finish(
+            self,
+            realm,
+            operation::DatePrototypeStep::start(
+                self,
+                realm,
+                DateNativeKind::SetTime,
+                &NativeInvocation::Call {
+                    this_value: this_value.clone(),
+                },
+                arguments,
+            )?,
+        )
     }
 
     fn call_date_set_field(
@@ -281,79 +286,26 @@ impl Runtime {
         field: DateSetFieldKind,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let (object, old_value) = match self.date_this_time_value(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let first_field = usize::from(field.first_field());
-        let end_field = usize::from(field.end_field());
-        let recovered_fields = get_date_fields(
-            old_value,
-            field.uses_local_time(),
-            first_field == 0,
-            |instant| self.date_timezone_offset_minutes(instant),
-        );
-        let had_fields = recovered_fields.is_some();
-        let mut fields = recovered_fields.unwrap_or([0.0; 9]);
-        let mut all_finite = had_fields;
-
-        // Match QuickJS's `min(argc, end - first)`: padded undefined values
-        // are not converted for a zero-argument generic setter, and extra
-        // arguments beyond the setter's field window remain completely
-        // unobserved. A non-finite earlier value does not suppress later
-        // conversions.
-        let conversion_count = arguments
-            .actual_arg_count
-            .min(end_field.saturating_sub(first_field));
-        for index in 0..conversion_count {
-            let value = match self.native_to_number(realm, date_argument(arguments, index)?)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if !value.is_finite() {
-                all_finite = false;
-            }
-            fields[first_field + index] = value.trunc();
-        }
-
-        // A non-full-year setter cannot recover an invalid Date. Argument
-        // coercions above are still observable, but the Date handler itself
-        // performs no write on this path, exactly like upstream's early
-        // `return JS_NAN`.
-        if !had_fields {
-            return Ok(Completion::Return(Value::number(f64::NAN)));
-        }
-
-        let new_value = if all_finite && arguments.actual_arg_count > 0 {
-            let input = date_input_fields(&fields);
-            set_date_fields(&input, field.uses_local_time(), |instant| {
-                self.date_timezone_offset_minutes(instant)
-            })
-        } else {
-            f64::NAN
-        };
-        self.set_date_this_time_value(&object, new_value)
+        operation::finish(
+            self,
+            realm,
+            operation::DatePrototypeStep::start(
+                self,
+                realm,
+                DateNativeKind::SetField(field),
+                &NativeInvocation::Call {
+                    this_value: this_value.clone(),
+                },
+                arguments,
+            )?,
+        )
     }
 
-    fn call_date_set_year(
+    fn finish_date_set_year(
         &self,
-        realm: ContextId,
-        this_value: &Value,
-        arguments: &NativeArguments,
+        object: &ObjectRef,
+        mut year: f64,
     ) -> Result<Completion, RuntimeError> {
-        // The first brand check precedes coercion. Unlike the generic setters,
-        // QuickJS then re-enters set_date_field after coercion, so any user
-        // side effect which changed this Date is observed by the decomposition
-        // below.
-        let (object, _) = match self.date_this_time_value(realm, this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let mut year = match self.native_to_number(realm, date_argument(arguments, 0)?)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
         if year.is_finite() {
             year = year.trunc();
             if (0.0..100.0).contains(&year) {
@@ -380,41 +332,46 @@ impl Runtime {
         self.set_date_this_time_value(&object, new_value)
     }
 
+    fn call_date_set_year(
+        &self,
+        realm: ContextId,
+        this_value: &Value,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        operation::finish(
+            self,
+            realm,
+            operation::DatePrototypeStep::start(
+                self,
+                realm,
+                DateNativeKind::SetYear,
+                &NativeInvocation::Call {
+                    this_value: this_value.clone(),
+                },
+                arguments,
+            )?,
+        )
+    }
+
     fn call_date_to_primitive(
         &self,
         realm: ContextId,
         this_value: Value,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let Value::Object(object) = this_value else {
-            return Ok(Completion::Throw(self.new_native_error(
+        operation::finish(
+            self,
+            realm,
+            operation::DatePrototypeStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let hint = match date_argument(arguments, 0)? {
-            Value::String(value)
-                if value == &JsString::from_static("number")
-                    || value == &JsString::from_static("integer") =>
-            {
-                ToPrimitiveHint::Number
-            }
-            Value::String(value)
-                if value == &JsString::from_static("string")
-                    || value == &JsString::from_static("default") =>
-            {
-                ToPrimitiveHint::String
-            }
-            _ => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "invalid hint",
-                )?));
-            }
-        };
-        self.ordinary_to_primitive(realm, &object, hint)
+                DateNativeKind::ToPrimitive,
+                &NativeInvocation::Call {
+                    this_value: this_value.clone(),
+                },
+                arguments,
+            )?,
+        )
     }
 
     fn call_date_to_json(
@@ -422,49 +379,23 @@ impl Runtime {
         realm: ContextId,
         this_value: Value,
     ) -> Result<Completion, RuntimeError> {
-        let object = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        let arguments = NativeArguments {
+            readable: Vec::new(),
+            actual_arg_count: 0,
         };
-        let primitive = match self.to_primitive(
+        operation::finish(
+            self,
             realm,
-            Value::Object(object.clone()),
-            ToPrimitiveHint::Number,
-        )? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if primitive
-            .as_number()
-            .is_some_and(|number| !number.is_finite())
-        {
-            return Ok(Completion::Return(Value::Null));
-        }
-
-        let to_iso_string = self.intern_property_key("toISOString")?;
-        let method = match self.get_property_in_realm(realm, &object, &to_iso_string)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let callable = match method {
-            Value::Object(method) => self.as_callable(&method)?,
-            Value::Undefined
-            | Value::Null
-            | Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::BigInt(_)
-            | Value::String(_)
-            | Value::Symbol(_) => None,
-        };
-        let Some(callable) = callable else {
-            return Ok(Completion::Throw(self.new_native_error(
+            operation::DatePrototypeStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "object needs toISOString method",
-            )?));
-        };
-        self.call_internal(realm, &callable, Value::Object(object), &[])
+                DateNativeKind::ToJson,
+                &NativeInvocation::Call {
+                    this_value: this_value.clone(),
+                },
+                &arguments,
+            )?,
+        )
     }
 }
 

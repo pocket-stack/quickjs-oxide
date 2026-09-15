@@ -1,22 +1,19 @@
 //! Error-family constructors and prototype intrinsics.
 
+pub(crate) mod aggregate;
 mod backtrace;
 mod construction;
+pub(crate) mod operation;
 
-use super::object::ObjectIteratorStep;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
 use crate::engine::builtins::native::{ErrorConstructorKind, NativeFunctionId};
 use crate::engine::heap::ContextId;
-use crate::engine::object::operations::PropertyDefineOutcome;
 
-use crate::engine::object::{
-    DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
-};
-use crate::engine::value::conversion::NativeConversion;
-use crate::engine::value::{JsString, Value};
+use crate::engine::object::ObjectRef;
+use crate::engine::value::Value;
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
@@ -113,113 +110,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { mut new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Error constructor did not receive constructor-or-function invocation",
-            ));
-        };
-        if matches!(new_target, Value::Undefined) {
-            new_target = Value::Object(self.active_function()?);
-        }
-        let prototype =
-            match self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-                let prototype = {
-                    let state = self.0.state.borrow();
-                    let context = state.heap.context(fallback_realm)?;
-                    match kind {
-                        ErrorConstructorKind::Error => context
-                            .error_prototype
-                            .ok_or(RuntimeError::Invariant("realm has no Error prototype"))?,
-                        ErrorConstructorKind::Native(kind) => {
-                            context.native_error_prototypes[kind.index()].ok_or(
-                                RuntimeError::Invariant("realm has no native Error prototype"),
-                            )?
-                        }
-                    }
-                };
-                Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-            })? {
-                NativeConversion::Value(prototype) => prototype,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let object = self.new_error_object(&prototype)?;
-
-        let is_aggregate = kind == ErrorConstructorKind::Native(NativeErrorKind::Aggregate);
-        let message_index = usize::from(is_aggregate);
-        let message = arguments
-            .readable
-            .get(message_index)
-            .ok_or(RuntimeError::Invariant(
-                "Error constructor readable argv was not padded to its message index",
-            ))?;
-        if !matches!(message, Value::Undefined) {
-            let message = match self.native_to_js_string(realm, message)? {
-                NativeConversion::Value(message) => message,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.define_function_data_property(
-                &object,
-                "message",
-                Value::String(message),
-                true,
-                true,
-            )?;
-        }
-
-        let options_index = message_index + 1;
-        if arguments.actual_arg_count > options_index {
-            if let Some(Value::Object(options)) = arguments.readable.get(options_index) {
-                let cause_key = self.intern_property_key("cause")?;
-                let has_cause = match self.has_property_in_realm(realm, options, &cause_key)? {
-                    Completion::Return(Value::Bool(value)) => value,
-                    Completion::Return(_) => {
-                        return Err(RuntimeError::Invariant(
-                            "Error cause HasProperty returned a non-Boolean",
-                        ));
-                    }
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if has_cause {
-                    let cause = match self.get_property_in_realm(realm, options, &cause_key)? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    self.define_function_data_property(&object, "cause", cause, true, true)?;
-                }
-            }
-        }
-
-        if is_aggregate {
-            let errors = arguments
-                .readable
-                .first()
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "AggregateError errors argv was not padded to length two",
-                ))?;
-            let errors = match self.aggregate_error_iterator_to_array(realm, errors)? {
-                Completion::Return(Value::Object(errors)) => errors,
-                Completion::Return(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "AggregateError iterator conversion returned a non-Object",
-                    ));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.define_function_data_property(
-                &object,
-                "errors",
-                Value::Object(errors),
-                true,
-                true,
-            )?;
-        }
-
-        let value = Value::Object(object);
-        // `js_error_constructor` snapshots the stack only after message,
-        // cause, and AggregateError's iterable payload have completed.
-        self.ensure_error_backtrace(&value, true, None)?;
-        Ok(Completion::Return(value))
+        operation::finish(
+            self,
+            realm,
+            operation::ErrorStep::start(
+                self,
+                realm,
+                operation::ErrorKind::Constructor(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     /// Pinned QuickJS's internal `Promise.any` AggregateError path: retain the
@@ -245,148 +146,27 @@ impl Runtime {
     /// Pinned QuickJS `iterator_to_array`, used only by AggregateError.
     /// Iterator-step and indexed-definition failures close an acquired
     /// iterator while preserving the original abrupt completion.
-    fn aggregate_error_iterator_to_array(
-        &self,
-        realm: ContextId,
-        iterable: Value,
-    ) -> Result<Completion, RuntimeError> {
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let iterator_method = match &iterable {
-            Value::Null | Value::Undefined => {
-                let base = if matches!(iterable, Value::Null) {
-                    "null"
-                } else {
-                    "undefined"
-                };
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    &format!("cannot read property 'Symbol.iterator' of {base}"),
-                )?));
-            }
-            _ => match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-        };
-        let Value::Object(iterator_method) = iterator_method else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let Some(iterator_method) = self.as_callable(&iterator_method)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let iterator = match self.call_internal(realm, &iterator_method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let next_key = self.intern_property_key("next")?;
-        let next_method = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.new_array(realm)?;
-        let mut index = 0_u64;
-        loop {
-            let value = match self.object_iterator_next(realm, &iterator, next_method.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(result)));
-                }
-                ObjectIteratorStep::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let key = self.intern_property_key(&index.to_string())?;
-            match self.define_own_property_in_realm(
-                Some(realm),
-                &result,
-                &key,
-                &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(value),
-                    writable: DescriptorField::Present(true),
-                    enumerable: DescriptorField::Present(true),
-                    configurable: DescriptorField::Present(true),
-                    ..OrdinaryPropertyDescriptor::new()
-                },
-            )? {
-                PropertyDefineOutcome::Defined(true) => {}
-                PropertyDefineOutcome::Defined(false) => {
-                    return Err(RuntimeError::Invariant(
-                        "fresh AggregateError Array rejected an indexed property",
-                    ));
-                }
-                PropertyDefineOutcome::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            }
-            index = index.checked_add(1).ok_or(RuntimeError::Invariant(
-                "AggregateError iterable exceeded Uint64 indices",
-            ))?;
-        }
-    }
 
     pub(crate) fn call_error_prototype_to_string(
         &self,
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Error.prototype.toString did not receive a generic invocation",
-            ));
+        let arguments = NativeArguments {
+            readable: Vec::new(),
+            actual_arg_count: 0,
         };
-        let Value::Object(object) = this_value else {
-            return Ok(Completion::Throw(self.new_native_error(
+        operation::finish(
+            self,
+            realm,
+            operation::ErrorStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let name_key = self.intern_property_key("name")?;
-        let name = match self.get_property_in_realm(realm, &object, &name_key)? {
-            Completion::Return(Value::Undefined) => JsString::from_static("Error"),
-            Completion::Return(value) => match self.native_to_js_string(realm, &value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let message_key = self.intern_property_key("message")?;
-        let message = match self.get_property_in_realm(realm, &object, &message_key)? {
-            Completion::Return(Value::Undefined) => JsString::from_static(""),
-            Completion::Return(value) => match self.native_to_js_string(realm, &value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = if name.is_empty() {
-            message
-        } else if message.is_empty() {
-            name
-        } else {
-            name.try_concat(&JsString::from_static(": "))?
-                .try_concat(&message)?
-        };
-        Ok(Completion::Return(Value::String(result)))
+                operation::ErrorKind::ToString,
+                &invocation,
+                &arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_error_is_error(

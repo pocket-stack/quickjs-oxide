@@ -5,7 +5,21 @@
 //! one chain-end label. Parser-only metadata preserves the few Reference
 //! rewrites which can still happen outside a parenthesized chain.
 
-use super::*;
+use crate::engine::api::error::Error;
+use crate::engine::code::bytecode::Instruction;
+use crate::engine::compiler::lexer::Punctuator;
+use crate::engine::compiler::lexer::Span;
+use crate::engine::compiler::lexer::TokenKind;
+use crate::engine::compiler::model::ir::IrConstant;
+use crate::engine::compiler::model::ir::IrOp;
+use crate::engine::compiler::model::ir::PrivateFieldAccess;
+use crate::engine::compiler::model::ir::SpannedIrOp;
+use crate::engine::compiler::parser::builder::FunctionBuilder;
+use crate::engine::compiler::parser::context::Parser;
+use crate::engine::compiler::parser::diagnostics::source_offset;
+use crate::engine::compiler::private_reference;
+use crate::engine::value::JsString;
+use crate::engine::value::PrimitiveValue as Value;
 
 /// One nullish edge in a parser-owned optional chain.
 ///
@@ -39,7 +53,7 @@ impl<'source> Parser<'source> {
         chain: &mut PendingOptionalChain,
         drop_count: usize,
     ) -> Result<(), Error> {
-        let continuation_depth = self.current_ir().stack_depth;
+        let continuation_depth = self.current_ir().context.stack_depth;
         if drop_count == 0 || continuation_depth < drop_count {
             return Err(Error::internal(
                 "optional chain test has an invalid Reference depth",
@@ -55,7 +69,7 @@ impl<'source> Parser<'source> {
         let receiver_padding = self.emit_instruction(Instruction::Nop)?;
         let short_circuit = self.emit_instruction(Instruction::Goto(u32::MAX))?;
         self.patch_jump(continue_jump, self.current_ir().ops.len())?;
-        self.current_ir_mut().stack_depth = continuation_depth;
+        self.current_ir_mut().context.stack_depth = continuation_depth;
         chain.short_circuits.push(OptionalChainShortCircuit {
             fallback,
             receiver_padding,
@@ -74,7 +88,7 @@ impl<'source> Parser<'source> {
             self.expect_punctuator(Punctuator::RightBracket)?;
             let operation =
                 self.emit_instruction_at(Instruction::GetArrayEl, source_offset(member_span)?)?;
-            self.current_ir_mut().last_member_reference = Some(operation);
+            self.current_ir_mut().context.last_member_reference = Some(operation);
             self.anonymous_function_definition = None;
             return Ok(());
         }
@@ -86,7 +100,7 @@ impl<'source> Parser<'source> {
                 self.advance()?;
                 let operation =
                     self.emit_private_field_get(name, token.span, source_offset(member_span)?)?;
-                self.current_ir_mut().last_member_reference = Some(operation);
+                self.current_ir_mut().context.last_member_reference = Some(operation);
                 self.anonymous_function_definition = None;
                 return Ok(());
             }
@@ -100,7 +114,7 @@ impl<'source> Parser<'source> {
         )))?;
         let operation =
             self.emit_instruction_at(Instruction::GetField(key), source_offset(member_span)?)?;
-        self.current_ir_mut().last_member_reference = Some(operation);
+        self.current_ir_mut().context.last_member_reference = Some(operation);
         self.anonymous_function_definition = None;
         Ok(())
     }
@@ -117,8 +131,8 @@ impl<'source> Parser<'source> {
         let (terminal_member_get, terminal_private_get) = {
             let function = self.current_ir();
             let terminal_member_get =
-                if function.last_member_reference == function.ops.len().checked_sub(1) {
-                    function.last_member_reference
+                if function.context.last_member_reference == function.ops.len().checked_sub(1) {
+                    function.context.last_member_reference
                 } else {
                     None
                 };
@@ -144,9 +158,9 @@ impl<'source> Parser<'source> {
         // close marker. Thus `(obj?.#m)()` loses the receiver, while
         // `obj?.#m()` was already promoted inside the active chain.
         if terminal_private_get {
-            function.last_member_reference = None;
+            function.context.last_member_reference = None;
         }
-        function.last_optional_chain = Some(FinalizedOptionalChain {
+        function.context.last_optional_chain = Some(FinalizedOptionalChain {
             short_circuits: chain.short_circuits,
             terminal_member_get: (!terminal_private_get)
                 .then_some(terminal_member_get)
@@ -189,10 +203,11 @@ impl<'source> Parser<'source> {
 /// terminal property Reference. Pad each short branch to the two-value method
 /// ABI when that getter is promoted.
 pub(super) fn pad_grouped_method_receiver(
-    function: &mut FunctionIr,
+    function: &mut FunctionBuilder,
     terminal_get: Option<usize>,
 ) -> Result<(), Error> {
     if function
+        .context
         .last_optional_chain
         .as_ref()
         .is_none_or(|chain| chain.terminal_member_get != terminal_get)
@@ -200,6 +215,7 @@ pub(super) fn pad_grouped_method_receiver(
         return Ok(());
     }
     let chain = function
+        .context
         .last_optional_chain
         .take()
         .ok_or_else(|| Error::internal("optional chain marker disappeared"))?;

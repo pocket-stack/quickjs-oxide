@@ -235,14 +235,15 @@ fn prepared_setter_action_roots_callable_receiver_and_argument() {
         .unwrap();
     assert!(runtime.delete_property(&object, &key).unwrap());
     drop(argument);
-    let super::PropertySetAction::Call {
+    let super::PropertySetAction::Call { payload } = action else {
+        panic!("expected a rooted setter action");
+    };
+
+    let crate::engine::object::operations::PropertySetterCall {
         setter,
         receiver,
         argument,
-    } = action
-    else {
-        panic!("expected a rooted setter action");
-    };
+    } = *payload;
     let returned = context.call(&setter, receiver, &[argument]).unwrap();
     assert!(matches!(returned, Value::Object(_)));
     assert_eq!(

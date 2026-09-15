@@ -1,25 +1,53 @@
 //! Resolve lexical names, declaration hoists, eval environments, and closure captures in the IR.
+use crate::engine::compiler::model::bindings::{
+    BindingKind, BindingStorage, EvalDeclarationTarget, EvalDeclarationValue, IrHoistedFunction,
+    binding_kind_from_closure_flags, binding_kinds_compatible,
+};
+use crate::engine::compiler::model::ir::function::FunctionIr;
+use crate::engine::compiler::model::ir::function::FunctionKind;
+use crate::engine::compiler::model::ir::function::FunctionTree;
+use crate::engine::compiler::model::ir::{
+    FunctionId, IdentifierAccess, IdentifierReferenceAccess, IrConstant, IrOp, PrivateFieldAccess,
+    SpannedIrOp,
+};
+use crate::engine::compiler::model::scope::{ScopeId, ScopeKind};
+use crate::engine::compiler::parser::diagnostics::source_span;
+use crate::engine::compiler::relocation::{insert_hoist_fragment, prepend_hoist_prefix};
 
 use super::{
-    ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME, ArgumentsKind, BindingKind, BindingStorage, ClosureSource,
-    ClosureVariable, ClosureVariableKind, ClosureVariableName, DynamicEnvironmentSource,
-    EVAL_VARIABLE_OBJECT_LOCAL_NAME, Error, ErrorKind, EvalBinding, EvalBindingSource,
-    EvalCallerVariableTarget, EvalDeclarationTarget, EvalDeclarationValue, EvalEnvironment,
-    EvalKind, EvalScope, EvalScopeKind, EvalVariableEnvironment, EvalVariableSource, FunctionId,
-    FunctionIr, FunctionKind, FunctionTree, HashMap, IdentifierAccess, IdentifierReferenceAccess,
-    Instruction, IrConstant, IrHoistedFunction, IrOp, JsString, MAX_LOCAL_VARIABLES,
-    PrivateFieldAccess, PseudoBinding, ScopeId, ScopeKind, SourceOffset, Span, SpannedIrOp, Value,
-    WITH_OBJECT_LOCAL_NAME, WithObjectSource, binding_kind_from_closure_flags,
-    binding_kinds_compatible, ensure_eval_visible_pseudo_bindings,
-    find_or_create_own_pseudo_binding, install_pseudo_binding_prologues, module, private_reference,
-    source_span, validate_scope_graph,
+    ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME, EVAL_VARIABLE_OBJECT_LOCAL_NAME, MAX_LOCAL_VARIABLES,
+    WITH_OBJECT_LOCAL_NAME, module, private_reference,
 };
+use crate::engine::api::error::Error;
+use crate::engine::api::error::ErrorKind;
+use crate::engine::code::bytecode::ArgumentsKind;
+use crate::engine::code::bytecode::DynamicEnvironmentSource;
+use crate::engine::code::bytecode::EvalVariableSource;
+use crate::engine::code::bytecode::Instruction;
+use crate::engine::code::bytecode::WithObjectSource;
+use crate::engine::code::function::metadata::ClosureSource;
+use crate::engine::code::function::metadata::ClosureVariable;
+use crate::engine::code::function::metadata::ClosureVariableKind;
+use crate::engine::code::function::metadata::ClosureVariableName;
+use crate::engine::code::function::metadata::EvalBinding;
+use crate::engine::code::function::metadata::EvalBindingSource;
+use crate::engine::code::function::metadata::EvalCallerVariableTarget;
+use crate::engine::code::function::metadata::EvalEnvironment;
+use crate::engine::code::function::metadata::EvalKind;
+use crate::engine::code::function::metadata::EvalScope;
+use crate::engine::code::function::metadata::EvalScopeKind;
+use crate::engine::code::function::metadata::EvalVariableEnvironment;
+use crate::engine::compiler::lexer::Span;
+use crate::engine::compiler::pseudo_binding::PseudoBinding;
+use crate::engine::compiler::pseudo_binding::ensure_eval_visible_pseudo_bindings;
+use crate::engine::compiler::pseudo_binding::find_or_create_own_pseudo_binding;
+use crate::engine::compiler::pseudo_binding::install_pseudo_binding_prologues;
+use crate::engine::compiler::scope_validation::validate_scope_graph;
+use crate::engine::value::JsString;
+use crate::engine::value::PrimitiveValue as Value;
+use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ResolvedBinding {
-    pub(super) storage: BindingStorage,
-    pub(super) kind: BindingKind,
-}
+use crate::engine::compiler::model::bindings::ResolvedBinding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FunctionResolutionEvent {
@@ -71,6 +99,11 @@ fn function_resolution_events(tree: &FunctionTree) -> Result<Vec<FunctionResolut
 }
 
 pub(super) fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
+    #[cfg(feature = "profiling")]
+    let _phase_timer = crate::engine::api::profiling::PhaseTimer::start(
+        crate::engine::api::profiling::CompilePhase::Resolution,
+    );
+
     #[derive(Clone, Copy)]
     enum UnresolvedAccess {
         Identifier(IdentifierAccess),
@@ -79,6 +112,12 @@ pub(super) fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> 
         PrivateField(PrivateFieldAccess),
     }
 
+    #[cfg(feature = "profiling")]
+    crate::engine::compiler::diagnostics::sample_ir_storage(
+        crate::engine::api::profiling::CompilePhase::Resolution,
+        crate::engine::compiler::diagnostics::arena_bytes(&tree.functions),
+        tree.functions.iter(),
+    );
     install_eval_variable_objects(tree)?;
     validate_scope_graph(tree)?;
     seed_global_declarations(tree)?;
@@ -188,6 +227,13 @@ pub(super) fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> 
     // link-time call never initializes `this`/direct-eval pseudo cells.
     install_pseudo_binding_prologues(tree)?;
     install_module_declaration_hoists(tree)?;
+    #[cfg(feature = "profiling")]
+    crate::engine::compiler::diagnostics::sample_ir_storage(
+        crate::engine::api::profiling::CompilePhase::Resolution,
+        crate::engine::compiler::diagnostics::arena_bytes(&tree.functions),
+        tree.functions.iter(),
+    );
+
     validate_scope_graph(tree)
 }
 
@@ -1507,418 +1553,6 @@ pub(super) fn ordered_hoisted_functions(
         BindingStorage::Global => unreachable!("validated above"),
     });
     Ok(hoists)
-}
-
-pub(super) fn insert_hoist_fragment(
-    function: &mut FunctionIr,
-    at: usize,
-    fragment: Vec<SpannedIrOp>,
-) -> Result<(), Error> {
-    if fragment.is_empty() {
-        return Ok(());
-    }
-    if at > function.ops.len() {
-        return Err(Error::internal("function hoist insertion is out of bounds"));
-    }
-    let shift = u32::try_from(fragment.len())
-        .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    for scoped in &mut function.scoped_functions {
-        if scoped.authored_closure >= at {
-            scoped.authored_closure = scoped
-                .authored_closure
-                .checked_add(fragment.len())
-                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        }
-    }
-    for annex in &mut function.program_annex_functions {
-        if annex.authored_closure >= at {
-            annex.authored_closure = annex
-                .authored_closure
-                .checked_add(fragment.len())
-                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        }
-    }
-    for operation in &mut function.ops {
-        let target = match &mut operation.op {
-            IrOp::Bytecode(
-                Instruction::Goto(target)
-                | Instruction::IfFalse(target)
-                | Instruction::IfTrue(target)
-                | Instruction::Catch(target)
-                | Instruction::Gosub(target),
-            ) => target,
-            _ => continue,
-        };
-        // Forward edges use u32::MAX until their enclosing control construct
-        // is complete. NamedEvaluation can insert a zero-effect SetName while
-        // such an edge is still open; leave the sentinel for patch_jump.
-        if *target != u32::MAX && usize::try_from(*target).is_ok_and(|target| target >= at) {
-            *target = target
-                .checked_add(shift)
-                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-        }
-    }
-    function.ops.splice(at..at, fragment);
-    Ok(())
-}
-
-pub(super) fn prepend_hoist_prefix(
-    function: &mut FunctionIr,
-    mut prefix: Vec<SpannedIrOp>,
-) -> Result<(), Error> {
-    if prefix.is_empty() {
-        return Ok(());
-    }
-    let shift = u32::try_from(prefix.len())
-        .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    for scoped in &mut function.scoped_functions {
-        scoped.authored_closure = scoped
-            .authored_closure
-            .checked_add(prefix.len())
-            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    }
-    for annex in &mut function.program_annex_functions {
-        annex.authored_closure = annex
-            .authored_closure
-            .checked_add(prefix.len())
-            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    }
-    for operation in &mut function.ops {
-        let target = match &mut operation.op {
-            IrOp::Bytecode(
-                Instruction::Goto(target)
-                | Instruction::IfFalse(target)
-                | Instruction::IfTrue(target)
-                | Instruction::Catch(target)
-                | Instruction::Gosub(target),
-            ) => target,
-            _ => continue,
-        };
-        *target = target
-            .checked_add(shift)
-            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    }
-    prefix.append(&mut function.ops);
-    function.ops = prefix;
-    Ok(())
-}
-
-pub(super) fn apply_quickjs_late_throw_sites(
-    code: &[Instruction],
-    pc_sites: &mut [Option<SourceOffset>],
-) -> Result<(), Error> {
-    if code.len() != pc_sites.len() {
-        return Err(Error::internal(
-            "lowered instructions and source markers have different lengths",
-        ));
-    }
-    // Maintenance invariant: every new label-bearing instruction or
-    // resolve-labels peephole must update this projection and add a pinned
-    // fault-stack oracle before that control-flow slice is enabled.
-    let label_target = |instruction: &Instruction| -> Result<Option<usize>, Error> {
-        let (Instruction::Goto(target)
-        | Instruction::IfFalse(target)
-        | Instruction::IfTrue(target)
-        | Instruction::Catch(target)
-        | Instruction::Gosub(target)) = instruction
-        else {
-            return Ok(None);
-        };
-        usize::try_from(*target)
-            .map(Some)
-            .map_err(|_| Error::internal("jump target did not fit usize"))
-    };
-    let branch_target = |instruction: &Instruction| -> Result<Option<usize>, Error> {
-        let (Instruction::Goto(target)
-        | Instruction::IfFalse(target)
-        | Instruction::IfTrue(target)) = instruction
-        else {
-            return Ok(None);
-        };
-        usize::try_from(*target)
-            .map(Some)
-            .map_err(|_| Error::internal("jump target did not fit usize"))
-    };
-
-    // `resolve_scope_var` introduces terminal OP_throw_error only after
-    // parsing. QuickJS then performs two relevant linear rewrites.
-    // `resolve_variables` first drops source after parser-authored terminals,
-    // updating label reference counts for jumps in that dead range.
-    // `resolve_labels` recognizes every newly introduced throw as terminal and
-    // repeats the walk with one shared, cumulatively updated reference table.
-    // Project both passes once for the whole function: per-throw simulation is
-    // not equivalent when an earlier throw removes a forward branch reference.
-    let mut label_references = vec![0_usize; code.len()];
-    let mut has_physical_label = vec![false; code.len()];
-    for instruction in code {
-        let Some(target) = label_target(instruction)? else {
-            continue;
-        };
-        let references = label_references
-            .get_mut(target)
-            .ok_or_else(|| Error::internal("jump target is out of bounds"))?;
-        *references = references
-            .checked_add(1)
-            .ok_or_else(|| Error::new(ErrorKind::JsInternal, "out of memory"))?;
-        has_physical_label[target] = true;
-    }
-
-    let mut survives_first_pass = vec![false; code.len()];
-    let mut marker_before_label = vec![None; code.len()];
-    let mut index = 0_usize;
-    while index < code.len() {
-        survives_first_pass[index] = true;
-        let parser_terminal = matches!(
-            code[index],
-            Instruction::Goto(_)
-                | Instruction::Return
-                | Instruction::ReturnUndefined
-                | Instruction::Throw
-                | Instruction::Ret
-        );
-        if !parser_terminal {
-            index += 1;
-            continue;
-        }
-
-        let mut dead_index = index + 1;
-        let mut final_dead_marker = None;
-        while dead_index < code.len() {
-            // An upstream OP_label precedes the marker attached to our direct
-            // target instruction. A still-referenced label ends this dead
-            // range before that authored marker is observed.
-            if label_references[dead_index] > 0 {
-                break;
-            }
-            if pc_sites[dead_index].is_some() {
-                final_dead_marker = pc_sites[dead_index];
-            }
-            if let Some(target) = label_target(&code[dead_index])? {
-                label_references[target] = label_references[target]
-                    .checked_sub(1)
-                    .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
-            }
-            dead_index += 1;
-        }
-        if dead_index == code.len() {
-            break;
-        }
-        marker_before_label[dead_index] = final_dead_marker;
-        index = dead_index;
-    }
-
-    let follow_jump_target =
-        |initial_target: usize, references: &mut [usize]| -> Result<usize, Error> {
-            let initial = initial_target;
-            let initial_references = references
-                .get_mut(initial)
-                .ok_or_else(|| Error::internal("jump target is out of bounds"))?;
-            *initial_references = initial_references
-                .checked_sub(1)
-                .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
-
-            let mut target = initial;
-            let mut followed_ten_gotos = true;
-            for _ in 0..10 {
-                if !survives_first_pass
-                    .get(target)
-                    .copied()
-                    .ok_or_else(|| Error::internal("jump target is out of bounds"))?
-                {
-                    return Err(Error::internal(
-                        "jump target did not survive variable resolution",
-                    ));
-                }
-                let Some(next_target) = branch_target(&code[target])? else {
-                    followed_ten_gotos = false;
-                    break;
-                };
-                if !matches!(code[target], Instruction::Goto(_)) {
-                    followed_ten_gotos = false;
-                    break;
-                }
-                target = next_target;
-            }
-            // Preserve QuickJS's cycle workaround after ten chained gotos.
-            if followed_ten_gotos {
-                target = initial;
-            }
-            let final_references = references
-                .get_mut(target)
-                .ok_or_else(|| Error::internal("jump target is out of bounds"))?;
-            *final_references = final_references
-                .checked_add(1)
-                .ok_or_else(|| Error::new(ErrorKind::JsInternal, "out of memory"))?;
-            Ok(target)
-        };
-
-    let mut current_site = None;
-    let mut late_throw_sites = Vec::new();
-    index = 0;
-    while index < code.len() {
-        if !survives_first_pass[index] {
-            index += 1;
-            continue;
-        }
-        if marker_before_label[index].is_some() {
-            current_site = marker_before_label[index];
-        }
-        if pc_sites[index].is_some() {
-            current_site = pc_sites[index];
-        }
-
-        // `resolve_labels` folds the same adjacent constant-condition forms
-        // as `fold_quickjs_constant_branches`. A non-taken branch releases its
-        // forward label before a following late throw is visited; a taken one
-        // becomes a terminal Goto whose target reference remains live.
-        let constant_truthy = match code[index] {
-            Instruction::Undefined | Instruction::Null | Instruction::PushFalse => Some(false),
-            Instruction::PushTrue => Some(true),
-            Instruction::PushI32(value) => Some(value != 0),
-            Instruction::PushAtomValueIndex(_) => Some(true),
-            _ => None,
-        };
-        let mut folded_goto = false;
-        let mut terminal_tail = index + 1;
-        if let Some(truthy) = constant_truthy
-            && let Some(conditional_index) = index.checked_add(1)
-            && conditional_index < code.len()
-            && survives_first_pass[conditional_index]
-            // `code_match` skips source markers but never crosses a physical
-            // OP_label, even after earlier rewrites reduce its refcount to
-            // zero. Direct-target IR therefore needs an immutable label bit;
-            // the mutable reference count alone is not an adjacency test.
-            && !has_physical_label[conditional_index]
-        {
-            let branch = match code[conditional_index] {
-                Instruction::IfFalse(target) => Some((false, target)),
-                Instruction::IfTrue(target) => Some((true, target)),
-                _ => None,
-            };
-            if let Some((branch_on_true, target)) = branch {
-                if marker_before_label[conditional_index].is_some() {
-                    current_site = marker_before_label[conditional_index];
-                }
-                if pc_sites[conditional_index].is_some() {
-                    current_site = pc_sites[conditional_index];
-                }
-                let target = usize::try_from(target)
-                    .map_err(|_| Error::internal("jump target did not fit usize"))?;
-                terminal_tail = conditional_index + 1;
-                if truthy == branch_on_true {
-                    follow_jump_target(target, &mut label_references)?;
-                    folded_goto = true;
-                } else {
-                    label_references[target] = label_references[target]
-                        .checked_sub(1)
-                        .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
-                    index = terminal_tail;
-                    continue;
-                }
-            }
-        }
-
-        let mut followed_target = None;
-        if !folded_goto && let Some(target) = branch_target(&code[index])? {
-            followed_target = Some(follow_jump_target(target, &mut label_references)?);
-        }
-
-        // QuickJS also folds `if_x(l1); goto(l2); label(l1)` to the opposite
-        // conditional targeting `l2`. The Goto is consumed, its existing l2
-        // reference is reused by the conditional, and l1 loses the reference
-        // transferred above. This must happen before either branch's late
-        // readonly throw updates the shared label table.
-        if !folded_goto
-            && matches!(
-                code[index],
-                Instruction::IfFalse(_) | Instruction::IfTrue(_)
-            )
-            && let Some(effective_target) = followed_target
-        {
-            let mut goto_index = index + 1;
-            while goto_index < code.len() && !survives_first_pass[goto_index] {
-                goto_index += 1;
-            }
-            if goto_index < code.len()
-                && !has_physical_label[goto_index]
-                && matches!(code[goto_index], Instruction::Goto(_))
-            {
-                let mut after_goto = goto_index + 1;
-                while after_goto < code.len() && !survives_first_pass[after_goto] {
-                    after_goto += 1;
-                }
-                let has_effective_label = after_goto < code.len()
-                    && ((has_physical_label[after_goto] && after_goto == effective_target)
-                        || (matches!(code[after_goto], Instruction::Goto(_))
-                            && branch_target(&code[after_goto])? == Some(effective_target)));
-                if has_effective_label {
-                    if pc_sites[goto_index].is_some() {
-                        current_site = pc_sites[goto_index];
-                    }
-                    label_references[effective_target] = label_references[effective_target]
-                        .checked_sub(1)
-                        .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
-                    index = after_goto;
-                    continue;
-                }
-            }
-        }
-
-        let terminal = folded_goto
-            || matches!(
-                code[index],
-                Instruction::Goto(_)
-                    | Instruction::Return
-                    | Instruction::ReturnUndefined
-                    | Instruction::Throw
-                    | Instruction::Ret
-                    | Instruction::ThrowReadOnly(_)
-                    | Instruction::ThrowRedeclaration(_)
-            );
-        if !terminal {
-            index += 1;
-            continue;
-        }
-
-        let terminal_index = index;
-        let mut dead_index = terminal_tail;
-        while dead_index < code.len() {
-            if !survives_first_pass[dead_index] {
-                dead_index += 1;
-                continue;
-            }
-            // The first pass emits its final removed marker before the label,
-            // so the second pass observes it even when another live reference
-            // makes that label the stopping point.
-            if marker_before_label[dead_index].is_some() {
-                current_site = marker_before_label[dead_index];
-            }
-            if label_references[dead_index] > 0 {
-                break;
-            }
-            if pc_sites[dead_index].is_some() {
-                current_site = pc_sites[dead_index];
-            }
-            if let Some(target) = label_target(&code[dead_index])? {
-                label_references[target] = label_references[target]
-                    .checked_sub(1)
-                    .ok_or_else(|| Error::internal("jump label reference count underflow"))?;
-            }
-            dead_index += 1;
-        }
-        if matches!(
-            code[terminal_index],
-            Instruction::ThrowReadOnly(_) | Instruction::ThrowRedeclaration(_)
-        ) {
-            late_throw_sites.push((terminal_index, current_site));
-        }
-        index = dead_index;
-    }
-
-    for (index, site) in late_throw_sites {
-        pc_sites[index] = site;
-    }
-    Ok(())
 }
 
 fn resolve_identifier(

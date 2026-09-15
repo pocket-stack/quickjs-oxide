@@ -8,14 +8,15 @@ use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
+use crate::engine::api::compile::Compilation;
 #[cfg(any(test, feature = "test262-host"))]
 use crate::engine::builtins::native::NativeFunctionId;
 use crate::engine::builtins::native::PrimitiveKind;
 use crate::engine::code::rooted::FunctionBytecodeRef;
-use crate::engine::code::runtime::Compilation;
 use crate::engine::compiler::CompileOptions;
 use crate::engine::heap::ContextId;
 
+#[cfg(not(feature = "stack-vm"))]
 use crate::engine::object::operations::{InternalDefineResult, InternalSetResult};
 use crate::engine::object::{
     CallableRef, CompleteOrdinaryPropertyDescriptor, ObjectRef, OrdinaryPropertyDescriptor,

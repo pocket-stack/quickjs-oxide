@@ -1,7 +1,9 @@
 //! Runtime-independent compilation products.
 #[cfg(test)]
 mod fixtures;
+pub(crate) mod layout;
 pub mod metadata;
+pub(crate) mod publication;
 use crate::engine::code::bytecode::Instruction;
 use crate::engine::code::debug::Pc2LineTable;
 

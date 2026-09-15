@@ -50,12 +50,16 @@ pub(crate) enum PropertySetAction {
     Complete,
     Rejected(PropertySetRejection),
     Throw(Value),
-    Call {
-        setter: CallableRef,
-        receiver: Value,
-        argument: Value,
-    },
+    Call { payload: Box<PropertySetterCall> },
 }
+
+// Allocated only after selecting a real setter invocation.
+pub(crate) struct PropertySetterCall {
+    pub(crate) setter: CallableRef,
+    pub(crate) receiver: Value,
+    pub(crate) argument: Value,
+}
+const _: () = assert!(std::mem::size_of::<PropertySetAction>() <= 64);
 
 pub(crate) enum PropertyDefineOutcome {
     Defined(bool),

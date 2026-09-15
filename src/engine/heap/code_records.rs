@@ -112,6 +112,13 @@ impl Default for PublishedPrivateBindings {
 /// the raw constant pool alive for the duration of execution.
 #[derive(Debug)]
 pub struct FunctionBytecodeData {
+    /// Lazily shared read-only execution projection. It contains no GC roots:
+    /// each external snapshot separately retains this bytecode node. Allocation
+    /// clears any incoming cache before sealing the authenticated node.
+    pub(crate) executable:
+        std::cell::OnceCell<Rc<crate::engine::code::runtime::PublishedFunctionData>>,
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fusion: crate::engine::code::fusion::FusionPlan,
     pub code: Rc<[Instruction]>,
     pub constants: Rc<[BytecodeConstant]>,
     /// Constant-indexed static names linked by the runtime publisher. Null

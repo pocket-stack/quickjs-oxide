@@ -1,4 +1,7 @@
 //! String prototype intrinsics beyond the shared primitive-wrapper substrate.
+mod factory;
+#[cfg(feature = "stack-vm")]
+pub(crate) use factory::{StringFactoryKind, StringFactoryResume, StringFactoryStep};
 
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
@@ -10,8 +13,9 @@ use crate::engine::builtins::native::{
     StringSubrangeKind, StringTrimKind, StringWellFormedKind,
 };
 use crate::engine::heap::{ContextId, ObjectPayload};
-use crate::engine::object::{ObjectRef, PropertyKey, SymbolRef, WellKnownSymbol};
-use crate::engine::value::conversion::NativeConversion;
+use crate::engine::object::{ObjectRef, SymbolRef};
+#[cfg(test)]
+use crate::engine::object::{PropertyKey, WellKnownSymbol};
 use crate::engine::value::{
     CreateHtmlStringBuffer, JsString, JsStringBuilder, JsStringError, Value,
 };
@@ -19,7 +23,21 @@ use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
 mod regexp;
+#[cfg(feature = "stack-vm")]
+pub(crate) use regexp::{StringProtocolKind, StringProtocolResume, StringProtocolStep};
+mod split;
+#[cfg(feature = "stack-vm")]
+pub(crate) use split::{StringSplitResume, StringSplitStep};
+mod search;
+#[cfg(feature = "stack-vm")]
+pub(crate) use search::{StringSearchKind, StringSearchResume, StringSearchStep};
+mod text;
+#[cfg(feature = "stack-vm")]
+pub(crate) use text::{StringTextKind, StringTextResume, StringTextStep};
 mod replace;
+
+#[cfg(feature = "stack-vm")]
+pub(crate) use replace::{StringReplaceResume, StringReplaceStep};
 
 #[cfg(test)]
 mod tests;
@@ -505,33 +523,16 @@ impl Runtime {
                 "String codePointRange did not receive a generic invocation",
             ));
         };
-        let start_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String codePointRange start argv was not padded",
-        ))?;
-        let end_argument = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "String codePointRange end argv was not padded",
-        ))?;
-
-        let start = match self.native_to_number(realm, start_argument)? {
-            NativeConversion::Value(value) => Self::to_uint32_number(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let end = match self.native_to_number(realm, end_argument)? {
-            NativeConversion::Value(value) => Self::to_uint32_number(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        }
-        .min(0x11_0000);
-        let start = start.min(end);
-
-        let code_point_count = end - start;
-        let supplementary_count = end.saturating_sub(start.max(0x1_0000));
-        let utf16_len = usize::try_from(code_point_count + supplementary_count)
-            .map_err(|_| RuntimeError::Invariant("codePointRange length did not fit usize"))?;
-        let mut builder = JsStringBuilder::try_with_exact_capacity(utf16_len)?;
-        for code_point in start..end {
-            builder.push_code_point(code_point)?;
-        }
-        Ok(Completion::Return(Value::String(builder.finish()?)))
+        factory::finish(
+            self,
+            realm,
+            factory::StringFactoryStep::start(
+                self,
+                realm,
+                factory::StringFactoryKind::CodePointRange,
+                arguments,
+            )?,
+        )
     }
 
     /// Rust port of pinned QuickJS `js_string_fromCharCode`.
@@ -540,16 +541,16 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let mut builder = JsStringBuilder::new(arguments.actual_arg_count);
-        for argument in &arguments.readable[..arguments.actual_arg_count] {
-            let number = match self.native_to_number(realm, argument)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let code_unit = (crate::engine::value::number::to_int32(number) as u32) & 0xffff;
-            builder.push_code_point(code_unit)?;
-        }
-        Ok(Completion::Return(Value::String(builder.finish()?)))
+        factory::finish(
+            self,
+            realm,
+            factory::StringFactoryStep::start(
+                self,
+                realm,
+                factory::StringFactoryKind::Static(StringStaticKind::FromCharCode),
+                arguments,
+            )?,
+        )
     }
 
     /// Rust port of pinned QuickJS `js_string_fromCodePoint`, including its
@@ -559,39 +560,16 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let mut builder = JsStringBuilder::new(arguments.actual_arg_count);
-        for argument in &arguments.readable[..arguments.actual_arg_count] {
-            let code_point = match argument {
-                Value::Int(value) if (0..=0x10_ffff).contains(value) => *value as u32,
-                Value::Int(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Range,
-                        "invalid code point",
-                    )?));
-                }
-                _ => {
-                    let number = match self.native_to_number(realm, argument)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    if !number.is_finite()
-                        || number < 0.0
-                        || number > 0x10_ffff as f64
-                        || number.fract() != 0.0
-                    {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Range,
-                            "invalid code point",
-                        )?));
-                    }
-                    number as u32
-                }
-            };
-            builder.push_code_point(code_point)?;
-        }
-        Ok(Completion::Return(Value::String(builder.finish()?)))
+        factory::finish(
+            self,
+            realm,
+            factory::StringFactoryStep::start(
+                self,
+                realm,
+                factory::StringFactoryKind::Static(StringStaticKind::FromCodePoint),
+                arguments,
+            )?,
+        )
     }
 
     /// Rust port of pinned QuickJS `js_string_raw` with an injectable output
@@ -602,75 +580,17 @@ impl Runtime {
         arguments: &NativeArguments,
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
-        let template = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String.raw template argv was not padded",
-        ))?;
-        let cooked = match self.native_to_object(realm, template.clone())? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let raw_key = self.intern_property_key("raw")?;
-        let raw = match self.get_property_in_realm(realm, &cooked, &raw_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let raw = match self.native_to_object(realm, raw)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let length_key = self.intern_property_key("length")?;
-        let length = match self.get_property_in_realm(realm, &raw, &length_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let length = match self.native_to_length(realm, &length)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let mut builder = JsStringBuilder::with_limit(0, string_limit);
-        for index in 0..length {
-            let index_key = self.intern_property_key(&index.to_string())?;
-            let chunk = match self.get_property_in_realm(realm, &raw, &index_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            // QuickJS performs Get+ToString even after a prior raw append has
-            // latched a StringBuffer error. A later user throw may therefore
-            // replace the pending `string too long` exception.
-            let chunk = match self.native_to_js_string(realm, &chunk)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let raw_append = builder.push_js_string(&chunk);
-
-            let substitution_index = index + 1;
-            let substitution_index = usize::try_from(substitution_index).ok();
-            let has_substitution = index + 1 < length
-                && substitution_index.is_some_and(|index| index < arguments.actual_arg_count);
-            if !has_substitution {
-                // `string_buffer_concat_value_free` has a deliberately ignored
-                // result in `js_string_raw`; preserve its latched error.
-                let _ = raw_append;
-                continue;
-            }
-            raw_append?;
-            let substitution_index =
-                substitution_index.expect("a present String.raw substitution index fits usize");
-            let substitution =
-                arguments
-                    .readable
-                    .get(substitution_index)
-                    .ok_or(RuntimeError::Invariant(
-                        "String.raw substitution argv was not readable",
-                    ))?;
-            let substitution = match self.native_to_js_string(realm, substitution)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            builder.push_js_string(&substitution)?;
-        }
-        Ok(Completion::Return(Value::String(builder.finish()?)))
+        factory::finish(
+            self,
+            realm,
+            factory::StringFactoryStep::with_limit(
+                self,
+                realm,
+                factory::StringFactoryKind::Static(StringStaticKind::Raw),
+                arguments,
+                string_limit,
+            )?,
+        )
     }
 
     /// Rust port of pinned QuickJS `js_string_indexOf`.
@@ -685,26 +605,25 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String indexOf method did not receive a generic invocation",
-            ));
-        };
-
-        // QuickJS converts the receiver before reading or converting either
-        // argument. ToString also linearizes a rope for the code-unit loop.
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let search_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String indexOf search argv was not padded",
-        ))?;
-        let needle = match self.native_to_js_string(realm, search_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+        search::finish(
+            self,
+            realm,
+            search::StringSearchStep::start(
+                self,
+                realm,
+                search::StringSearchKind::Index(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+    fn finish_string_index_of(
+        &self,
+        selector: StringIndexOfKind,
+        source: JsString,
+        needle: JsString,
+        position_number: Option<f64>,
+    ) -> Result<Completion, RuntimeError> {
         let source_len = i32::try_from(source.len()).map_err(|_| {
             RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
         })?;
@@ -714,36 +633,14 @@ impl Runtime {
 
         let result = match selector {
             StringIndexOfKind::IndexOf => {
-                let position = if arguments.actual_arg_count > 1 {
-                    let position = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                        "String indexOf position argv was not readable",
-                    ))?;
-                    match self.native_to_number(realm, position)? {
-                        NativeConversion::Value(value) => {
-                            crate::engine::value::number::to_int32_sat(value).clamp(0, source_len)
-                        }
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    }
-                } else {
-                    0
-                };
+                let position = position_number.map_or(0, |number| {
+                    crate::engine::value::number::to_int32_sat(number).clamp(0, source_len)
+                });
                 scan_string_region(&source, &needle, position, source_len - needle_len, 1)
             }
             StringIndexOfKind::LastIndexOf => {
                 let mut position = source_len - needle_len;
-                if arguments.actual_arg_count > 1 {
-                    let position_value =
-                        arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                            "String lastIndexOf position argv was not readable",
-                        ))?;
-                    let number = match self.native_to_number(realm, position_value)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
+                if let Some(number) = position_number {
                     if !number.is_nan() {
                         if number <= 0.0 {
                             position = 0;
@@ -765,6 +662,18 @@ impl Runtime {
     /// Internal-class fallback of pinned QuickJS `js_is_regexp` after an
     /// object has produced `undefined` for `Symbol.match`.
     ///
+    pub(crate) fn is_regexp_from_match(
+        &self,
+        object: &ObjectRef,
+        matcher: &Value,
+    ) -> Result<bool, RuntimeError> {
+        if matches!(matcher, Value::Undefined) {
+            self.native_object_has_regexp_brand(object)
+        } else {
+            self.value_to_boolean(matcher)
+        }
+    }
+
     pub(crate) fn native_object_has_regexp_brand(
         &self,
         object: &ObjectRef,
@@ -812,31 +721,6 @@ impl Runtime {
         })
     }
 
-    /// Rust port of pinned QuickJS `js_is_regexp`: primitives skip the
-    /// `Symbol.match` lookup, objects perform one ordinary Get, a present value
-    /// is converted only with ToBoolean, and `undefined` falls back to the
-    /// internal RegExp brand.
-    pub(crate) fn native_is_regexp(
-        &self,
-        realm: ContextId,
-        value: &Value,
-    ) -> Result<NativeConversion<bool>, RuntimeError> {
-        let Value::Object(object) = value else {
-            return Ok(NativeConversion::Value(false));
-        };
-        let match_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Match));
-        let matcher = match self.get_property_in_realm(realm, object, &match_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if !matches!(matcher, Value::Undefined) {
-            return Ok(NativeConversion::Value(self.value_to_boolean(&matcher)?));
-        }
-        Ok(NativeConversion::Value(
-            self.native_object_has_regexp_brand(object)?,
-        ))
-    }
-
     /// Rust port of pinned QuickJS `js_string_includes`, shared by the
     /// `includes`, `endsWith`, and `startsWith` magic variants.
     pub(crate) fn call_string_prototype_includes(
@@ -846,37 +730,25 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String includes family did not receive a generic invocation",
-            ));
-        };
-
-        // QuickJS converts the receiver before observing any search-value
-        // property, then performs IsRegExp before converting the search value.
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let search_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String includes search argv was not padded",
-        ))?;
-        let is_regexp = match self.native_is_regexp(realm, search_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if is_regexp {
-            return Ok(Completion::Throw(self.new_native_error(
+        search::finish(
+            self,
+            realm,
+            search::StringSearchStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "regexp not supported",
-            )?));
-        }
-        let needle = match self.native_to_js_string(realm, search_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+                search::StringSearchKind::Includes(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+    fn finish_string_includes(
+        &self,
+        selector: StringIncludesKind,
+        source: JsString,
+        needle: JsString,
+        position_number: Option<f64>,
+    ) -> Result<Completion, RuntimeError> {
         let source_len = i32::try_from(source.len()).map_err(|_| {
             RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
         })?;
@@ -888,19 +760,8 @@ impl Runtime {
         } else {
             0
         };
-        if arguments.actual_arg_count > 1 {
-            let position_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "String includes position argv was not readable",
-            ))?;
-            // Unlike indexOf, the shared QuickJS function explicitly skips an
-            // `undefined` position instead of sending it through ToNumber.
-            if !matches!(position_value, Value::Undefined) {
-                let number = match self.native_to_number(realm, position_value)? {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                position = crate::engine::value::number::to_int32_sat(number).clamp(0, source_len);
-            }
+        if let Some(number) = position_number {
+            position = crate::engine::value::number::to_int32_sat(number).clamp(0, source_len);
         }
 
         let stop = source_len - needle_len;
@@ -930,85 +791,21 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String split did not receive a generic invocation",
-            ));
-        };
-        if matches!(this_value, Value::Undefined | Value::Null) {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "cannot convert to object",
-            )?));
-        }
-
-        let separator = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String split separator argv was not padded",
-        ))?;
-        let limit_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "String split limit argv was not padded",
-        ))?;
-
-        // QuickJS's pinned implementation performs the well-known-symbol Get
-        // only for object separators. A present value is called as-is; null and
-        // undefined alone select the generic string path.
-        if let Value::Object(separator_object) = separator {
-            let split_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Split));
-            let splitter = match self.get_property_in_realm(realm, separator_object, &split_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if !matches!(splitter, Value::Undefined | Value::Null) {
-                let callable = match splitter {
-                    Value::Object(object) => self.as_callable(&object)?,
-                    Value::Undefined
-                    | Value::Null
-                    | Value::Bool(_)
-                    | Value::Int(_)
-                    | Value::Float(_)
-                    | Value::BigInt(_)
-                    | Value::String(_)
-                    | Value::Symbol(_) => None,
-                };
-                let Some(callable) = callable else {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "not a function",
-                    )?));
-                };
-                return self.call_internal(
-                    realm,
-                    &callable,
-                    Value::Object(separator_object.clone()),
-                    &[this_value, limit_value.clone()],
-                );
-            }
-        }
-
-        // The source conversion precedes Array creation. The Array itself must
-        // exist before limit and separator coercion, and belongs to split's
-        // defining realm rather than the caller's realm.
-        let source = match self.native_to_js_string(realm, &this_value)? {
-            NativeConversion::Value(value) => value.linearize(),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.new_array(realm)?;
-        let limit = if matches!(limit_value, Value::Undefined) {
-            u32::MAX
-        } else {
-            let number = match self.native_to_number(realm, limit_value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            Self::to_uint32_number(number)
-        };
-        let separator_string = match self.native_to_js_string(realm, separator)? {
-            NativeConversion::Value(value) => value.linearize(),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+        split::finish(
+            self,
+            realm,
+            split::StringSplitStep::start(self, realm, &invocation, arguments)?,
+        )
+    }
+    fn finish_string_split(
+        &self,
+        realm: ContextId,
+        source: JsString,
+        result: ObjectRef,
+        separator: &Value,
+        separator_string: JsString,
+        limit: u32,
+    ) -> Result<Completion, RuntimeError> {
         let mut length = 0_u32;
         if limit == 0 {
             return Ok(Completion::Return(Value::Object(result)));
@@ -1132,45 +929,38 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String subrange method did not receive a generic invocation",
-            ));
-        };
-
-        // Every pinned function converts the receiver before observing start,
-        // then converts end only when it is not undefined.
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        search::finish(
+            self,
+            realm,
+            search::StringSearchStep::start(
+                self,
+                realm,
+                search::StringSearchKind::Subrange(selector),
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+    fn finish_string_subrange(
+        &self,
+        selector: StringSubrangeKind,
+        source: JsString,
+        start_number: f64,
+        end_number: Option<f64>,
+    ) -> Result<Completion, RuntimeError> {
         let source_len = i32::try_from(source.len()).map_err(|_| {
             RuntimeError::Invariant("String length exceeded QuickJS's signed index range")
         })?;
-        let start_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String subrange start argv was not padded",
-        ))?;
-        let start_number = match self.native_to_number(realm, start_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
         let start_offset = match selector {
             StringSubrangeKind::Substring => 0,
             StringSubrangeKind::Substr | StringSubrangeKind::Slice => source_len,
         };
         let start = string_to_int32_clamp(start_number, source_len, start_offset);
 
-        let end_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "String subrange end argv was not padded",
-        ))?;
         let (range_start, range_end) = match selector {
             StringSubrangeKind::Substring => {
                 let mut end = source_len;
-                if !matches!(end_value, Value::Undefined) {
-                    let number = match self.native_to_number(realm, end_value)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
+                if let Some(number) = end_number {
                     end = string_to_int32_clamp(number, source_len, 0);
                 }
                 if start < end {
@@ -1182,22 +972,14 @@ impl Runtime {
             StringSubrangeKind::Substr => {
                 let remaining = source_len - start;
                 let mut count = remaining;
-                if !matches!(end_value, Value::Undefined) {
-                    let number = match self.native_to_number(realm, end_value)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
+                if let Some(number) = end_number {
                     count = string_to_int32_clamp(number, remaining, 0);
                 }
                 (start, start + count)
             }
             StringSubrangeKind::Slice => {
                 let mut end = source_len;
-                if !matches!(end_value, Value::Undefined) {
-                    let number = match self.native_to_number(realm, end_value)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
+                if let Some(number) = end_number {
                     end = string_to_int32_clamp(number, source_len, source_len);
                 }
                 (start, end.max(start))
@@ -1237,23 +1019,26 @@ impl Runtime {
         arguments: &NativeArguments,
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String repeat did not receive a generic invocation",
-            ));
-        };
-
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let count_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String repeat count argv was not padded",
-        ))?;
-        let count = match self.native_to_int64_sat(realm, count_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::Repeat,
+                &invocation,
+                Some(arguments),
+                string_limit,
+            )?,
+        )
+    }
+    fn finish_string_repeat(
+        &self,
+        realm: ContextId,
+        source: JsString,
+        count: i64,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
         if !(0..=2_147_483_647).contains(&count) {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -1310,48 +1095,28 @@ impl Runtime {
         arguments: &NativeArguments,
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String pad did not receive a generic-magic invocation",
-            ));
-        };
-
-        // JS_ToStringCheckObject produces the flat JSString consumed by
-        // QuickJS's JS_VALUE_GET_STRING before any target-length coercion.
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value.linearize(),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let target_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String pad target length argv was not padded",
-        ))?;
-        let target = match self.native_to_number(realm, target_value)? {
-            NativeConversion::Value(value) => crate::engine::value::number::to_int32_sat(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let source_len = i32::try_from(source.len())
-            .map_err(|_| RuntimeError::Invariant("String length exceeded signed Int32"))?;
-        if source_len >= target {
-            return Ok(Completion::Return(Value::String(source)));
-        }
-
-        // `argc > 1` is observable: an absent second argument and an explicit
-        // undefined both select U+0020, but only actual arguments may be read.
-        let filler = if arguments.actual_arg_count > 1 {
-            let filler_value = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "String pad filler argv was not padded",
-            ))?;
-            if matches!(filler_value, Value::Undefined) {
-                None
-            } else {
-                match self.native_to_js_string(realm, filler_value)? {
-                    NativeConversion::Value(value) => Some(value.linearize()),
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-        } else {
-            None
-        };
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::Pad(selector),
+                &invocation,
+                Some(arguments),
+                string_limit,
+            )?,
+        )
+    }
+    fn finish_string_pad(
+        &self,
+        realm: ContextId,
+        selector: StringPadKind,
+        source: JsString,
+        target: i32,
+        filler: Option<JsString>,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
         if filler.as_ref().is_some_and(JsString::is_empty) {
             return Ok(Completion::Return(Value::String(source)));
         }
@@ -1392,16 +1157,25 @@ impl Runtime {
         selector: StringTrimKind,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String trim did not receive a generic-magic invocation",
-            ));
-        };
-
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::Trim(selector),
+                &invocation,
+                None,
+                JsString::MAX_LEN,
+            )?,
+        )
+    }
+    fn finish_string_trim(
+        &self,
+        realm: ContextId,
+        selector: StringTrimKind,
+        source: JsString,
+    ) -> Result<Completion, RuntimeError> {
         let (trim_start, trim_end) = match selector {
             StringTrimKind::Both => (true, true),
             StringTrimKind::End => (false, true),
@@ -1444,16 +1218,26 @@ impl Runtime {
         invocation: NativeInvocation,
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String case conversion did not receive a generic-magic invocation",
-            ));
-        };
-
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::Case(selector),
+                &invocation,
+                None,
+                string_limit,
+            )?,
+        )
+    }
+    fn finish_string_case(
+        &self,
+        realm: ContextId,
+        selector: StringCaseKind,
+        source: JsString,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
         let converted = match crate::source::unicode::case::convert_case_with_limit(
             &source,
             matches!(selector, StringCaseKind::Upper),
@@ -1499,45 +1283,26 @@ impl Runtime {
         arguments: &NativeArguments,
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String normalize did not receive a generic invocation",
-            ));
-        };
-
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let form = if arguments.actual_arg_count == 0
-            || matches!(arguments.readable.first(), Some(Value::Undefined))
-        {
-            crate::source::unicode::normalize::NormalizationForm::Nfc
-        } else {
-            let form_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "String normalize form argv was not readable",
-            ))?;
-            let form = match self.native_to_js_string(realm, form_value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if form.utf16_units().eq("NFC".encode_utf16()) {
-                crate::source::unicode::normalize::NormalizationForm::Nfc
-            } else if form.utf16_units().eq("NFD".encode_utf16()) {
-                crate::source::unicode::normalize::NormalizationForm::Nfd
-            } else if form.utf16_units().eq("NFKC".encode_utf16()) {
-                crate::source::unicode::normalize::NormalizationForm::Nfkc
-            } else if form.utf16_units().eq("NFKD".encode_utf16()) {
-                crate::source::unicode::normalize::NormalizationForm::Nfkd
-            } else {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Range,
-                    "bad normalization form",
-                )?));
-            }
-        };
-
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::Normalize,
+                &invocation,
+                Some(arguments),
+                string_limit,
+            )?,
+        )
+    }
+    fn finish_string_normalize(
+        &self,
+        realm: ContextId,
+        source: JsString,
+        form: crate::source::unicode::normalize::NormalizationForm,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
         let normalized = match crate::source::unicode::normalize::normalize_with_limit(
             &source,
             form,
@@ -1570,24 +1335,25 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String localeCompare did not receive a generic invocation",
-            ));
-        };
-
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let that_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "String localeCompare that argv was not readable",
-        ))?;
-        let that = match self.native_to_js_string(realm, that_value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::LocaleCompare,
+                &invocation,
+                Some(arguments),
+                JsString::MAX_LEN,
+            )?,
+        )
+    }
+    fn finish_string_locale_compare(
+        &self,
+        realm: ContextId,
+        source: JsString,
+        that: JsString,
+    ) -> Result<Completion, RuntimeError> {
         let source = match crate::source::unicode::normalize::normalize_code_points(
             &source,
             crate::source::unicode::normalize::NormalizationForm::Nfc,
@@ -1665,31 +1431,26 @@ impl Runtime {
         arguments: &NativeArguments,
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "String CreateHTML did not receive a generic-magic invocation",
-            ));
-        };
-
-        let source = match self.native_to_string_check_object(realm, &this_value)? {
-            NativeConversion::Value(value) => value.linearize(),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let (tag, attribute) = create_html_definition(selector);
-        let mut buffer = CreateHtmlStringBuffer::new(tag, attribute, string_limit);
-
-        if attribute.is_some() {
-            let attribute_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "String CreateHTML attribute argv was not padded",
-            ))?;
-            let attribute_value =
-                match self.native_to_string_check_object(realm, attribute_value)? {
-                    NativeConversion::Value(value) => value.linearize(),
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-            buffer.append_escaped_attribute(&attribute_value);
-        }
-
+        text::finish(
+            self,
+            realm,
+            text::StringTextStep::start_with_limit(
+                self,
+                realm,
+                text::StringTextKind::Html(selector),
+                &invocation,
+                Some(arguments),
+                string_limit,
+            )?,
+        )
+    }
+    fn finish_string_create_html(
+        &self,
+        realm: ContextId,
+        source: JsString,
+        buffer: CreateHtmlStringBuffer,
+        tag: &'static str,
+    ) -> Result<Completion, RuntimeError> {
         let result = match buffer.finish(&source, tag) {
             Ok(value) => value,
             Err(error @ (JsStringError::TooLong | JsStringError::OutOfMemory)) => {

@@ -23,9 +23,7 @@ use crate::engine::object::{
 use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
-use crate::engine::vm::call::{ConstructorRef, NativeArguments, NativeInvocation};
-
-const MAX_SAFE_INTEGER_I64: i64 = (1_i64 << 53) - 1;
+use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SharedArrayBufferSnapshot {
@@ -195,57 +193,24 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "SharedArrayBuffer constructor did not receive a constructor invocation",
-            ));
-        };
-        let length = match self.native_to_index(
+        super::array_buffer::constructor::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "SharedArrayBuffer length argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(length) => length,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let mut max_byte_length = None;
-        if arguments.actual_arg_count >= 2 {
-            if let Some(Value::Object(options)) = arguments.readable.get(1) {
-                let key = self.intern_property_key("maxByteLength")?;
-                let maximum = match self.get_property_in_realm(realm, options, &key)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if !matches!(maximum, Value::Undefined) {
-                    let maximum = match self.native_to_int64(realm, &maximum)? {
-                        NativeConversion::Value(maximum) => maximum,
-                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    // Preserve QuickJS's unsigned/signed C comparison. A
-                    // negative maximum is converted to a huge u64 and reaches
-                    // the post-newTarget implementation-limit check below.
-                    if maximum > MAX_SAFE_INTEGER_I64 || length > maximum as u64 {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Range,
-                            "invalid array buffer max length",
-                        )?));
-                    }
-                    max_byte_length = Some(maximum as u64);
-                }
-            }
-        }
-
-        // `js_create_from_ctor` precedes QuickJS's implementation-limit and
-        // backing allocation checks, making newTarget.prototype observable.
-        let prototype =
-            match self.shared_array_buffer_prototype_from_new_target(realm, new_target)? {
-                NativeConversion::Value(prototype) => prototype,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-
+            super::array_buffer::BufferConstructorStep::start_shared(
+                self,
+                realm,
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+    pub(in crate::engine::builtins) fn finish_shared_array_buffer_construction(
+        &self,
+        realm: ContextId,
+        prototype: ObjectRef,
+        length: u64,
+        max_byte_length: Option<u64>,
+    ) -> Result<Completion, RuntimeError> {
         if length > u64::from(MAX_SHARED_ARRAY_BUFFER_BYTE_LENGTH) {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -345,26 +310,23 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "SharedArrayBuffer.prototype.grow received a constructor invocation",
-            ));
-        };
-        // QuickJS performs the exact brand check before any observable length
-        // coercion, but performs coercion before checking growability.
-        let object = match self.require_shared_array_buffer(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let new_length = match self.native_to_int64(
+        super::array_buffer::mutation::finish(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "SharedArrayBuffer grow argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(length) => length,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+            super::array_buffer::BufferMutationStep::start_grow(
+                self,
+                realm,
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+    pub(in crate::engine::builtins) fn finish_shared_array_buffer_grow(
+        &self,
+        realm: ContextId,
+        object: ObjectRef,
+        new_length: i64,
+    ) -> Result<Completion, RuntimeError> {
         let current = self.shared_array_buffer_snapshot(&object)?;
         let Some(maximum) = current.max_byte_length else {
             return Ok(Completion::Throw(self.new_native_error(
@@ -400,88 +362,64 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "SharedArrayBuffer.prototype.slice received a constructor invocation",
-            ));
-        };
-        let source = match self.require_shared_array_buffer(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        super::array_buffer::slice::finish(
+            self,
+            realm,
+            super::array_buffer::slice::BufferSliceStep::start(
+                self,
+                realm,
+                super::array_buffer::slice::BufferSliceKind::Shared,
+                &invocation,
+                arguments,
+            )?,
+        )
+    }
+
+    pub(in crate::engine::builtins) fn shared_array_buffer_slice_source(
+        &self,
+        realm: ContextId,
+        value: Value,
+    ) -> Result<NativeConversion<(ObjectRef, i64)>, RuntimeError> {
+        let source = match self.require_shared_array_buffer(realm, value)? {
+            NativeConversion::Value(source) => source,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         let initial = self.shared_array_buffer_snapshot(&source)?;
-        let length = i64::from(initial.byte_length);
-        let start = match self.native_to_int64_clamp(
-            realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "SharedArrayBuffer slice start argument was not padded",
-            ))?,
-            0,
-            length,
-            length,
-        )? {
-            NativeConversion::Value(start) => start,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let end = if matches!(arguments.readable.get(1), Some(Value::Undefined)) {
-            length
-        } else {
-            match self.native_to_int64_clamp(
-                realm,
-                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                    "SharedArrayBuffer slice end argument was not padded",
-                ))?,
-                0,
-                length,
-                length,
-            )? {
-                NativeConversion::Value(end) => end,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        Ok(NativeConversion::Value((
+            source,
+            i64::from(initial.byte_length),
+        )))
+    }
+    pub(in crate::engine::builtins) fn allocate_shared_array_buffer_slice(
+        &self,
+        realm: ContextId,
+        new_length: u32,
+    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
+        let prototype = self.shared_array_buffer_default_prototype(realm)?;
+        let handle = match SharedBufferHandle::new(new_length, None) {
+            Ok(handle) => handle,
+            Err(SharedMemoryError::Allocation) => {
+                return Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "out of memory",
+                )?));
             }
+            Err(error) => return Err(shared_memory_runtime_error(error)),
         };
-        let new_length = u32::try_from((end - start).max(0)).map_err(|_| {
-            RuntimeError::Invariant("validated SharedArrayBuffer slice length overflowed u32")
-        })?;
+        Ok(NativeConversion::Value(
+            self.new_shared_array_buffer_from_handle(&prototype, handle)?,
+        ))
+    }
 
-        let species = match self.shared_array_buffer_species_constructor(realm, &source)? {
-            NativeConversion::Value(species) => species,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let target = if let Some(constructor) = species {
-            match self.construct_constructor_internal(
-                realm,
-                &constructor,
-                &constructor,
-                &[Value::Int(i32::try_from(new_length).expect(
-                    "SharedArrayBuffer slice length is bounded by i32::MAX",
-                ))],
-            )? {
-                Completion::Return(Value::Object(object)) => object,
-                Completion::Return(_) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "SharedArrayBuffer object expected",
-                    )?));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        } else {
-            let prototype = self.shared_array_buffer_default_prototype(realm)?;
-            let handle = match SharedBufferHandle::new(new_length, None) {
-                Ok(handle) => handle,
-                Err(SharedMemoryError::Allocation) => {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Internal,
-                        "out of memory",
-                    )?));
-                }
-                Err(error) => return Err(shared_memory_runtime_error(error)),
-            };
-            self.new_shared_array_buffer_from_handle(&prototype, handle)?
-        };
-
+    pub(in crate::engine::builtins) fn finish_shared_array_buffer_slice(
+        &self,
+        realm: ContextId,
+        source: ObjectRef,
+        target: ObjectRef,
+        start: i64,
+        new_length: u32,
+    ) -> Result<Completion, RuntimeError> {
         if target.object_id() == source.object_id() {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -542,57 +480,7 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(target)))
     }
 
-    fn shared_array_buffer_species_constructor(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-    ) -> Result<NativeConversion<Option<ConstructorRef>>, RuntimeError> {
-        let constructor_key = self.intern_property_key("constructor")?;
-        let constructor = match self.get_property_in_realm(realm, object, &constructor_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(constructor, Value::Undefined) {
-            return Ok(NativeConversion::Value(None));
-        }
-        let Value::Object(constructor) = constructor else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let species_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Species));
-        let species = match self.get_property_in_realm(realm, &constructor, &species_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(species, Value::Undefined | Value::Null) {
-            return Ok(NativeConversion::Value(None));
-        }
-        let Value::Object(_) = &species else {
-            return Ok(NativeConversion::Throw(
-                self.new_not_constructor_error(realm, &species)?,
-            ));
-        };
-        self.constructor_from_value(realm, species)
-            .map(|result| match result {
-                NativeConversion::Value(constructor) => NativeConversion::Value(Some(constructor)),
-                NativeConversion::Throw(value) => NativeConversion::Throw(value),
-            })
-    }
-
-    fn shared_array_buffer_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            self.shared_array_buffer_default_prototype(fallback_realm)
-        })
-    }
-
-    fn shared_array_buffer_default_prototype(
+    pub(in crate::engine::builtins) fn shared_array_buffer_default_prototype(
         &self,
         realm: ContextId,
     ) -> Result<ObjectRef, RuntimeError> {
@@ -610,7 +498,7 @@ impl Runtime {
         Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
     }
 
-    fn require_shared_array_buffer(
+    pub(in crate::engine::builtins) fn require_shared_array_buffer(
         &self,
         realm: ContextId,
         value: Value,

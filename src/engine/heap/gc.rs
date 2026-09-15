@@ -1697,6 +1697,7 @@ pub(super) fn generator_activation_edges(activation: &GeneratorActivationData) -
         vm.stack
             .len()
             .saturating_add(activation.arguments.len())
+            .saturating_add(activation.original_arguments.len())
             .saturating_add(activation.locals.len())
             .saturating_add(8),
     );
@@ -1707,6 +1708,7 @@ pub(super) fn generator_activation_edges(activation: &GeneratorActivationData) -
     for value in vm
         .stack
         .iter()
+        .chain(activation.original_arguments.iter())
         .chain(std::iter::once(&vm.this_value))
         .chain(vm.normalized_this.iter())
         .chain(std::iter::once(&vm.new_target))
@@ -2122,6 +2124,7 @@ pub(super) fn generator_activation_atoms(activation: &GeneratorActivationData) -
     let vm = &activation.vm;
     vm.stack
         .iter()
+        .chain(activation.original_arguments.iter())
         .chain(std::iter::once(&vm.this_value))
         .chain(vm.normalized_this.iter())
         .chain(std::iter::once(&vm.new_target))

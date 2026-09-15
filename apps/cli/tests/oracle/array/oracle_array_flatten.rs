@@ -329,18 +329,39 @@ fn array_flatten_recursive_mapper_stack_overflow_is_catchable_without_oracle() {
     let runtime =
         Runtime::new_with_host_services(quickjs_oxide_host::SystemHostServices::default());
     let mut context = runtime.new_context();
+    // Owned callbacks consume logical frames, so the old native-stack ceiling
+    // must not reject this finite chain. Keep the legacy ceiling probe below
+    // for the default VM and exercise a true infinite chain for stack-vm.
+    #[cfg(feature = "stack-vm")]
+    assert_eq!(
+        primitive_value_text(
+            context
+                .eval(
+                    r#"(function(){
+            function nest(count){
+                return [1].flatMap(function(value){return count?nest(count-1):[value]})
+            }
+            return nest(40)[0];
+        })()"#
+                )
+                .unwrap()
+        ),
+        "1",
+    );
+    let count = if cfg!(feature = "stack-vm") { -1 } else { 40 };
     let value = context
-        .eval(
-            r#"(function(){
-                function nest(count){
-                    return [1].flatMap(function(value){return count?nest(count-1):[value]})
-                }
-                try{nest(40);return "missing"}
-                catch(error){return error.name+"|"+error.message}
-            })()"#,
-        )
+        .eval(&format!(
+            r#"(function(){{
+                function nest(count){{
+                    return [1].flatMap(function(value){{return count?nest(count-1):[value]}})
+                }}
+                try{{nest({count});return "missing"}}
+                catch(error){{return error.name+"|"+error.message}}
+            }})()"#,
+        ))
         .expect("recursive Array.flatMap completion stays catchable");
     assert_eq!(primitive_value_text(value), "InternalError|stack overflow",);
+    assert_eq!(primitive_value_text(context.eval("42").unwrap()), "42");
 }
 
 #[test]

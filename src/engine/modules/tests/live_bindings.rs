@@ -403,3 +403,62 @@ fn import_declaration_collisions_match_pinned_quickjs_single_slot_semantics() {
     assert_eq!(snapshot.state, PromiseState::Rejected);
     assert!(matches!(snapshot.result, RawValue::Object(_)));
 }
+#[cfg(all(feature = "stack-vm", feature = "profiling"))]
+#[test]
+fn normal_calls_keep_import_views_readonly_in_the_owned_driver() {
+    use crate::engine::api::profiling::CostProfile;
+    let runtime = Runtime::new();
+    let (loader, _, _) = MapModuleLoader::new([(
+        "pkg/exporter.js",
+        "export let value=1; export function update(){value=42}",
+    )]);
+    let _registration = runtime.set_module_loader(loader);
+    let mut context = runtime.new_context();
+    let module = context
+        .compile_module_with_filename(
+            r#"
+            import {value,update} from './exporter.js';
+            globalThis.readImport=function(){return value};
+            globalThis.writeImport=function(){value=2};
+            globalThis.evalWriteImport=function(){eval('value=3')};
+            globalThis.updateImport=update;
+        "#,
+            "pkg/importer.js",
+        )
+        .unwrap();
+    context.execute_module(&module).unwrap();
+    // Module startup remains a separate S07 entry. Measure only the ordinary
+    // functions and their nested eval entries after the shared cells exist.
+    for (name, expected) in [
+        ("readImport", Some(Value::Int(1))),
+        ("updateImport", Some(Value::Undefined)),
+        ("readImport", Some(Value::Int(42))),
+        ("writeImport", None),
+        ("evalWriteImport", None),
+        ("readImport", Some(Value::Int(42))),
+    ] {
+        let Value::Object(function) = context.eval(name).unwrap() else {
+            panic!("expected function")
+        };
+        let callable = runtime.as_callable(&function).unwrap().unwrap();
+        let profile = CostProfile::start();
+        let result = context.call(&callable, Value::Undefined, &[]);
+        let cost = profile.snapshot();
+        drop(profile);
+        assert_eq!(cost.legacy_dispatches, 0, "{name}: {cost:?}");
+        assert_eq!(cost.owned_bridge_exits, 0, "{name}: {cost:?}");
+        if let Some(expected) = expected {
+            assert_eq!(result.unwrap(), expected, "{name}");
+        } else {
+            assert_eq!(result, Err(RuntimeError::Exception), "{name}");
+            let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+                panic!("expected Error")
+            };
+            let message = runtime.intern_property_key("message").unwrap();
+            assert_eq!(
+                context.get_property(&error, &message).unwrap(),
+                Value::String(JsString::from_static("'value' is read-only"))
+            );
+        }
+    }
+}

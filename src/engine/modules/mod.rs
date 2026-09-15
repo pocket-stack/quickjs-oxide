@@ -7,15 +7,19 @@
 //! included. Script-goal dynamic import shares the same loader, linker,
 //! evaluator, namespace machinery, and top-level-await scheduling.
 
+pub(crate) mod body;
+pub(crate) mod callback;
+pub(crate) mod evaluation;
+pub(crate) mod import;
+pub(crate) mod link;
+
 use crate::engine::api::context::Context;
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::atom::Atom;
 
-use crate::engine::builtins::native::{
-    DynamicImportHandlerKind, ModuleEvaluationKind, NativeFunctionId,
-};
+use crate::engine::builtins::native::{DynamicImportHandlerKind, ModuleEvaluationKind};
 use crate::engine::code::bytecode_publish;
 use crate::engine::code::debug::DebugInfoMode;
 use crate::source::QuickJsSourceLocator;
@@ -37,11 +41,10 @@ use crate::engine::heap::roots::VarRefRoot;
 use crate::engine::heap::runtime::RuntimeState;
 
 use crate::engine::heap::{
-    ContextId, InternalCallableData, ModuleId, ObjectId, PromiseState, PropertySlot,
-    RawModuleEvaluationState, RawModuleInstance, RawModuleLinkRealm, RawModuleLinkStatus,
-    RawModuleNamespaceState, RawModuleRecord, RawModuleRecordBody, RawModuleRef,
-    RawModuleResolutionState, RawModuleTransition, RawPublishedModuleExport,
-    RawPublishedModuleExportTarget, RawValue,
+    ContextId, ModuleId, ObjectId, PropertySlot, RawModuleEvaluationState, RawModuleInstance,
+    RawModuleLinkRealm, RawModuleLinkStatus, RawModuleNamespaceState, RawModuleRecord,
+    RawModuleRecordBody, RawModuleRef, RawModuleResolutionState, RawModuleTransition,
+    RawPublishedModuleExport, RawPublishedModuleExportTarget, RawValue,
 };
 #[cfg(test)]
 use crate::engine::host::HostServices;
@@ -830,7 +833,13 @@ impl Runtime {
                 "stack overflow",
             )?));
         };
-        Ok(ModuleHostCallbackOutcome::Completed(callback(context)))
+        #[cfg(feature = "stack-vm")]
+        let boundary =
+            crate::engine::vm::HostBoundaryGuard::enter(self).map_err(RuntimeError::Engine)?;
+        let result = callback(context);
+        #[cfg(feature = "stack-vm")]
+        boundary.finish(self).map_err(RuntimeError::Engine)?;
+        Ok(ModuleHostCallbackOutcome::Completed(result))
     }
 
     fn propagate_module_host_throw<T>(
@@ -1037,7 +1046,7 @@ impl Runtime {
         Ok(meta)
     }
 
-    fn root_module(&self, raw: RawModuleRef) -> Result<ModuleBytecodeRef, RuntimeError> {
+    pub(crate) fn root_module(&self, raw: RawModuleRef) -> Result<ModuleBytecodeRef, RuntimeError> {
         let name = self.module_record(raw)?.name;
         self.retain_context_handle(raw.cache)?;
         Ok(ModuleBytecodeRef {
@@ -3133,197 +3142,33 @@ impl Runtime {
         })
     }
 
-    fn link_module_dfs(
-        &self,
-        module: RawModuleRef,
-        dfs: &mut ModuleLinkDfs,
-    ) -> Result<(), RuntimeError> {
-        match self.module_record(module)?.link_status {
-            ModuleLinkStatus::Linked => return Ok(()),
-            ModuleLinkStatus::Linking => {
-                return Err(RuntimeError::Invariant(
-                    "module linking was re-entered by the host",
-                ));
-            }
-            ModuleLinkStatus::Poisoned => {
-                return Err(RuntimeError::Invariant(
-                    "module linking previously failed inside the engine",
-                ));
-            }
-            ModuleLinkStatus::Unlinked => {}
-        }
-        let mut frames = vec![self.enter_module_link_dfs(module, dfs)?];
-
-        while !frames.is_empty() {
-            let dependency = {
-                let frame = frames.last_mut().ok_or(RuntimeError::Invariant(
-                    "module link call stack unexpectedly became empty",
-                ))?;
-                let dependency = frame.dependencies.get(frame.next_dependency).cloned();
-                if dependency.is_some() {
-                    frame.next_dependency += 1;
-                }
-                dependency
-            };
-            if let Some(dependency) = dependency {
-                match self.module_record(dependency)?.link_status {
-                    ModuleLinkStatus::Linked => {}
-                    ModuleLinkStatus::Linking => {
-                        let dependency_ancestor = dfs
-                            .entries
-                            .get(&dependency.module)
-                            .map(|entry| entry.ancestor)
-                            .ok_or(RuntimeError::Invariant(
-                                "linking dependency has no DFS entry",
-                            ))?;
-                        let current_id = frames.last().map(|frame| frame.module.module).ok_or(
-                            RuntimeError::Invariant(
-                                "module link call stack unexpectedly became empty",
-                            ),
-                        )?;
-                        let entry = dfs
-                            .entries
-                            .get_mut(&current_id)
-                            .ok_or(RuntimeError::Invariant("linking module lost its DFS entry"))?;
-                        entry.ancestor = entry.ancestor.min(dependency_ancestor);
-                    }
-                    ModuleLinkStatus::Unlinked => {
-                        frames.push(self.enter_module_link_dfs(dependency, dfs)?);
-                    }
-                    ModuleLinkStatus::Poisoned => {
-                        return Err(RuntimeError::Invariant(
-                            "module linking previously failed inside the engine",
-                        ));
-                    }
-                }
-                continue;
-            }
-
-            let frame = frames.pop().ok_or(RuntimeError::Invariant(
-                "module link call stack unexpectedly became empty",
-            ))?;
-            let realm = self
-                .module_record(frame.module)?
-                .link_realm
-                .map(|realm| match realm {
-                    RawModuleLinkRealm::Cache => frame.module.cache,
-                    RawModuleLinkRealm::Other(realm) => realm,
-                })
-                .ok_or(RuntimeError::Invariant(
-                    "instantiated module has no retained link realm",
-                ))?;
-            self.validate_module_indirect_exports(frame.module, &frame.dependencies, realm)?;
-            self.link_module_imports(frame.module, &frame.dependencies, realm)?;
-            let completion = match self.create_module_callable(frame.module, realm)? {
-                Some(callable) => {
-                    match self.call_internal(realm, &callable, Value::Bool(true), &[]) {
-                        Ok(completion) => completion,
-                        Err(error) => {
-                            self.transition_module_record(
-                                frame.module,
-                                RawModuleTransition::PoisonLink,
-                            )?;
-                            return Err(error);
-                        }
-                    }
-                }
-                None => Completion::Return(Value::Undefined),
-            };
-            match completion {
-                Completion::Return(Value::Undefined) => {
-                    let entry = dfs
-                        .entries
-                        .get(&frame.module.module)
-                        .copied()
-                        .ok_or(RuntimeError::Invariant("linked module lost its DFS entry"))?;
-                    if entry.index == entry.ancestor {
-                        loop {
-                            let member = *dfs.stack.last().ok_or(RuntimeError::Invariant(
-                                "module link SCC stack underflow",
-                            ))?;
-                            let member = RawModuleRef {
-                                cache: frame.module.cache,
-                                module: member,
-                            };
-                            if self.module_record(member)?.link_status != ModuleLinkStatus::Linking
-                            {
-                                return Err(RuntimeError::Invariant(
-                                    "module link SCC contained a non-linking member",
-                                ));
-                            }
-                            self.transition_module_record(member, RawModuleTransition::FinishLink)?;
-                            let popped = dfs.stack.pop().ok_or(RuntimeError::Invariant(
-                                "module link SCC stack underflow after publication",
-                            ))?;
-                            if popped != member.module {
-                                return Err(RuntimeError::Invariant(
-                                    "module link SCC stack changed during record publication",
-                                ));
-                            }
-                            if member.module == frame.module.module {
-                                break;
-                            }
-                        }
-                    }
-                }
-                Completion::Return(_) => {
-                    self.transition_module_record(frame.module, RawModuleTransition::PoisonLink)?;
-                    return Err(RuntimeError::Invariant(
-                        "module link entry returned a non-undefined value",
-                    ));
-                }
-                Completion::Throw(exception) => {
-                    self.set_pending_exception(exception)?;
-                    return Err(RuntimeError::Exception);
-                }
-            }
-
-            if self.module_record(frame.module)?.link_status == ModuleLinkStatus::Linking {
-                let dependency_ancestor = dfs
-                    .entries
-                    .get(&frame.module.module)
-                    .map(|entry| entry.ancestor)
-                    .ok_or(RuntimeError::Invariant(
-                        "linking dependency has no DFS entry",
-                    ))?;
-                if let Some(parent) = frames.last() {
-                    let entry = dfs
-                        .entries
-                        .get_mut(&parent.module.module)
-                        .ok_or(RuntimeError::Invariant("linking module lost its DFS entry"))?;
-                    entry.ancestor = entry.ancestor.min(dependency_ancestor);
-                }
-            }
-        }
-        if !dfs.stack.is_empty() {
-            return Err(RuntimeError::Invariant(
-                "successful module linking retained an SCC stack",
-            ));
-        }
-        Ok(())
-    }
-
     pub(crate) fn link_module_graph(
         &self,
         module: RawModuleRef,
         initiating_realm: ContextId,
     ) -> Result<(), RuntimeError> {
-        self.preflight_module_graph_for_link(module)?;
-        self.prepare_module_instance(module, initiating_realm)?;
-        let mut dfs = ModuleLinkDfs::new();
-        let result = self.link_module_dfs(module, &mut dfs);
-        if result.is_err() {
-            for id in dfs.stack {
-                let member = RawModuleRef {
-                    cache: module.cache,
-                    module: id,
-                };
-                if self.module_record(member)?.link_status == ModuleLinkStatus::Linking {
-                    self.transition_module_record(member, RawModuleTransition::ResetLink)?;
+        let step = link::LinkStep::start(self, module, initiating_realm)?;
+        #[cfg(feature = "stack-vm")]
+        {
+            let completion = crate::engine::vm::execute_root(
+                self.clone(),
+                initiating_realm,
+                crate::engine::vm::RootOperation::ModuleLink(step),
+            )
+            .map_err(RuntimeError::Engine)?;
+            match completion {
+                Completion::Return(Value::Undefined) => Ok(()),
+                Completion::Throw(value) => {
+                    self.set_pending_exception(value)?;
+                    Err(RuntimeError::Exception)
                 }
+                _ => Err(RuntimeError::Invariant(
+                    "module link entry returned a non-undefined value",
+                )),
             }
         }
-        result
+        #[cfg(not(feature = "stack-vm"))]
+        link::finish(self, step)
     }
 
     fn enter_module_evaluation_dfs(
@@ -3370,43 +3215,6 @@ impl Runtime {
         })
     }
 
-    /// Execute a source-text module whose graph has no pending async work.
-    /// Every module root is async bytecode in QuickJS, so even this synchronous
-    /// path explicitly enters the async driver and inspects its returned
-    /// Promise. A pending result here is an invariant: modules with authored
-    /// TLA are started by `execute_async_module_body` instead.
-    fn execute_source_text_module_body(
-        &self,
-        realm: ContextId,
-        callable: &CallableRef,
-    ) -> Result<Completion, RuntimeError> {
-        let completion = self.call_internal(realm, callable, Value::Undefined, &[])?;
-        let Completion::Return(Value::Object(promise)) = completion else {
-            return match completion {
-                Completion::Throw(_) => Err(RuntimeError::Invariant(
-                    "async module callable threw instead of returning a Promise",
-                )),
-                Completion::Return(_) => Err(RuntimeError::Invariant(
-                    "async module callable returned a non-Promise",
-                )),
-            };
-        };
-        let snapshot = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .promise_snapshot(promise.object_id())?;
-        let result = self.root_raw_value(&snapshot.result)?;
-        match snapshot.state {
-            PromiseState::Fulfilled => Ok(Completion::Return(result)),
-            PromiseState::Rejected => Ok(Completion::Throw(result)),
-            PromiseState::Pending => Err(RuntimeError::Invariant(
-                "synchronous module body retained a pending Promise",
-            )),
-        }
-    }
-
     fn next_module_async_evaluation_order(&self) -> Result<u64, RuntimeError> {
         let mut state = self.0.state.borrow_mut();
         let order = state.next_module_async_evaluation_order;
@@ -3430,80 +3238,6 @@ impl Runtime {
         ))
     }
 
-    /// Start one authored TLA module through the existing AsyncFunction
-    /// driver and attach QuickJS-style module completion reactions. The full
-    /// private Promise-then path intentionally performs species lookup and
-    /// allocates its discarded result capability.
-    fn execute_async_module_body(
-        &self,
-        evaluation_realm: ContextId,
-        module: RawModuleRef,
-    ) -> Result<(), RuntimeError> {
-        let callable = self.module_callable(module)?;
-        let completion = self.call_internal(evaluation_realm, &callable, Value::Undefined, &[])?;
-        let Completion::Return(Value::Object(promise)) = completion else {
-            return Err(RuntimeError::Invariant(
-                "async module callable did not return a Promise",
-            ));
-        };
-        let make_handler = |kind| {
-            self.new_internal_promise_function(
-                evaluation_realm,
-                NativeFunctionId::ModuleEvaluation(kind),
-                1,
-                0,
-                InternalCallableData::ModuleEvaluation { module, kind },
-            )
-        };
-        let fulfill = make_handler(ModuleEvaluationKind::Fulfill)?;
-        let reject = make_handler(ModuleEvaluationKind::Reject)?;
-        match self.attach_module_evaluation_handlers(
-            evaluation_realm,
-            &promise,
-            &fulfill,
-            &reject,
-        )? {
-            NativeConversion::Value(()) => Ok(()),
-            NativeConversion::Throw(reason) => {
-                // QuickJS discards this abrupt result and leaves the module
-                // pending. Preserve its current exception slot for the host.
-                self.set_pending_exception(reason)
-            }
-        }
-    }
-
-    fn execute_module_body_synchronously(
-        &self,
-        evaluation_realm: ContextId,
-        module: RawModuleRef,
-    ) -> Result<Completion, RuntimeError> {
-        let record = self.module_record(module)?;
-        match &record.body {
-            ModuleRecordBody::SourceText { .. } => {
-                let callable = self.module_callable(module)?;
-                self.execute_source_text_module_body(evaluation_realm, &callable)
-            }
-            ModuleRecordBody::Json { default_value } => {
-                let slot = record
-                    .instance
-                    .as_ref()
-                    .and_then(|instance| instance.slots.first())
-                    .and_then(|slot| *slot)
-                    .ok_or(RuntimeError::Invariant(
-                        "linked JSON module has no default live cell",
-                    ))?;
-                let slot = VarRefRoot::from_borrowed_handle(self.clone(), slot)?;
-                let default_value = self.root_raw_value(default_value)?;
-                self.write_var_ref(&slot, default_value)?;
-                Ok(Completion::Return(Value::Undefined))
-            }
-            ModuleRecordBody::Parsing => Err(RuntimeError::Invariant(
-                "module execution reached a parse-in-progress record",
-            )),
-            ModuleRecordBody::Aborted => Err(RuntimeError::AbortedModule),
-        }
-    }
-
     fn module_evaluation_settler(
         &self,
         module: RawModuleRef,
@@ -3522,74 +3256,6 @@ impl Runtime {
                 ))
             })
             .transpose()
-    }
-
-    fn settle_module_evaluation_capability(
-        &self,
-        realm: ContextId,
-        module: RawModuleRef,
-        kind: ModuleEvaluationKind,
-        value: Value,
-    ) -> Result<(), RuntimeError> {
-        let Some(target) = self.module_evaluation_settler(module, kind)? else {
-            return Ok(());
-        };
-        let _ = self.call_internal(realm, &target, Value::Undefined, &[value])?;
-        Ok(())
-    }
-
-    fn reject_async_module_ancestors(
-        &self,
-        realm: ContextId,
-        module: RawModuleRef,
-        reason: Value,
-    ) -> Result<(), RuntimeError> {
-        self.validate_value_domain(&reason, "async module rejection")?;
-        let raw_reason = self.raw_property_value(&reason)?;
-        let mut pending = vec![module.module];
-        while let Some(module_id) = pending.pop() {
-            let current = RawModuleRef {
-                cache: module.cache,
-                module: module_id,
-            };
-            let record = self.module_record(current)?;
-            match record.evaluation {
-                ModuleEvaluationState::Errored(_) => continue,
-                ModuleEvaluationState::EvaluatingAsync => {}
-                _ => {
-                    return Err(RuntimeError::Invariant(
-                        "async module rejection reached an inactive ancestor",
-                    ));
-                }
-            }
-            let parents = record.async_parent_modules;
-            let mut state = self.0.state.borrow_mut();
-            let retained_atoms = match raw_reason {
-                RawValue::Symbol(atom) => Self::retain_module_atoms(&mut state, vec![atom])?,
-                _ => Vec::new(),
-            };
-            if let Err(error) = state
-                .heap
-                .publish_loaded_module_async_error(current, raw_reason.clone())
-            {
-                state.release_atoms(retained_atoms)?;
-                return Err(error.into());
-            }
-            drop(state);
-
-            // QuickJS makes this module observably Errored, rejects its own
-            // evaluation capability, and only then recursively visits parents.
-            // Keep that per-node order so a reentrant host rejection tracker
-            // cannot observe ancestors changing ahead of the reference engine.
-            self.settle_module_evaluation_capability(
-                realm,
-                current,
-                ModuleEvaluationKind::Reject,
-                reason.clone(),
-            )?;
-            pending.extend(parents.iter().rev().copied());
-        }
-        Ok(())
     }
 
     fn gather_available_module_ancestors(
@@ -3660,63 +3326,6 @@ impl Runtime {
         Ok(ready)
     }
 
-    fn fulfill_async_module(
-        &self,
-        realm: ContextId,
-        module: RawModuleRef,
-    ) -> Result<(), RuntimeError> {
-        match self.module_record(module)?.evaluation {
-            ModuleEvaluationState::Errored(_) => return Ok(()),
-            ModuleEvaluationState::EvaluatingAsync => {}
-            _ => {
-                return Err(RuntimeError::Invariant(
-                    "async module fulfillment reached an inactive module",
-                ));
-            }
-        }
-        self.transition_module_record(module, RawModuleTransition::FinishAsyncEvaluation)?;
-        self.settle_module_evaluation_capability(
-            realm,
-            module,
-            ModuleEvaluationKind::Fulfill,
-            Value::Undefined,
-        )?;
-
-        for ancestor in self.gather_available_module_ancestors(module)? {
-            let record = self.module_record(ancestor)?;
-            if matches!(record.evaluation, ModuleEvaluationState::Errored(_)) {
-                continue;
-            }
-            if record.has_top_level_await {
-                self.execute_async_module_body(realm, ancestor)?;
-                continue;
-            }
-            match self.execute_module_body_synchronously(realm, ancestor)? {
-                Completion::Return(Value::Undefined) => {
-                    self.transition_module_record(
-                        ancestor,
-                        RawModuleTransition::FinishAsyncEvaluation,
-                    )?;
-                    self.settle_module_evaluation_capability(
-                        realm,
-                        ancestor,
-                        ModuleEvaluationKind::Fulfill,
-                        Value::Undefined,
-                    )?;
-                }
-                Completion::Throw(reason) => {
-                    self.reject_async_module_ancestors(realm, ancestor, reason)?;
-                }
-                Completion::Return(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "module evaluation returned a non-undefined value",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn call_module_evaluation_callback(
         &self,
         realm: ContextId,
@@ -3724,531 +3333,24 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "module evaluation callback received a constructor invocation",
-            ));
-        };
-        let argument = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "module evaluation callback argv was not padded",
-            ))?;
-        let active = self.active_function()?;
-        let internal = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .native_internal_callable(active.object_id())?
-            .ok_or(RuntimeError::Invariant(
-                "module evaluation callback has no internal state",
-            ))?;
-        let InternalCallableData::ModuleEvaluation { module, kind } = internal else {
-            return Err(RuntimeError::Invariant(
-                "module evaluation callback has the wrong internal state",
-            ));
-        };
-        if kind != target_kind {
-            return Err(RuntimeError::Invariant(
-                "module evaluation callback target disagrees with its capture",
-            ));
-        }
-        match target_kind {
-            ModuleEvaluationKind::Fulfill => self.fulfill_async_module(realm, module)?,
-            ModuleEvaluationKind::Reject => {
-                self.reject_async_module_ancestors(realm, module, argument)?;
-            }
-        }
-        Ok(Completion::Return(Value::Undefined))
+        callback::CallbackStep::start(
+            self,
+            realm,
+            crate::engine::builtins::native::NativeFunctionId::ModuleEvaluation(target_kind),
+            invocation,
+            arguments,
+        )?
+        .finish(self, realm)
     }
 
-    fn evaluate_module_dfs(
-        &self,
-        evaluation_realm: ContextId,
-        module: RawModuleRef,
-        dfs: &mut ModuleEvaluationDfs,
-    ) -> Result<(), RuntimeError> {
-        let initial_state = {
-            let record = self.module_record(module)?;
-            match &record.evaluation {
-                ModuleEvaluationState::Unevaluated => ModuleEvaluationVisit::Unevaluated,
-                ModuleEvaluationState::Evaluating => ModuleEvaluationVisit::Evaluating,
-                ModuleEvaluationState::EvaluatingAsync => ModuleEvaluationVisit::EvaluatingAsync,
-                ModuleEvaluationState::Evaluated => ModuleEvaluationVisit::Evaluated,
-                ModuleEvaluationState::Errored(exception) => {
-                    ModuleEvaluationVisit::Errored(self.root_raw_value(exception)?)
-                }
-                ModuleEvaluationState::Poisoned => ModuleEvaluationVisit::Poisoned,
-            }
-        };
-        match initial_state {
-            ModuleEvaluationVisit::EvaluatingAsync | ModuleEvaluationVisit::Evaluated => {
-                return Ok(());
-            }
-            ModuleEvaluationVisit::Evaluating => {
-                return Err(RuntimeError::Invariant(
-                    "module evaluation was re-entered by the host",
-                ));
-            }
-            ModuleEvaluationVisit::Errored(exception) => {
-                if dfs.exception.replace(exception).is_some() {
-                    return Err(RuntimeError::Invariant(
-                        "module evaluation recorded more than one exception",
-                    ));
-                }
-                return Err(RuntimeError::Exception);
-            }
-            ModuleEvaluationVisit::Poisoned => {
-                return Err(RuntimeError::Invariant(
-                    "module evaluation previously failed inside the engine",
-                ));
-            }
-            ModuleEvaluationVisit::Unevaluated => {}
-        }
-        let mut frames = vec![self.enter_module_evaluation_dfs(module, dfs)?];
-
-        while !frames.is_empty() {
-            let dependency = {
-                let frame = frames.last_mut().ok_or(RuntimeError::Invariant(
-                    "module evaluation call stack unexpectedly became empty",
-                ))?;
-                let dependency = frame.dependencies.get(frame.next_dependency).cloned();
-                if dependency.is_some() {
-                    frame.next_dependency += 1;
-                }
-                dependency
-            };
-            if let Some(dependency) = dependency {
-                let dependency_state = {
-                    let record = self.module_record(dependency)?;
-                    match &record.evaluation {
-                        ModuleEvaluationState::Unevaluated => ModuleEvaluationVisit::Unevaluated,
-                        ModuleEvaluationState::Evaluating => ModuleEvaluationVisit::Evaluating,
-                        ModuleEvaluationState::EvaluatingAsync => {
-                            ModuleEvaluationVisit::EvaluatingAsync
-                        }
-                        ModuleEvaluationState::Evaluated => ModuleEvaluationVisit::Evaluated,
-                        ModuleEvaluationState::Errored(exception) => {
-                            ModuleEvaluationVisit::Errored(self.root_raw_value(exception)?)
-                        }
-                        ModuleEvaluationState::Poisoned => ModuleEvaluationVisit::Poisoned,
-                    }
-                };
-                let async_dependency = match dependency_state {
-                    ModuleEvaluationVisit::Evaluated => {
-                        let cycle_root = self
-                            .module_record(dependency)?
-                            .evaluation_cycle_root
-                            .ok_or(RuntimeError::Invariant(
-                                "completed dependency has no cycle root",
-                            ))?;
-                        Some(RawModuleRef {
-                            cache: dependency.cache,
-                            module: cycle_root,
-                        })
-                    }
-                    ModuleEvaluationVisit::EvaluatingAsync => {
-                        let cycle_root = self
-                            .module_record(dependency)?
-                            .evaluation_cycle_root
-                            .ok_or(RuntimeError::Invariant(
-                                "async dependency has no cycle root",
-                            ))?;
-                        Some(RawModuleRef {
-                            cache: dependency.cache,
-                            module: cycle_root,
-                        })
-                    }
-                    ModuleEvaluationVisit::Evaluating => {
-                        let dependency_ancestor = dfs
-                            .entries
-                            .get(&dependency.module)
-                            .map(|entry| entry.ancestor)
-                            .ok_or(RuntimeError::Invariant(
-                                "evaluating dependency has no DFS entry",
-                            ))?;
-                        let current_id = frames.last().map(|frame| frame.module.module).ok_or(
-                            RuntimeError::Invariant(
-                                "module evaluation call stack unexpectedly became empty",
-                            ),
-                        )?;
-                        let entry =
-                            dfs.entries
-                                .get_mut(&current_id)
-                                .ok_or(RuntimeError::Invariant(
-                                    "evaluating module lost its DFS entry",
-                                ))?;
-                        entry.ancestor = entry.ancestor.min(dependency_ancestor);
-                        Some(dependency)
-                    }
-                    ModuleEvaluationVisit::Unevaluated => {
-                        // Revisit this exact dependency after its child frame
-                        // returns. InnerModuleEvaluation must then canonicalize
-                        // its cycle root and register any async blocker; merely
-                        // advancing past the edge loses that post-child phase.
-                        let parent = frames.last_mut().ok_or(RuntimeError::Invariant(
-                            "module evaluation call stack unexpectedly became empty",
-                        ))?;
-                        parent.next_dependency = parent.next_dependency.checked_sub(1).ok_or(
-                            RuntimeError::Invariant(
-                                "module dependency cursor underflow before child evaluation",
-                            ),
-                        )?;
-                        frames.push(self.enter_module_evaluation_dfs(dependency, dfs)?);
-                        continue;
-                    }
-                    ModuleEvaluationVisit::Errored(exception) => {
-                        if dfs.exception.replace(exception).is_some() {
-                            return Err(RuntimeError::Invariant(
-                                "module evaluation recorded more than one exception",
-                            ));
-                        }
-                        return Err(RuntimeError::Exception);
-                    }
-                    ModuleEvaluationVisit::Poisoned => {
-                        return Err(RuntimeError::Invariant(
-                            "module evaluation previously failed inside the engine",
-                        ));
-                    }
-                };
-                if let Some(async_dependency) = async_dependency {
-                    let dependency_record = self.module_record(async_dependency)?;
-                    if matches!(
-                        dependency_record.evaluation,
-                        ModuleEvaluationState::Errored(_)
-                    ) {
-                        let ModuleEvaluationState::Errored(exception) =
-                            dependency_record.evaluation
-                        else {
-                            unreachable!();
-                        };
-                        let exception = self.root_raw_value(&exception)?;
-                        if dfs.exception.replace(exception).is_some() {
-                            return Err(RuntimeError::Invariant(
-                                "module evaluation recorded more than one exception",
-                            ));
-                        }
-                        return Err(RuntimeError::Exception);
-                    }
-                    if dependency_record.async_evaluation_order.is_some() {
-                        let parent = frames.last().map(|frame| frame.module).ok_or(
-                            RuntimeError::Invariant(
-                                "module evaluation call stack unexpectedly became empty",
-                            ),
-                        )?;
-                        self.0
-                            .state
-                            .borrow_mut()
-                            .heap
-                            .add_loaded_module_async_dependency(async_dependency, parent)?;
-                    }
-                }
-                continue;
-            }
-
-            let frame = frames.pop().ok_or(RuntimeError::Invariant(
-                "module evaluation call stack unexpectedly became empty",
-            ))?;
-            let record = self.module_record(frame.module)?;
-            let completion = if record.pending_async_dependencies != 0 {
-                let order = self.next_module_async_evaluation_order()?;
-                self.transition_module_record(
-                    frame.module,
-                    RawModuleTransition::BeginAsyncEvaluation { order },
-                )?;
-                Completion::Return(Value::Undefined)
-            } else if record.has_top_level_await {
-                let order = self.next_module_async_evaluation_order()?;
-                self.transition_module_record(
-                    frame.module,
-                    RawModuleTransition::BeginAsyncEvaluation { order },
-                )?;
-                self.execute_async_module_body(evaluation_realm, frame.module)?;
-                Completion::Return(Value::Undefined)
-            } else {
-                self.execute_module_body_synchronously(evaluation_realm, frame.module)?
-            };
-            match completion {
-                Completion::Return(Value::Undefined) => {
-                    let entry = dfs.entries.get(&frame.module.module).copied().ok_or(
-                        RuntimeError::Invariant("evaluated module lost its DFS entry"),
-                    )?;
-                    if entry.index == entry.ancestor {
-                        loop {
-                            let member = *dfs.stack.last().ok_or(RuntimeError::Invariant(
-                                "module evaluation SCC stack underflow",
-                            ))?;
-                            let member = RawModuleRef {
-                                cache: frame.module.cache,
-                                module: member,
-                            };
-                            let is_evaluating = matches!(
-                                self.module_record(member)?.evaluation,
-                                ModuleEvaluationState::Evaluating
-                            );
-                            if !is_evaluating {
-                                return Err(RuntimeError::Invariant(
-                                    "module evaluation SCC contained a non-evaluating member",
-                                ));
-                            }
-                            self.transition_module_record(
-                                member,
-                                RawModuleTransition::FinishEvaluation {
-                                    cycle_root: frame.module.module,
-                                },
-                            )?;
-                            let popped = dfs.stack.pop().ok_or(RuntimeError::Invariant(
-                                "module evaluation SCC stack underflow after publication",
-                            ))?;
-                            if popped != member.module {
-                                return Err(RuntimeError::Invariant(
-                                    "module evaluation SCC stack changed during record publication",
-                                ));
-                            }
-                            if member.module == frame.module.module {
-                                break;
-                            }
-                        }
-                    }
-                }
-                Completion::Return(_) => {
-                    self.transition_module_record(
-                        frame.module,
-                        RawModuleTransition::PoisonEvaluation,
-                    )?;
-                    return Err(RuntimeError::Invariant(
-                        "module evaluation returned a non-undefined value",
-                    ));
-                }
-                Completion::Throw(exception) => {
-                    if dfs.exception.replace(exception).is_some() {
-                        return Err(RuntimeError::Invariant(
-                            "module evaluation recorded more than one exception",
-                        ));
-                    }
-                    return Err(RuntimeError::Exception);
-                }
-            }
-
-            let still_evaluating = matches!(
-                self.module_record(frame.module)?.evaluation,
-                ModuleEvaluationState::Evaluating
-            );
-            if still_evaluating {
-                let dependency_ancestor = dfs
-                    .entries
-                    .get(&frame.module.module)
-                    .map(|entry| entry.ancestor)
-                    .ok_or(RuntimeError::Invariant(
-                        "evaluating dependency has no DFS entry",
-                    ))?;
-                if let Some(parent) = frames.last() {
-                    let entry = dfs.entries.get_mut(&parent.module.module).ok_or(
-                        RuntimeError::Invariant("evaluating module lost its DFS entry"),
-                    )?;
-                    entry.ancestor = entry.ancestor.min(dependency_ancestor);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn evaluate_module_graph(
-        &self,
-        evaluation_realm: ContextId,
-        module: RawModuleRef,
-    ) -> Result<Value, RuntimeError> {
-        let mut dfs = ModuleEvaluationDfs::new();
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.evaluate_module_dfs(evaluation_realm, module, &mut dfs)
-        }));
-        let result = match outcome {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poison_active_module_evaluations(module, &dfs.stack)
-                    .unwrap_or_else(|error| {
-                        panic!("module evaluation panic cleanup failed: {error}")
-                    });
-                resume_unwind(payload);
-            }
-        };
-        match result {
-            Ok(()) => {
-                if !dfs.stack.is_empty() || dfs.exception.is_some() {
-                    return Err(RuntimeError::Invariant(
-                        "successful module evaluation retained DFS state",
-                    ));
-                }
-                Ok(Value::Undefined)
-            }
-            Err(RuntimeError::Exception) => {
-                let exception = dfs.exception.take().ok_or(RuntimeError::Invariant(
-                    "module evaluation exception had no cached value",
-                ))?;
-                if let Err(error) = self.cache_module_evaluation_exception(
-                    module.cache,
-                    module.module,
-                    &dfs.stack,
-                    &exception,
-                ) {
-                    self.poison_active_module_evaluations(module, &dfs.stack)?;
-                    return Err(error);
-                }
-                drop(exception);
-                Err(RuntimeError::Exception)
-            }
-            Err(error) => {
-                self.poison_active_module_evaluations(module, &dfs.stack)?;
-                Err(error)
-            }
-        }
-    }
-
-    /// Return the Context-owned Promise for one module evaluation attempt.
-    ///
-    /// Pinned QuickJS publishes `m->promise` before executing authored module
-    /// code.  Static execution and dynamic import both enter through this
-    /// helper so a cache hit observes the same Promise identity, settlement,
-    /// and rejection-tracker history regardless of which API evaluated the
-    /// record first. Async SCCs retain the capability in their cycle root and
-    /// settle it later from the module completion reaction jobs.
+    /// Return the cache-owned Promise, published before any authored body runs.
     pub(crate) fn evaluate_module_promise(
         &self,
         requested_module: RawModuleRef,
         initiating_realm: ContextId,
     ) -> Result<ObjectRef, RuntimeError> {
-        let requested_record = self.module_record(requested_module)?;
-        let module =
-            match requested_record.evaluation {
-                ModuleEvaluationState::EvaluatingAsync
-                | ModuleEvaluationState::Evaluated
-                | ModuleEvaluationState::Errored(_) => RawModuleRef {
-                    cache: requested_module.cache,
-                    module: requested_record.evaluation_cycle_root.ok_or(
-                        RuntimeError::Invariant("completed module evaluation has no cycle root"),
-                    )?,
-                },
-                ModuleEvaluationState::Unevaluated => requested_module,
-                ModuleEvaluationState::Evaluating => {
-                    return Err(RuntimeError::Invariant(
-                        "module evaluation Promise was requested during evaluation",
-                    ));
-                }
-                ModuleEvaluationState::Poisoned => {
-                    return Err(RuntimeError::Invariant(
-                        "module evaluation previously failed inside the engine",
-                    ));
-                }
-            };
-        let record = self.module_record(module)?;
-        if let Some(promise) = record.evaluation_promise {
-            return match record.evaluation {
-                ModuleEvaluationState::EvaluatingAsync
-                | ModuleEvaluationState::Evaluated
-                | ModuleEvaluationState::Errored(_) => {
-                    ObjectRef::from_borrowed_handle(self.clone(), promise).map_err(Into::into)
-                }
-                ModuleEvaluationState::Unevaluated => Err(RuntimeError::Invariant(
-                    "module retained an unsettled Promise before evaluation",
-                )),
-                ModuleEvaluationState::Evaluating => Err(RuntimeError::Invariant(
-                    "module cycle-root Promise was requested during evaluation",
-                )),
-                ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
-                    "module cycle-root evaluation previously failed inside the engine",
-                )),
-            };
-        }
-        if matches!(record.evaluation, ModuleEvaluationState::Evaluating) {
-            return Err(RuntimeError::Invariant(
-                "module cycle-root Promise was requested during evaluation",
-            ));
-        }
-        if matches!(record.evaluation, ModuleEvaluationState::Poisoned) {
-            return Err(RuntimeError::Invariant(
-                "module cycle-root evaluation previously failed inside the engine",
-            ));
-        }
-        if record.link_status != ModuleLinkStatus::Linked {
-            return Err(RuntimeError::Invariant(
-                "module evaluation Promise was requested before linking",
-            ));
-        }
-
-        let capability = self.new_default_promise_capability(initiating_realm)?;
-        let promise = capability.promise.clone();
-        self.0
-            .state
-            .borrow_mut()
-            .heap
-            .publish_loaded_module_evaluation_capability(
-                module,
-                promise.object_id(),
-                capability.resolve.as_object().object_id(),
-                capability.reject.as_object().object_id(),
-            )?;
-
-        let settlement = match record.evaluation {
-            ModuleEvaluationState::Unevaluated => {
-                match self.evaluate_module_graph(initiating_realm, module) {
-                    Ok(Value::Undefined) => match self.module_record(module)?.evaluation {
-                        ModuleEvaluationState::EvaluatingAsync => return Ok(promise),
-                        ModuleEvaluationState::Evaluated => Ok((true, Value::Undefined)),
-                        ModuleEvaluationState::Errored(reason) => {
-                            Ok((false, self.root_raw_value(&reason)?))
-                        }
-                        ModuleEvaluationState::Unevaluated | ModuleEvaluationState::Evaluating => {
-                            Err(RuntimeError::Invariant(
-                                "successful module evaluation retained an active root state",
-                            ))
-                        }
-                        ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
-                            "module evaluation poisoned after a successful graph traversal",
-                        )),
-                    },
-                    Ok(_) => Err(RuntimeError::Invariant(
-                        "module evaluation returned a non-undefined value",
-                    )),
-                    Err(RuntimeError::Exception) => {
-                        let reason =
-                            self.take_pending_exception()?
-                                .ok_or(RuntimeError::Invariant(
-                                    "module evaluation failed without a pending exception",
-                                ))?;
-                        Ok((false, reason))
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            ModuleEvaluationState::Evaluated => Ok((true, Value::Undefined)),
-            ModuleEvaluationState::Errored(reason) => Ok((false, self.root_raw_value(&reason)?)),
-            ModuleEvaluationState::EvaluatingAsync => return Ok(promise),
-            ModuleEvaluationState::Evaluating => Err(RuntimeError::Invariant(
-                "module evaluation Promise was requested during evaluation",
-            )),
-            ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
-                "module evaluation previously failed inside the engine",
-            )),
-        }?;
-        let target = if settlement.0 {
-            &capability.resolve
-        } else {
-            &capability.reject
-        };
-        match self.call_internal(
-            initiating_realm,
-            target,
-            Value::Undefined,
-            std::slice::from_ref(&settlement.1),
-        )? {
-            Completion::Return(_) => Ok(promise),
-            Completion::Throw(_) => Err(RuntimeError::Invariant(
-                "intrinsic module Promise resolving function threw",
-            )),
-        }
+        evaluation::EvaluationStep::start(self, requested_module, initiating_realm)?
+            .finish(self, initiating_realm)
     }
 
     fn dynamic_import_settler(&self, object: ObjectId) -> Result<CallableRef, RuntimeError> {
@@ -4265,7 +3367,12 @@ impl Runtime {
         value: Value,
     ) -> Result<Completion, RuntimeError> {
         let target = self.dynamic_import_settler(target)?;
-        match self.call_internal(realm, &target, Value::Undefined, &[value])? {
+        #[cfg(feature = "stack-vm")]
+        let completion =
+            crate::engine::vm::entry::call(self, realm, &target, Value::Undefined, &[value])?;
+        #[cfg(not(feature = "stack-vm"))]
+        let completion = self.call_internal(realm, &target, Value::Undefined, &[value])?;
+        match completion {
             Completion::Return(_) => Ok(Completion::Return(Value::Undefined)),
             Completion::Throw(_) => Err(RuntimeError::Invariant(
                 "intrinsic dynamic import resolving function threw",
@@ -4322,57 +3429,14 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "dynamic import handler received a constructor invocation",
-            ));
-        };
-        let argument = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "dynamic import handler argv was not padded",
-            ))?;
-        let active = self.active_function()?;
-        let internal = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .native_internal_callable(active.object_id())?
-            .ok_or(RuntimeError::Invariant(
-                "dynamic import handler has no internal state",
-            ))?;
-        let InternalCallableData::DynamicImportHandler {
-            module,
-            resolve,
-            reject,
-            kind,
-        } = internal
-        else {
-            return Err(RuntimeError::Invariant(
-                "dynamic import handler has the wrong internal state",
-            ));
-        };
-        if kind != target_kind || module.cache != realm {
-            return Err(RuntimeError::Invariant(
-                "dynamic import handler target disagrees with its capture",
-            ));
-        }
-
-        match target_kind {
-            DynamicImportHandlerKind::Reject => {
-                self.call_dynamic_import_settler(realm, reject, argument)
-            }
-            DynamicImportHandlerKind::Fulfill => match self.get_module_namespace_raw(module, realm)
-            {
-                Ok(namespace) => {
-                    self.call_dynamic_import_settler(realm, resolve, Value::Object(namespace))
-                }
-                Err(error) => self.reject_dynamic_import_error(realm, reject, error),
-            },
-        }
+        callback::CallbackStep::start(
+            self,
+            realm,
+            crate::engine::builtins::native::NativeFunctionId::DynamicImportHandler(target_kind),
+            invocation,
+            arguments,
+        )?
+        .finish(self, realm)
     }
 
     pub(crate) fn execute_dynamic_import_load_job(

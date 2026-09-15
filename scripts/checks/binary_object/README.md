@@ -52,18 +52,16 @@ mutation cases together. Keep diagnostic identifiers stable. Do not update
 fingerprints merely to silence a failed scan. The reduced-fixture marker still
 requires an out-of-band matching token and cannot bypass checks in a normal root.
 
-## Candidate A migration
+## Source ownership
 
-The checker reads instructions and drafts from `engine/src/engine/code`, runtime values
-from `engine/src/engine/value`, and public Context operations from `engine/src/engine/api`.
+The checker reads instructions and drafts from `src/engine/code`, runtime values
+from `src/engine/value`, and public Context operations from `src/engine/api`.
 Production ownership scans and full mutation fixtures include adapters and
 conformance. Mutation targets name the actual owner; the empty-atom case uses
 `PrimitiveValue`, and Cargo target mutations operate on `Cargo.toml`.
 
-The migration updates the pinned crate routing and the two publication methods'
-crate-only visibility needed by the sibling Context API. The decoder and its
-atom-bearing intermediate types remain private. Frozen test snapshots changed
-only for equivalent Clippy cleanups (`is_none()` and a single binding in place of
-a one-element loop); the raw48 assertions and expected behavior are unchanged.
-These source snapshots are separate from historical Test262 receipts, which
-retain their original source identity.
+When the [VM redesign](../../../docs/primitive-vm-plan.md) moves these owners,
+update the physical layout map, rules and mutation targets together. The decoder
+and its atom-bearing intermediate types remain private. Historical Test262
+receipts retain their original source identity; moving source files does not
+renew those receipts.

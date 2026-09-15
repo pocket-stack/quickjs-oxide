@@ -22,10 +22,12 @@ use crate::engine::object::{
 use crate::engine::value::{JsString, Value};
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 use crate::engine::vm::frames::ActiveFrameGuard;
-use crate::engine::vm::host_bridge::{
-    EncodedVmActivation, RuntimeVmHost, VmActivationResume, VmRunOutcome,
-};
-use crate::engine::vm::{CallInput, Completion, Vm, VmExit, VmSuspendKind};
+use crate::engine::vm::host_bridge::RuntimeVmHost;
+use crate::engine::vm::suspend::{self, EncodedVmActivation, VmActivationResume};
+use crate::engine::vm::{CallInput, Completion, VmSuspendKind};
+
+mod operation;
+pub(crate) use operation::{AsyncResume, AsyncStep};
 
 impl Runtime {
     /// Preserve the async-call Promise boundary when the host stack is already
@@ -129,38 +131,15 @@ impl Runtime {
     pub(crate) fn start_async_bytecode_callable(
         &self,
         caller_realm: ContextId,
-        mut host: RuntimeVmHost,
+        host: RuntimeVmHost,
         input: CallInput,
         active_frame: ActiveFrameGuard,
+        arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        let capability = self.new_default_promise_capability(caller_realm)?;
-        let state = self.allocate_async_function_state(caller_realm, &capability)?;
-        let result = Vm::new().start_published(input, &mut host);
+        let resume = AsyncResume::start(self, caller_realm)?;
+        let outcome = suspend::start(host, input, arguments);
         active_frame.finish()?;
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => {
-                self.complete_async_function_state(&state)?;
-                return Err(RuntimeError::Engine(error));
-            }
-        };
-        match result {
-            VmExit::Complete(completion) => {
-                self.settle_async_function(&state, completion)?;
-            }
-            VmExit::Suspend(mut suspension) => {
-                if suspension.kind() != VmSuspendKind::Await {
-                    self.complete_async_function_state(&state)?;
-                    return Err(RuntimeError::Invariant(
-                        "async function stopped at a non-await suspension",
-                    ));
-                }
-                let awaited = suspension.take_awaited().map_err(RuntimeError::Engine)?;
-                let activation = host.encode_vm_activation(suspension)?;
-                self.suspend_async_function(&state, awaited, activation)?;
-            }
-        }
-        Ok(Completion::Return(Value::Object(capability.promise)))
+        resume.body(outcome?)?.finish(self, caller_realm)
     }
 
     fn allocate_async_function_state(
@@ -189,63 +168,6 @@ impl Runtime {
         state.apply_cleanup(cleanup)?;
         drop(state);
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
-    }
-
-    fn suspend_async_function(
-        &self,
-        state_object: &ObjectRef,
-        awaited: Value,
-        activation: EncodedVmActivation,
-    ) -> Result<(), RuntimeError> {
-        if activation.kind != VmSuspendKind::Await {
-            return Err(RuntimeError::Invariant(
-                "async function published a non-await activation",
-            ));
-        }
-        let driver_realm = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .async_function_state_snapshot(state_object.object_id())?
-            .driver_realm;
-        let promise = match self.promise_resolve_intrinsic(driver_realm, awaited)? {
-            Completion::Return(Value::Object(promise)) => promise,
-            Completion::Return(_) => {
-                self.complete_async_function_state(state_object)?;
-                return Err(RuntimeError::Invariant(
-                    "intrinsic PromiseResolve returned a non-object",
-                ));
-            }
-            Completion::Throw(reason) => {
-                self.settle_async_function(state_object, Completion::Throw(reason))?;
-                return Ok(());
-            }
-        };
-
-        let make_resume = |kind| {
-            self.new_internal_promise_function(
-                driver_realm,
-                NativeFunctionId::AsyncFunctionResume(kind),
-                1,
-                1,
-                InternalCallableData::AsyncFunctionResume {
-                    state: state_object.object_id(),
-                    kind,
-                },
-            )
-        };
-        let fulfill = make_resume(AsyncFunctionResumeKind::Fulfill)?;
-        let reject = make_resume(AsyncFunctionResumeKind::Reject)?;
-        self.store_async_function_activation(state_object, &activation)?;
-        if let Err(error) =
-            self.perform_promise_then_without_capability(driver_realm, &promise, &fulfill, &reject)
-        {
-            self.complete_async_function_state(state_object)?;
-            return Err(error);
-        }
-        drop(activation);
-        Ok(())
     }
 
     fn store_async_function_activation(
@@ -282,38 +204,6 @@ impl Runtime {
         Ok(())
     }
 
-    fn settle_async_function(
-        &self,
-        state_object: &ObjectRef,
-        completion: Completion,
-    ) -> Result<(), RuntimeError> {
-        let snapshot = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .async_function_state_snapshot(state_object.object_id())?;
-        if snapshot.phase == AsyncFunctionPhase::Completed {
-            return Err(RuntimeError::Invariant(
-                "async function settled more than once",
-            ));
-        }
-        let (target, value) = match completion {
-            Completion::Return(value) => (snapshot.outer_resolve, value),
-            Completion::Throw(value) => (snapshot.outer_reject, value),
-        };
-        let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
-        let target = self.as_callable(&target)?.ok_or(RuntimeError::Invariant(
-            "async function outer resolving function is not callable",
-        ))?;
-        self.complete_async_function_state(state_object)?;
-        // The Promise resolving pair is internally infallible at the
-        // JavaScript-completion boundary. Match QuickJS by consuming its
-        // return value; arena/engine failures still propagate.
-        let _ = self.call_internal(snapshot.driver_realm, &target, Value::Undefined, &[value])?;
-        Ok(())
-    }
-
     pub(crate) fn call_async_function_resume(
         &self,
         realm: ContextId,
@@ -321,6 +211,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
+        self.start_async_function_resume(realm, target_kind, invocation, arguments)?
+            .finish(self, realm)
+    }
+
+    pub(crate) fn start_async_function_resume(
+        &self,
+        realm: ContextId,
+        target_kind: AsyncFunctionResumeKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<AsyncStep, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
                 "AsyncFunction resume callback received a constructor invocation",
@@ -371,37 +272,28 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant(
                 "awaiting AsyncFunction has no activation",
             ))?;
-        let rooted = RuntimeVmHost::decode_vm_activation(
+        let rooted = suspend::thaw(
             self.clone(),
             VmSuspendKind::Await,
             realm,
             activation,
             FunctionKind::Async,
         )?;
-        {
+        let cleanup = {
             let mut runtime_state = self.0.state.borrow_mut();
             let (_moved, cleanup) = runtime_state.heap.begin_async_function_resume(state)?;
-            runtime_state.apply_cleanup(cleanup)?;
-        }
+            cleanup
+        };
+        let continuation = AsyncResume::resumed(self, state_object);
+        self.0.state.borrow_mut().apply_cleanup(cleanup)?;
         let resume = match target_kind {
             AsyncFunctionResumeKind::Fulfill => VmActivationResume::AwaitFulfill(argument),
             AsyncFunctionResumeKind::Reject => VmActivationResume::AwaitReject(argument),
         };
-        let outcome = match rooted.run(self, resume) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.complete_async_function_state(&state_object)?;
-                return Err(error);
-            }
-        };
-        match outcome {
-            VmRunOutcome::Complete(completion) => {
-                self.settle_async_function(&state_object, completion)?;
-            }
-            VmRunOutcome::Suspend { value, activation } => {
-                self.suspend_async_function(&state_object, value, *activation)?;
-            }
-        }
-        Ok(Completion::Return(Value::Undefined))
+        Ok(AsyncStep::request_run(
+            Box::new(rooted),
+            resume,
+            continuation,
+        ))
     }
 }

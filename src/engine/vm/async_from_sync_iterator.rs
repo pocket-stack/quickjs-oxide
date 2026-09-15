@@ -11,14 +11,16 @@ use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
 use crate::engine::builtins::native::{GeneratorResumeKind, NativeFunctionId};
-use crate::engine::builtins::promise::RootedPromiseCapability;
-use crate::engine::heap::{ContextId, HeapError, InternalCallableData, ObjectData};
+use crate::engine::heap::{ContextId, InternalCallableData, ObjectData};
 use crate::engine::object::{CallableRef, ObjectRef, PropertyKey, WellKnownSymbol};
 use crate::engine::value::Value;
 use crate::engine::value::conversion::NativeConversion;
 use crate::engine::vm::Completion;
 
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
+
+mod operation;
+pub(crate) use operation::{FromSyncResume, FromSyncStep};
 
 impl Runtime {
     pub(crate) fn get_async_iterator_record(
@@ -115,7 +117,7 @@ impl Runtime {
         Ok(NativeConversion::Value(callable))
     }
 
-    fn new_async_from_sync_iterator(
+    pub(super) fn new_async_from_sync_iterator(
         &self,
         realm: ContextId,
         sync_iterator: &ObjectRef,
@@ -173,255 +175,14 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let capability = self.new_default_promise_capability(realm)?;
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Async-from-Sync resume did not receive a call invocation",
-            ));
-        };
-        let argument = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Async-from-Sync resume argv was not padded",
-            ))?;
-        let receiver = match this_value {
-            Value::Object(receiver) => receiver,
-            _ => {
-                let reason = self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an Async-from-Sync Iterator",
-                )?;
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-        };
-        let state = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .async_from_sync_iterator_state(receiver.object_id());
-        let (sync_iterator, cached_next) = match state {
-            Ok(state) => state,
-            Err(HeapError::Invariant(_)) => {
-                let reason = self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an Async-from-Sync Iterator",
-                )?;
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let sync_iterator = ObjectRef::from_borrowed_handle(self.clone(), sync_iterator)?;
-
-        let method = match kind {
-            GeneratorResumeKind::Next => self.root_raw_value(&cached_next)?,
-            GeneratorResumeKind::Return | GeneratorResumeKind::Throw => {
-                let name = match kind {
-                    GeneratorResumeKind::Return => "return",
-                    GeneratorResumeKind::Throw => "throw",
-                    GeneratorResumeKind::Next => unreachable!(),
-                };
-                let key = self.intern_property_key(name)?;
-                match self.get_property_in_realm(realm, &sync_iterator, &key)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(reason) => {
-                        return self.reject_async_from_sync_capability(realm, capability, reason);
-                    }
-                }
-            }
-        };
-
-        if matches!(method, Value::Undefined | Value::Null) {
-            return match kind {
-                GeneratorResumeKind::Return => {
-                    let result = Value::Object(self.new_iterator_result(realm, argument, true)?);
-                    self.resolve_async_from_sync_capability(realm, capability, result)
-                }
-                GeneratorResumeKind::Throw => {
-                    match self.close_async_from_sync_iterator_normally(realm, &sync_iterator)? {
-                        NativeConversion::Value(()) => {
-                            let reason = self.new_native_error(
-                                realm,
-                                NativeErrorKind::Type,
-                                "throw is not a method",
-                            )?;
-                            self.reject_async_from_sync_capability(realm, capability, reason)
-                        }
-                        NativeConversion::Throw(reason) => {
-                            self.reject_async_from_sync_capability(realm, capability, reason)
-                        }
-                    }
-                }
-                GeneratorResumeKind::Next => {
-                    let reason =
-                        self.new_native_error(realm, NativeErrorKind::Type, "not a function")?;
-                    self.reject_async_from_sync_capability(realm, capability, reason)
-                }
-            };
-        }
-
-        let method = match self.async_from_sync_callable(realm, method, "not a function")? {
-            NativeConversion::Value(method) => method,
-            NativeConversion::Throw(reason) => {
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-        };
-        let call_arguments = if arguments.actual_arg_count == 0 {
-            &[][..]
-        } else {
-            std::slice::from_ref(&argument)
-        };
-        let result = match self.call_internal(
+        FromSyncStep::start(
+            self,
             realm,
-            &method,
-            Value::Object(sync_iterator.clone()),
-            call_arguments,
-        )? {
-            Completion::Return(value) => value,
-            Completion::Throw(reason) => {
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-        };
-        let Value::Object(result) = result else {
-            let reason = self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "iterator must return an object",
-            )?;
-            return self.reject_async_from_sync_capability(realm, capability, reason);
-        };
-
-        let done_key = self.intern_property_key("done")?;
-        let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => self.value_to_boolean(&value)?,
-            Completion::Throw(reason) => {
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-        };
-        // Unlike ordinary IteratorStep, AsyncFromSyncIteratorContinuation
-        // observes `value` even when `done` is already true.
-        let value_key = self.intern_property_key("value")?;
-        let value = match self.get_property_in_realm(realm, &result, &value_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(reason) => {
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-        };
-
-        let value_promise = match self.promise_resolve_intrinsic(realm, value)? {
-            Completion::Return(Value::Object(promise)) => promise,
-            Completion::Return(_) => {
-                return Err(RuntimeError::Invariant(
-                    "intrinsic PromiseResolve returned a non-object",
-                ));
-            }
-            Completion::Throw(reason) => {
-                if kind != GeneratorResumeKind::Return && !done {
-                    self.close_iterator_preserving_throw(realm, &sync_iterator)?;
-                }
-                return self.reject_async_from_sync_capability(realm, capability, reason);
-            }
-        };
-
-        let unwrap = self.new_internal_promise_function(
-            realm,
-            NativeFunctionId::AsyncFromSyncIteratorUnwrap,
-            1,
-            1,
-            InternalCallableData::AsyncFromSyncIteratorUnwrap { done },
-        )?;
-        let close = if kind != GeneratorResumeKind::Return && !done {
-            Some(self.new_internal_promise_function(
-                realm,
-                NativeFunctionId::AsyncFromSyncIteratorClose,
-                1,
-                1,
-                InternalCallableData::AsyncFromSyncIteratorClose {
-                    sync_iterator: sync_iterator.object_id(),
-                },
-            )?)
-        } else {
-            None
-        };
-        self.perform_promise_then_with_capability(
-            realm,
-            &value_promise,
-            Some(&unwrap),
-            close.as_ref(),
-            &capability,
-        )?;
-        Ok(Completion::Return(Value::Object(capability.promise)))
-    }
-
-    fn close_async_from_sync_iterator_normally(
-        &self,
-        realm: ContextId,
-        iterator: &ObjectRef,
-    ) -> Result<NativeConversion<()>, RuntimeError> {
-        let key = self.intern_property_key("return")?;
-        let method = match self.get_property_in_realm(realm, iterator, &key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(method, Value::Undefined | Value::Null) {
-            return Ok(NativeConversion::Value(()));
-        }
-        let method = match self.async_from_sync_callable(realm, method, "not a function")? {
-            NativeConversion::Value(method) => method,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        match self.call_internal(realm, &method, Value::Object(iterator.clone()), &[])? {
-            Completion::Return(Value::Object(_)) => Ok(NativeConversion::Value(())),
-            Completion::Return(_) => Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?)),
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
-    }
-
-    fn resolve_async_from_sync_capability(
-        &self,
-        realm: ContextId,
-        capability: RootedPromiseCapability,
-        value: Value,
-    ) -> Result<Completion, RuntimeError> {
-        self.settle_async_from_sync_capability(realm, capability, true, value)
-    }
-
-    fn reject_async_from_sync_capability(
-        &self,
-        realm: ContextId,
-        capability: RootedPromiseCapability,
-        reason: Value,
-    ) -> Result<Completion, RuntimeError> {
-        self.settle_async_from_sync_capability(realm, capability, false, reason)
-    }
-
-    fn settle_async_from_sync_capability(
-        &self,
-        realm: ContextId,
-        capability: RootedPromiseCapability,
-        resolve: bool,
-        value: Value,
-    ) -> Result<Completion, RuntimeError> {
-        let promise = capability.promise.clone();
-        let target = if resolve {
-            &capability.resolve
-        } else {
-            &capability.reject
-        };
-        match self.call_internal(realm, target, Value::Undefined, &[value])? {
-            Completion::Return(_) => Ok(Completion::Return(Value::Object(promise))),
-            Completion::Throw(_) => Err(RuntimeError::Invariant(
-                "intrinsic Promise resolving function threw",
-            )),
-        }
+            NativeFunctionId::AsyncFromSyncIteratorResume(kind),
+            &invocation,
+            arguments,
+        )?
+        .finish(self, realm)
     }
 
     pub(crate) fn call_async_from_sync_iterator_unwrap(
@@ -468,36 +229,14 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Async-from-Sync close did not receive a call invocation",
-            ));
-        };
-        let active = self.active_function()?;
-        let internal = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .native_internal_callable(active.object_id())?
-            .ok_or(RuntimeError::Invariant(
-                "Async-from-Sync close had no internal capture",
-            ))?;
-        let InternalCallableData::AsyncFromSyncIteratorClose { sync_iterator } = internal else {
-            return Err(RuntimeError::Invariant(
-                "Async-from-Sync close had the wrong internal capture",
-            ));
-        };
-        let reason = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Async-from-Sync close argv was not padded",
-            ))?;
-        let sync_iterator = ObjectRef::from_borrowed_handle(self.clone(), sync_iterator)?;
-        self.close_iterator_preserving_throw(realm, &sync_iterator)?;
-        Ok(Completion::Throw(reason))
+        FromSyncStep::start(
+            self,
+            realm,
+            NativeFunctionId::AsyncFromSyncIteratorClose,
+            &invocation,
+            arguments,
+        )?
+        .finish(self, realm)
     }
 }
 

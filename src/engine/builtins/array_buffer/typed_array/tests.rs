@@ -1466,3 +1466,154 @@ fn typed_array_integer_key_fast_path_keeps_domains_and_noncanonical_strings() {
         Err(RuntimeError::WrongRuntime(_))
     ));
 }
+
+#[cfg(feature = "stack-vm")]
+#[test]
+fn scoped_typed_words_match_token_access_and_keep_shared_fallback() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    for constructor in [
+        "Uint8Array",
+        "Uint16Array",
+        "Uint32Array",
+        "Float64Array",
+        "BigInt64Array",
+    ] {
+        for shared in [false, true] {
+            let backing = if shared {
+                "SharedArrayBuffer"
+            } else {
+                "ArrayBuffer"
+            };
+            let source = format!("new {constructor}(new {backing}(32),8,2)");
+            let Value::Object(view) = context.eval(&source).unwrap() else {
+                panic!("expected view")
+            };
+            let snapshot = runtime.typed_array_snapshot(&view).unwrap();
+            for index in [0, 1, 2, u64::MAX] {
+                let bytes = [1, 2, 3, 4, 5, 6, 7, 8];
+                let scoped = runtime
+                    .ordinary_typed_array_word(snapshot, index, Some(&bytes))
+                    .unwrap();
+                if shared {
+                    assert!(matches!(scoped, OrdinaryTypedWord::Shared));
+                } else {
+                    assert_eq!(matches!(scoped, OrdinaryTypedWord::Word(_)), index < 2);
+                }
+                assert_eq!(
+                    runtime
+                        .typed_array_write_converted_index(&view, index, &bytes)
+                        .unwrap(),
+                    index < 2
+                );
+                let token = runtime.snapshot_buffer_access(snapshot.buffer).unwrap();
+                let range = typed_array_word_range(snapshot, token.state, index).unwrap();
+                let expected = range.map(|(offset, width)| {
+                    typed_array_decode(
+                        snapshot.element,
+                        runtime.read_buffer_word(&token, offset, width).unwrap(),
+                    )
+                });
+                assert_eq!(
+                    runtime.typed_array_read_index(&view, index).unwrap(),
+                    expected
+                );
+            }
+            let borrowed = runtime.0.state.borrow();
+            assert!(matches!(
+                runtime.ordinary_typed_array_word(snapshot, 0, None),
+                Err(RuntimeError::Invariant(_))
+            ));
+            drop(borrowed);
+        }
+    }
+}
+
+#[cfg(feature = "stack-vm")]
+#[test]
+fn scoped_typed_words_reacquire_after_conversion_resize_detach_and_throw() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_script(
+        &mut context,
+        r#"(()=>{
+        const b=new ArrayBuffer(8,{maxByteLength:16});
+        const fixed=new Uint16Array(b,2,2), tracking=new Uint16Array(b,2);
+        const marker={}; let log='';
+        fixed[0]={valueOf(){log+='a';b.resize(2);return 37}};
+        if(fixed[0]!==undefined || tracking[0]!==undefined)return 'shrink';
+        b.resize(8);
+        tracking[2]={valueOf(){log+='b';b.resize(16);return 513}};
+        if(tracking[2]!==513 || tracking[6]!==0)return 'grow';
+        try{fixed[0]={valueOf(){log+='c';b.resize(1);throw marker}}}catch(e){if(e!==marker)return 'throw';}
+        if(fixed[0]!==undefined || log!=='abc')return 'throw-order';
+        b.resize(8); fixed[0]=19;
+        fixed[0]={valueOf(){log+='d';b.transfer();return 7}};
+        if(fixed[0]!==undefined || tracking[0]!==undefined)return 'detach';
+        let error=false;
+        try{fixed[0]=Symbol()}catch(e){error=e instanceof TypeError}
+        return error && log==='abcd' ? 'ok' : 'conversion-before-detached';
+    })()"#,
+    );
+}
+
+#[cfg(feature = "stack-vm")]
+#[test]
+fn scoped_typed_words_keep_only_view_root_and_conversion_error_realm() {
+    let runtime = Runtime::new();
+    let weak = std::rc::Rc::downgrade(&runtime.0);
+    let mut first = runtime.new_context();
+    let mut second = runtime.new_context();
+    let Value::Object(view) = first.eval("new Uint8Array(1)").unwrap() else {
+        panic!("expected view")
+    };
+    let view_id = view.object_id();
+    let buffer_id = runtime.typed_array_snapshot(&view).unwrap().buffer;
+    runtime.run_gc().unwrap();
+    assert!(
+        runtime
+            .typed_array_write_converted_index(&view, 0, &[41; 8])
+            .unwrap()
+    );
+    assert_eq!(
+        runtime.typed_array_read_index(&view, 0).unwrap(),
+        Some(Value::Int(41))
+    );
+    let symbol = second.eval("Symbol()").unwrap();
+    let NativeConversion::Throw(Value::Object(error)) =
+        write::TypedWriteStep::set_primitive_result(
+            &runtime,
+            second.realm,
+            &view,
+            Some(0),
+            &symbol,
+        )
+        .unwrap()
+    else {
+        panic!("expected conversion error")
+    };
+    let Value::Object(expected) = second.eval("TypeError.prototype").unwrap() else {
+        panic!("expected prototype")
+    };
+    assert_eq!(runtime.get_prototype_of(&error).unwrap(), Some(expected));
+    assert_eq!(
+        runtime.typed_array_read_index(&view, 0).unwrap(),
+        Some(Value::Int(41))
+    );
+    let other = Runtime::new();
+    assert!(matches!(
+        other.typed_array_read_index(&view, 0),
+        Err(RuntimeError::WrongRuntime(_))
+    ));
+    drop(error);
+    drop(symbol);
+    drop(view);
+    runtime.run_gc().unwrap();
+    for id in [view_id, buffer_id] {
+        assert!(runtime.0.state.borrow().heap.object(id).is_err());
+    }
+    drop(first);
+    drop(second);
+    drop(runtime);
+    assert!(weak.upgrade().is_none());
+}

@@ -41,7 +41,7 @@ if rg -n "${rust_host_pattern}" apps/web adapters/web \
   exit 1
 fi
 
-./scripts/web/build-web-playground.sh
+./scripts/web/build-web-playground.sh "$@"
 
 rm -rf "${node_dir}"
 mkdir -p "${node_dir}"
@@ -52,4 +52,4 @@ wasm-bindgen \
   --target nodejs \
   --no-typescript
 
-node "${repo_root}/scripts/web/test-web-playground-node.mjs"
+node "${repo_root}/scripts/web/test-web-playground-node.mjs" "$@"

@@ -22,7 +22,7 @@ fn ordinary_async_functions_publish_async_kind_and_await_bytecode() {
     assert_eq!(async_functions.len(), 3);
     assert!(async_functions.iter().all(|function| {
         function.kind == FunctionKind::Ordinary
-            && function.in_function_body
+            && function.body_parsed
             && function.ops.iter().all(|operation| {
                 !matches!(
                     operation.op,
@@ -86,7 +86,7 @@ fn async_object_methods_publish_method_grammar_async_execution_and_full_source_r
     assert_eq!(methods.len(), 2);
     assert!(methods.iter().all(|function| {
         function.execution_kind == BytecodeFunctionKind::Async
-            && function.in_function_body
+            && function.body_parsed
             && function.super_allowed
             && !function.super_call_allowed
             && function
@@ -170,7 +170,7 @@ fn async_generator_object_methods_compose_method_grammar_with_the_async_driver()
         .collect::<Vec<_>>();
     assert_eq!(methods.len(), 2);
     assert!(methods.iter().all(|function| {
-        function.in_function_body
+        function.body_parsed
             && function.super_allowed
             && !function.super_call_allowed
             && function
@@ -380,7 +380,7 @@ fn async_class_methods_reuse_method_publication_and_preserve_full_source_ranges(
         .collect::<Vec<_>>();
     assert_eq!(methods.len(), 2);
     assert!(methods.iter().all(|function| {
-        function.in_function_body
+        function.body_parsed
             && function.super_allowed
             && !function.super_call_allowed
             && function
@@ -465,7 +465,7 @@ fn async_generator_class_methods_compose_method_grammar_with_the_async_driver() 
         .collect::<Vec<_>>();
     assert_eq!(methods.len(), 2);
     assert!(methods.iter().all(|function| {
-        function.in_function_body
+        function.body_parsed
             && function.super_allowed
             && !function.super_call_allowed
             && function
@@ -698,7 +698,7 @@ fn async_arrows_publish_arrow_grammar_async_execution_and_full_source_ranges() {
     assert_eq!(arrows.len(), 2);
     assert!(arrows.iter().all(|function| {
         function.execution_kind == BytecodeFunctionKind::Async
-            && function.in_function_body
+            && function.body_parsed
             && function
                 .ops
                 .iter()

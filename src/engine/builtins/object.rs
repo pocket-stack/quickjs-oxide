@@ -1,24 +1,33 @@
 //! Object constructor and prototype intrinsics.
 
-use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
+use crate::engine::api::error::{ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::atom::PropertyKeyKind;
 
 use crate::engine::builtins::native::{
-    ArrayPushKind, NativeFunctionId, ObjectAccessorKind, ObjectExtensibilityKind,
-    ObjectIntegrityKind, ObjectKeysKind, ObjectOwnPropertyKeysKind, PrimitiveKind,
+    NativeFunctionId, ObjectAccessorKind, ObjectExtensibilityKind, ObjectIntegrityKind,
+    ObjectKeysKind, ObjectOwnPropertyKeysKind, PrimitiveKind,
 };
 use crate::engine::heap::{ContextId, ObjectPayload, PrimitiveObjectData};
-use crate::engine::object::operations::{ArrayOwnKey, InternalDefineResult, PropertyDefineOutcome};
+use crate::engine::object::operations::{ArrayOwnKey, InternalDefineResult};
 use crate::engine::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
-    OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
+    OrdinaryPropertyDescriptor, PropertyKey, SymbolRef,
 };
 use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
-use crate::engine::vm::call::{NativeArguments, NativeInvocation, NativeInvokeOutcome};
-use crate::engine::vm::{Completion, ToPrimitiveHint};
+use crate::engine::vm::Completion;
+use crate::engine::vm::call::{NativeArguments, NativeInvocation};
+
+pub(super) mod constructor;
+pub(crate) mod copy;
+pub(super) mod definitions;
+pub(super) mod iteration;
+pub(super) mod predicate;
+pub(super) mod property;
+pub(super) mod prototype;
+pub(super) mod string;
 
 #[cfg(test)]
 mod tests;
@@ -33,40 +42,6 @@ impl Runtime {
     /// QuickJS `JS_ToPrimitive(..., HINT_FORCE_ORDINARY)`: probe the ordinary
     /// conversion methods without consulting `Symbol.toPrimitive`. Date's
     /// standard exotic method delegates here after translating its hint.
-    pub(crate) fn ordinary_to_primitive(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-        hint: ToPrimitiveHint,
-    ) -> Result<Completion, RuntimeError> {
-        let methods = match hint {
-            ToPrimitiveHint::String => ["toString", "valueOf"],
-            ToPrimitiveHint::Number | ToPrimitiveHint::Default => ["valueOf", "toString"],
-        };
-        for name in methods {
-            let key = self.intern_property_key(name)?;
-            let method = match self.get_property_in_realm(realm, object, &key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let Value::Object(method_object) = method else {
-                continue;
-            };
-            let Some(method) = self.as_callable(&method_object)? else {
-                continue;
-            };
-            match self.call_internal(realm, &method, Value::Object(object.clone()), &[])? {
-                Completion::Return(Value::Object(_)) => {}
-                completion => return Ok(completion),
-            }
-        }
-        Ok(Completion::Throw(self.new_native_error(
-            realm,
-            NativeErrorKind::Type,
-            "toPrimitive",
-        )?))
-    }
-
     /// QuickJS `js_object_groupBy(..., is_map = 0)`.
     ///
     /// The upstream routine deliberately closes the iterator only after an
@@ -91,197 +66,18 @@ impl Runtime {
         arguments: &NativeArguments,
         element_limit: u64,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.groupBy did not receive a generic invocation",
-            ));
-        };
-
-        // Pinned QuickJS checks the callback before it performs any operation
-        // on the iterable.
-        let callback = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "Object.groupBy callback argv was not padded",
-        ))?;
-        let Value::Object(callback) = callback else {
-            return Ok(Completion::Throw(self.new_native_error(
+        iteration::finish(
+            self,
+            realm,
+            iteration::IterationStep::start_with_limit(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(callback) = self.as_callable(callback)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.groupBy iterable argv was not padded",
-            ))?;
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let iterator_method = match &iterable {
-            Value::Null | Value::Undefined => {
-                let base = if matches!(iterable, Value::Null) {
-                    "null"
-                } else {
-                    "undefined"
-                };
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    &format!("cannot read property 'Symbol.iterator' of {base}"),
-                )?));
-            }
-            _ => match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-        };
-        let Value::Object(iterator_method) = iterator_method else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let Some(iterator_method) = self.as_callable(&iterator_method)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let iterator = match self.call_internal(realm, &iterator_method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        // Cache `next` once before allocating the result, matching the exact
-        // JS_GetIterator + Get(next) ordering in js_object_groupBy.
-        let next_key = self.intern_property_key("next")?;
-        let next_method = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let groups = self.new_object(None)?;
-        let callback_this = Value::Object(self.global_object_for_realm(realm)?);
-
-        let mut index = 0_u64;
-        loop {
-            if index >= element_limit {
-                let exception =
-                    self.new_native_error(realm, NativeErrorKind::Type, "too many elements")?;
-                self.close_iterator_preserving_throw(realm, &iterator)?;
-                return Ok(Completion::Throw(exception));
-            }
-
-            let value = match self.object_iterator_next(realm, &iterator, next_method.clone())? {
-                ObjectIteratorStep::Yield(value) => value,
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(groups)));
-                }
-                ObjectIteratorStep::Throw(value) => {
-                    // IteratorNext failures use QuickJS's plain exception exit
-                    // and therefore do not perform IteratorClose.
-                    return Ok(Completion::Throw(value));
-                }
-            };
-
-            let key_value = match self.call_internal(
-                realm,
-                &callback,
-                callback_this.clone(),
-                &[value.clone(), Value::number(index as f64)],
-            )? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let key = match self.native_to_property_key(realm, key_value)? {
-                NativeConversion::Value(key) => key,
-                NativeConversion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-
-            let group = match self.get_property_in_realm(realm, &groups, &key)? {
-                Completion::Return(Value::Undefined) => {
-                    let group = self.new_array(realm)?;
-                    match self.define_own_property_in_realm(
-                        Some(realm),
-                        &groups,
-                        &key,
-                        &OrdinaryPropertyDescriptor {
-                            value: DescriptorField::Present(Value::Object(group.clone())),
-                            writable: DescriptorField::Present(true),
-                            enumerable: DescriptorField::Present(true),
-                            configurable: DescriptorField::Present(true),
-                            ..OrdinaryPropertyDescriptor::new()
-                        },
-                    )? {
-                        PropertyDefineOutcome::Defined(true) => group,
-                        PropertyDefineOutcome::Defined(false) => {
-                            return Err(RuntimeError::Invariant(
-                                "fresh Object.groupBy result rejected a group property",
-                            ));
-                        }
-                        PropertyDefineOutcome::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    }
-                }
-                Completion::Return(Value::Object(group)) => group,
-                Completion::Return(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "Object.groupBy result contained a non-Array group",
-                    ));
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-
-            // Upstream calls js_array_push directly. Reuse the matching kernel
-            // rather than CreateDataProperty: mutation of Array.prototype can
-            // make an inherited index setter or a rejected Set observable.
-            let push_arguments = NativeArguments {
-                actual_arg_count: 1,
-                readable: vec![value],
-            };
-            match self.call_array_prototype_push(
-                realm,
-                ArrayPushKind::Push,
-                NativeInvocation::Call {
-                    this_value: Value::Object(group),
-                },
-                &push_arguments,
-            )? {
-                Completion::Return(_) => {}
-                Completion::Throw(value) => {
-                    // js_object_groupBy does not close the iterator when its
-                    // internal js_array_push fails.
-                    return Ok(Completion::Throw(value));
-                }
-            }
-
-            index = index.checked_add(1).ok_or(RuntimeError::Invariant(
-                "Object.groupBy index overflowed Uint64",
-            ))?;
-        }
+                iteration::IterationKind::Group,
+                &invocation,
+                arguments,
+                element_limit,
+            )?,
+        )
     }
 
     /// QuickJS `js_object_fromEntries`.
@@ -298,127 +94,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.fromEntries did not receive a generic invocation",
-            ));
-        };
-
-        let result = self.new_ordinary_object_in_realm(realm)?;
-        let iterable = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.fromEntries iterable argv was not padded",
-            ))?;
-        let iterator_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Iterator));
-        let iterator_method = match &iterable {
-            Value::Null | Value::Undefined => {
-                let base = if matches!(iterable, Value::Null) {
-                    "null"
-                } else {
-                    "undefined"
-                };
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    &format!("cannot read property 'Symbol.iterator' of {base}"),
-                )?));
-            }
-            _ => match self.get_value_property_in_realm(realm, iterable.clone(), &iterator_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-        };
-        let Value::Object(iterator_method) = iterator_method else {
-            return Ok(Completion::Throw(self.new_native_error(
+        iteration::finish(
+            self,
+            realm,
+            iteration::IterationStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let Some(iterator_method) = self.as_callable(&iterator_method)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "value is not iterable",
-            )?));
-        };
-        let iterator = match self.call_internal(realm, &iterator_method, iterable, &[])? {
-            Completion::Return(Value::Object(iterator)) => iterator,
-            Completion::Return(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let next_key = self.intern_property_key("next")?;
-        let next_method = match self.get_property_in_realm(realm, &iterator, &next_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => {
-                self.close_iterator_preserving_throw(realm, &iterator)?;
-                return Ok(Completion::Throw(value));
-            }
-        };
-        let zero_key = self.intern_property_key("0")?;
-        let one_key = self.intern_property_key("1")?;
-
-        loop {
-            let item = match self.object_iterator_next(realm, &iterator, next_method.clone())? {
-                ObjectIteratorStep::Yield(Value::Object(item)) => item,
-                ObjectIteratorStep::Yield(_) => {
-                    let exception =
-                        self.new_native_error(realm, NativeErrorKind::Type, "not an object")?;
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(exception));
-                }
-                ObjectIteratorStep::Done => {
-                    return Ok(Completion::Return(Value::Object(result)));
-                }
-                ObjectIteratorStep::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-
-            let key_value = match self.get_property_in_realm(realm, &item, &zero_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let value = match self.get_property_in_realm(realm, &item, &one_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let key = match self.native_to_property_key(realm, key_value)? {
-                NativeConversion::Value(key) => key,
-                NativeConversion::Throw(value) => {
-                    self.close_iterator_preserving_throw(realm, &iterator)?;
-                    return Ok(Completion::Throw(value));
-                }
-            };
-            let descriptor = OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            };
-            if let Some(value) = self.define_property_or_throw(realm, &result, &key, &descriptor)? {
-                self.close_iterator_preserving_throw(realm, &iterator)?;
-                return Ok(Completion::Throw(value));
-            }
-        }
+                iteration::IterationKind::Entries,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     /// QuickJS `js_object_hasOwn`.
@@ -433,40 +119,16 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.hasOwn did not receive a generic invocation",
-            ));
-        };
-        let target = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.hasOwn target argv was not padded",
-            ))?;
-        let object = match self.native_to_object(realm, target)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(
+        predicate::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .get(1)
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Object.hasOwn key argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(
-            match self.internal_has_own_property(realm, &object, &key)? {
-                NativeConversion::Value(value) => Completion::Return(Value::Bool(value)),
-                NativeConversion::Throw(value) => Completion::Throw(value),
-            },
+            predicate::PredicateStep::start(
+                self,
+                realm,
+                predicate::PredicateKind::HasOwn,
+                &invocation,
+                arguments,
+            )?,
         )
     }
 
@@ -476,71 +138,11 @@ impl Runtime {
         iterator: &ObjectRef,
         next_method: Value,
     ) -> Result<ObjectIteratorStep, RuntimeError> {
-        let Value::Object(next_method) = next_method else {
-            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(next_method) = self.as_callable(&next_method)? else {
-            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-
-        let result = match self.try_call_native_iterator_next_raw(
+        super::iterator::step::finish_next(
+            self,
             realm,
-            &next_method,
-            Value::Object(iterator.clone()),
-        )? {
-            Some(NativeInvokeOutcome::IteratorNextRaw { value, done }) => {
-                return Ok(if done {
-                    ObjectIteratorStep::Done
-                } else {
-                    ObjectIteratorStep::Yield(value)
-                });
-            }
-            Some(NativeInvokeOutcome::Completion(Completion::Throw(value))) => {
-                return Ok(ObjectIteratorStep::Throw(value));
-            }
-            Some(NativeInvokeOutcome::Completion(Completion::Return(result))) => result,
-            None => match self.call_internal(
-                realm,
-                &next_method,
-                Value::Object(iterator.clone()),
-                &[],
-            )? {
-                Completion::Return(result) => result,
-                Completion::Throw(value) => {
-                    return Ok(ObjectIteratorStep::Throw(value));
-                }
-            },
-        };
-        let Value::Object(result) = result else {
-            return Ok(ObjectIteratorStep::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "iterator must return an object",
-            )?));
-        };
-
-        let done_key = self.intern_property_key("done")?;
-        let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => self.value_to_boolean(&value)?,
-            Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
-        };
-        if done {
-            return Ok(ObjectIteratorStep::Done);
-        }
-
-        let value_key = self.intern_property_key("value")?;
-        match self.get_property_in_realm(realm, &result, &value_key)? {
-            Completion::Return(value) => Ok(ObjectIteratorStep::Yield(value)),
-            Completion::Throw(value) => Ok(ObjectIteratorStep::Throw(value)),
-        }
+            super::iterator::step::NextStep::start(self, realm, iterator.clone(), next_method)?,
+        )
     }
 
     pub(crate) fn initialize_object_prototype_intrinsics(
@@ -809,7 +411,7 @@ impl Runtime {
         self.define_constructor_relationship(&constructor, object_prototype)
     }
 
-    fn object_to_string_tag(
+    fn object_default_to_string_tag(
         &self,
         realm: ContextId,
         object: &ObjectRef,
@@ -888,12 +490,7 @@ impl Runtime {
                 | ObjectPayload::RegExpStringIterator { .. } => JsString::from_static("Object"),
             }
         };
-        let to_string_tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
-        match self.get_property_in_realm(realm, object, &to_string_tag)? {
-            Completion::Return(Value::String(tag)) => Ok(NativeConversion::Value(tag)),
-            Completion::Return(_) => Ok(NativeConversion::Value(default_tag)),
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        Ok(NativeConversion::Value(default_tag))
     }
 
     pub(crate) fn call_object_prototype_to_string(
@@ -901,68 +498,16 @@ impl Runtime {
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype.toString did not receive a generic invocation",
-            ));
-        };
-        let tag = match this_value {
-            Value::Undefined => JsString::from_static("Undefined"),
-            Value::Null => JsString::from_static("Null"),
-            Value::Bool(value) => {
-                let prototype =
-                    self.primitive_prototype_for_realm(realm, PrimitiveKind::Boolean)?;
-                let object = self.new_primitive_object(
-                    &prototype,
-                    PrimitiveKind::Boolean,
-                    Value::Bool(value),
-                )?;
-                match self.object_to_string_tag(realm, &object)? {
-                    NativeConversion::Value(tag) => tag,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-            value @ (Value::Int(_) | Value::Float(_)) => {
-                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::Number)?;
-                let object = self.new_primitive_object(&prototype, PrimitiveKind::Number, value)?;
-                match self.object_to_string_tag(realm, &object)? {
-                    NativeConversion::Value(tag) => tag,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-            value @ Value::BigInt(_) => {
-                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::BigInt)?;
-                let object = self.new_primitive_object(&prototype, PrimitiveKind::BigInt, value)?;
-                match self.object_to_string_tag(realm, &object)? {
-                    NativeConversion::Value(tag) => tag,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-            value @ Value::Symbol(_) => {
-                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::Symbol)?;
-                let object = self.new_primitive_object(&prototype, PrimitiveKind::Symbol, value)?;
-                match self.object_to_string_tag(realm, &object)? {
-                    NativeConversion::Value(tag) => tag,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-            value @ Value::String(_) => {
-                let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::String)?;
-                let object = self.new_primitive_object(&prototype, PrimitiveKind::String, value)?;
-                match self.object_to_string_tag(realm, &object)? {
-                    NativeConversion::Value(tag) => tag,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-            Value::Object(object) => match self.object_to_string_tag(realm, &object)? {
-                NativeConversion::Value(tag) => tag,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            },
-        };
-        let result = JsString::from_static("[object ")
-            .try_concat(&tag)?
-            .try_concat(&JsString::from_static("]"))?;
-        Ok(Completion::Return(Value::String(result)))
+        string::finish(
+            self,
+            realm,
+            string::ObjectStringStep::start(
+                self,
+                realm,
+                string::ObjectStringKind::Tag,
+                &invocation,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_to_locale_string(
@@ -970,44 +515,16 @@ impl Runtime {
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype.toLocaleString did not receive a generic invocation",
-            ));
-        };
-        if matches!(this_value, Value::Null | Value::Undefined) {
-            let message = if matches!(this_value, Value::Null) {
-                "cannot read property 'toString' of null"
-            } else {
-                "cannot read property 'toString' of undefined"
-            };
-            return Ok(Completion::Throw(self.new_native_error(
+        string::finish(
+            self,
+            realm,
+            string::ObjectStringStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                message,
-            )?));
-        }
-        let to_string = self.intern_property_key("toString")?;
-        let method =
-            match self.get_value_property_in_realm(realm, this_value.clone(), &to_string)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let Value::Object(method) = method else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(method) = self.as_callable(&method)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        self.call_internal(realm, &method, this_value, &[])
+                string::ObjectStringKind::Locale,
+                &invocation,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_value_of(
@@ -1067,30 +584,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object constructor did not receive constructor-or-function invocation",
-            ));
-        };
-        let active = self.active_function()?;
-        let is_active = matches!(&new_target, Value::Object(object) if object == &active);
-        if !matches!(new_target, Value::Undefined) && !is_active {
-            return self.create_from_constructor_value(realm, &new_target);
-        }
-        let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Object constructor argv was not padded",
-        ))?;
-        if matches!(argument, Value::Undefined | Value::Null) {
-            let prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
-            let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
-            return Ok(Completion::Return(Value::Object(
-                self.new_object(Some(&prototype))?,
-            )));
-        }
-        match self.native_to_object(realm, argument.clone())? {
-            NativeConversion::Value(object) => Ok(Completion::Return(Value::Object(object))),
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+        constructor::finish(
+            self,
+            realm,
+            constructor::ObjectConstructorStep::start(self, realm, &invocation, arguments)?,
+        )
     }
 
     pub(crate) fn call_object_create(
@@ -1101,33 +599,19 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object.create did not receive a generic invocation",
+                "Object definitions did not receive a generic invocation",
             ));
         };
-        let prototype = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Object.create prototype argv was not padded",
-        ))?;
-        let object = match prototype {
-            Value::Object(prototype) => self.new_object(Some(prototype))?,
-            Value::Null => self.new_object(None)?,
-            _ => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a prototype",
-                )?));
-            }
-        };
-        let properties = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "Object.create properties argv was not padded",
-        ))?;
-        if !matches!(properties, Value::Undefined)
-            && let Some(value) =
-                self.object_define_properties(realm, &object, properties.clone())?
-        {
-            return Ok(Completion::Throw(value));
-        }
-        Ok(Completion::Return(Value::Object(object)))
+        definitions::finish(
+            self,
+            realm,
+            definitions::DefinitionsStep::start(
+                self,
+                realm,
+                definitions::DefinitionsKind::Create,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_get_prototype_of(
@@ -1141,35 +625,25 @@ impl Runtime {
                 "Object.getPrototypeOf did not receive a generic invocation",
             ));
         };
-        let value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Object.getPrototypeOf argv was not padded",
-        ))?;
-        if matches!(value, Value::Null | Value::Undefined) {
-            return Ok(Completion::Throw(self.new_native_error(
+        prototype::finish(
+            self,
+            realm,
+            prototype::BuiltinPrototypeStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        }
-        let object = match self.native_to_object(realm, value.clone())? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(match self.internal_get_prototype_of(realm, &object)? {
-            NativeConversion::Value(prototype) => {
-                Completion::Return(prototype.map_or(Value::Null, Value::Object))
-            }
-            NativeConversion::Throw(value) => Completion::Throw(value),
-        })
+                prototype::BuiltinPrototypeKind::ObjectGet,
+                arguments,
+            )?,
+        )
     }
 
-    fn set_prototype_or_throw(
+    fn finish_set_prototype_or_throw(
         &self,
         realm: ContextId,
         object: &ObjectRef,
-        prototype: Option<&ObjectRef>,
+        result: NativeConversion<bool>,
     ) -> Result<Option<Value>, RuntimeError> {
-        match self.internal_set_prototype_of(realm, object, prototype)? {
+        match result {
             NativeConversion::Value(true) => return Ok(None),
             NativeConversion::Throw(value) => return Ok(Some(value)),
             NativeConversion::Value(false) => {}
@@ -1211,37 +685,16 @@ impl Runtime {
                 "Object.setPrototypeOf did not receive a generic invocation",
             ));
         };
-        let target = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Object.setPrototypeOf target argv was not padded",
-        ))?;
-        if matches!(target, Value::Undefined | Value::Null) {
-            return Ok(Completion::Throw(self.new_native_error(
+        prototype::finish(
+            self,
+            realm,
+            prototype::BuiltinPrototypeStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        }
-        let prototype = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "Object.setPrototypeOf prototype argv was not padded",
-        ))?;
-        let prototype = match prototype {
-            Value::Object(prototype) => Some(prototype),
-            Value::Null => None,
-            _ => {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not an object",
-                )?));
-            }
-        };
-        let Value::Object(target_object) = target else {
-            return Ok(Completion::Return(target.clone()));
-        };
-        if let Some(value) = self.set_prototype_or_throw(realm, target_object, prototype)? {
-            return Ok(Completion::Throw(value));
-        }
-        Ok(Completion::Return(target.clone()))
+                prototype::BuiltinPrototypeKind::ObjectSet,
+                arguments,
+            )?,
+        )
     }
 
     fn property_define_rejection(
@@ -1267,14 +720,13 @@ impl Runtime {
         self.new_native_error(realm, NativeErrorKind::Type, message)
     }
 
-    fn define_property_or_throw(
+    fn finish_define_property_or_throw(
         &self,
         realm: ContextId,
-        object: &ObjectRef,
         key: &PropertyKey,
-        descriptor: &OrdinaryPropertyDescriptor,
+        result: NativeConversion<InternalDefineResult>,
     ) -> Result<Option<Value>, RuntimeError> {
-        match self.internal_define_own_property(realm, object, key, descriptor)? {
+        match result {
             NativeConversion::Value(InternalDefineResult::Defined) => Ok(None),
             NativeConversion::Value(InternalDefineResult::RejectedProxyTrap) => self
                 .new_native_error(
@@ -1298,93 +750,19 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object.defineProperty did not receive a generic invocation",
+                "Object property method did not receive a generic invocation",
             ));
         };
-        let Some(Value::Object(object)) = arguments.readable.first() else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let key = match self.native_to_property_key(
+        property::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .get(1)
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Object.defineProperty key argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let descriptor = match self.native_to_property_descriptor(
-            realm,
-            arguments
-                .readable
-                .get(2)
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Object.defineProperty descriptor argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(descriptor) => descriptor,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        if let Some(value) = self.define_property_or_throw(realm, object, &key, &descriptor)? {
-            return Ok(Completion::Throw(value));
-        }
-        Ok(Completion::Return(Value::Object(object.clone())))
-    }
-
-    fn object_define_properties(
-        &self,
-        realm: ContextId,
-        target: &ObjectRef,
-        properties: Value,
-    ) -> Result<Option<Value>, RuntimeError> {
-        let properties = match self.native_to_object(realm, properties)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Some(value)),
-        };
-        // Pinned QuickJS snapshots enumerable own keys, then immediately
-        // converts and defines each descriptor instead of using the spec's
-        // two-phase descriptor list.
-        let mut keys = Vec::new();
-        let own_keys = match self.internal_own_property_keys(realm, &properties)? {
-            NativeConversion::Value(keys) => keys,
-            NativeConversion::Throw(value) => return Ok(Some(value)),
-        };
-        for key in own_keys {
-            let enumerable = match self.internal_snapshot_own_property_is_enumerable(
+            property::PropertyStep::start(
+                self,
                 realm,
-                &properties,
-                &key,
-            )? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Some(value)),
-            };
-            if enumerable {
-                keys.push(key);
-            }
-        }
-        for key in keys {
-            let descriptor = match self.get_property_in_realm(realm, &properties, &key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Some(value)),
-            };
-            let descriptor = match self.native_to_property_descriptor(realm, descriptor)? {
-                NativeConversion::Value(descriptor) => descriptor,
-                NativeConversion::Throw(value) => return Ok(Some(value)),
-            };
-            if let Some(value) = self.define_property_or_throw(realm, target, &key, &descriptor)? {
-                return Ok(Some(value));
-            }
-        }
-        Ok(None)
+                property::PropertyKind::ObjectDefine,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_define_properties(
@@ -1395,27 +773,19 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object.defineProperties did not receive a generic invocation",
+                "Object definitions did not receive a generic invocation",
             ));
         };
-        let Some(Value::Object(target)) = arguments.readable.first() else {
-            return Ok(Completion::Throw(self.new_native_error(
+        definitions::finish(
+            self,
+            realm,
+            definitions::DefinitionsStep::start(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-        let properties = arguments
-            .readable
-            .get(1)
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.defineProperties properties argv was not padded",
-            ))?;
-        if let Some(value) = self.object_define_properties(realm, target, properties)? {
-            return Ok(Completion::Throw(value));
-        }
-        Ok(Completion::Return(Value::Object(target.clone())))
+                definitions::DefinitionsKind::Define,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_get_own_property_keys(
@@ -1427,48 +797,19 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object own-key method did not receive a generic invocation",
+                "Object enumeration did not receive a generic invocation",
             ));
         };
-        let value = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Object own-key argv was not padded",
-        ))?;
-        let object = match self.native_to_object(realm, value.clone())? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let mut values = Vec::new();
-        let keys = match self.internal_own_property_keys(realm, &object)? {
-            NativeConversion::Value(keys) => keys,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        for key in keys {
-            let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-            match (kind, key_kind) {
-                (ObjectOwnPropertyKeysKind::Names, PropertyKeyKind::String) => {
-                    values.push(Value::String(
-                        self.0.state.borrow().atoms.to_js_string(key.atom())?,
-                    ));
-                }
-                (ObjectOwnPropertyKeysKind::Symbols, PropertyKeyKind::Symbol) => {
-                    values.push(Value::Symbol(SymbolRef::from_borrowed_atom(
-                        self.clone(),
-                        key.atom(),
-                    )?));
-                }
-                (
-                    ObjectOwnPropertyKeysKind::Names,
-                    PropertyKeyKind::Symbol | PropertyKeyKind::Private,
-                )
-                | (
-                    ObjectOwnPropertyKeysKind::Symbols,
-                    PropertyKeyKind::String | PropertyKeyKind::Private,
-                ) => {}
-            }
-        }
-        Ok(Completion::Return(Value::Object(
-            self.new_array_from_values(realm, values)?,
-        )))
+        property::finish(
+            self,
+            realm,
+            property::PropertyStep::start(
+                self,
+                realm,
+                property::PropertyKind::ObjectOwnKeys(kind),
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_keys(
@@ -1480,88 +821,19 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object keys method did not receive a generic invocation",
+                "Object enumeration did not receive a generic invocation",
             ));
         };
-        let value = arguments
-            .readable
-            .first()
-            .ok_or(RuntimeError::Invariant("Object keys argv was not padded"))?;
-        let object = match self.native_to_object(realm, value.clone())? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        // QuickJS snapshots every own string key first, then rechecks the
-        // descriptor immediately before emitting each result. A preceding
-        // getter may therefore delete or make a later snapshotted key
-        // non-enumerable, while newly added keys remain absent.
-        let mut keys = Vec::new();
-        let own_keys = match self.internal_own_property_keys(realm, &object)? {
-            NativeConversion::Value(keys) => keys,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        for key in own_keys {
-            if self.0.state.borrow().atoms.property_key_kind(key.atom())? == PropertyKeyKind::String
-            {
-                keys.push(key);
-            }
-        }
-        let result = self.new_array(realm)?;
-        let mut result_index = 0_u32;
-        for key in keys {
-            let enumerable = match self.internal_own_property_is_enumerable(realm, &object, &key)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if !enumerable {
-                continue;
-            }
-
-            let value = match kind {
-                ObjectKeysKind::Keys => {
-                    Value::String(self.0.state.borrow().atoms.to_js_string(key.atom())?)
-                }
-                ObjectKeysKind::Values => {
-                    match self.get_property_in_realm(realm, &object, &key)? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    }
-                }
-                ObjectKeysKind::Entries => {
-                    let entry = self.new_array(realm)?;
-                    let key_value =
-                        Value::String(self.0.state.borrow().atoms.to_js_string(key.atom())?);
-                    self.define_fresh_object_keys_array_element(
-                        &entry,
-                        0,
-                        key_value,
-                        "fresh Object.entries pair rejected its key",
-                    )?;
-                    let value = match self.get_property_in_realm(realm, &object, &key)? {
-                        Completion::Return(value) => value,
-                        Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                    };
-                    self.define_fresh_object_keys_array_element(
-                        &entry,
-                        1,
-                        value,
-                        "fresh Object.entries pair rejected its value",
-                    )?;
-                    Value::Object(entry)
-                }
-            };
-            self.define_fresh_object_keys_array_element(
-                &result,
-                result_index,
-                value,
-                "fresh Object keys result rejected an element",
-            )?;
-            result_index = result_index.checked_add(1).ok_or_else(|| {
-                RuntimeError::Engine(Error::new(ErrorKind::Range, "invalid array length"))
-            })?;
-        }
-        Ok(Completion::Return(Value::Object(result)))
+        property::finish(
+            self,
+            realm,
+            property::PropertyStep::start(
+                self,
+                realm,
+                property::PropertyKind::ObjectKeys(kind),
+                arguments,
+            )?,
+        )
     }
 
     fn define_fresh_object_keys_array_element(
@@ -1600,46 +872,15 @@ impl Runtime {
                 "Object extensibility method did not receive a generic invocation",
             ));
         };
-        let value = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object extensibility argv was not padded",
-            ))?;
-
-        // Unlike most Object statics these routines deliberately do not box
-        // primitives. This matches QuickJS's initial tag test and preserves
-        // the exact primitive for Object.preventExtensions.
-        let Value::Object(object) = &value else {
-            return Ok(Completion::Return(match kind {
-                ObjectExtensibilityKind::IsExtensible => Value::Bool(false),
-                ObjectExtensibilityKind::PreventExtensions => value,
-            }));
+        let kind = match kind {
+            ObjectExtensibilityKind::IsExtensible => property::PropertyKind::ObjectExtensible,
+            ObjectExtensibilityKind::PreventExtensions => property::PropertyKind::ObjectPrevent,
         };
-        match kind {
-            ObjectExtensibilityKind::IsExtensible => {
-                Ok(match self.internal_is_extensible(realm, object)? {
-                    NativeConversion::Value(extensible) => {
-                        Completion::Return(Value::Bool(extensible))
-                    }
-                    NativeConversion::Throw(value) => Completion::Throw(value),
-                })
-            }
-            ObjectExtensibilityKind::PreventExtensions => {
-                match self.internal_prevent_extensions(realm, object)? {
-                    NativeConversion::Value(true) => Ok(Completion::Return(value)),
-                    NativeConversion::Value(false) => {
-                        Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "proxy preventExtensions handler returned false",
-                        )?))
-                    }
-                    NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-                }
-            }
-        }
+        property::finish(
+            self,
+            realm,
+            property::PropertyStep::start(self, realm, kind, arguments)?,
+        )
     }
 
     /// Allocate the ordinary Object produced by QuickJS `OP_object` in the
@@ -1726,24 +967,6 @@ impl Runtime {
         Ok(object)
     }
 
-    pub(crate) fn object_get_own_property_descriptor_value(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-        key: &PropertyKey,
-    ) -> Result<NativeConversion<Value>, RuntimeError> {
-        let descriptor = match self.internal_get_own_property(realm, object, key)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let Some(descriptor) = descriptor else {
-            return Ok(NativeConversion::Value(Value::Undefined));
-        };
-        Ok(NativeConversion::Value(Value::Object(
-            self.complete_descriptor_to_object(realm, descriptor)?,
-        )))
-    }
-
     pub(crate) fn call_object_get_own_property_descriptor(
         &self,
         realm: ContextId,
@@ -1752,38 +975,18 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object.getOwnPropertyDescriptor did not receive a generic invocation",
+                "Object property method did not receive a generic invocation",
             ));
         };
-        let target = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.getOwnPropertyDescriptor target argv was not padded",
-            ))?;
-        let object = match self.native_to_object(realm, target)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(
+        property::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .get(1)
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Object.getOwnPropertyDescriptor key argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(
-            match self.object_get_own_property_descriptor_value(realm, &object, &key)? {
-                NativeConversion::Value(value) => Completion::Return(value),
-                NativeConversion::Throw(value) => Completion::Throw(value),
-            },
+            property::PropertyStep::start(
+                self,
+                realm,
+                property::PropertyKind::ObjectDescriptor,
+                arguments,
+            )?,
         )
     }
 
@@ -1814,56 +1017,19 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
-                "Object.getOwnPropertyDescriptors did not receive a generic invocation",
+                "Object enumeration did not receive a generic invocation",
             ));
         };
-        let target = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.getOwnPropertyDescriptors argv was not padded",
-            ))?;
-        let object = match self.native_to_object(realm, target)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let keys = match self.internal_own_property_keys(realm, &object)? {
-            NativeConversion::Value(keys) => keys,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let result = self.new_ordinary_object_in_realm(realm)?;
-        for key in keys {
-            // QuickJS routes every snapshotted atom back through the singular
-            // helper, so the current descriptor is re-read before publication.
-            let key_value = self.object_property_key_value(&key)?;
-            let descriptor_key = match self.native_to_property_key(realm, key_value)? {
-                NativeConversion::Value(key) => key,
-                NativeConversion::Throw(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "snapshotted property key conversion threw",
-                    ));
-                }
-            };
-            let descriptor = match self.object_get_own_property_descriptor_value(
+        property::finish(
+            self,
+            realm,
+            property::PropertyStep::start(
+                self,
                 realm,
-                &object,
-                &descriptor_key,
-            )? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if matches!(descriptor, Value::Undefined) {
-                continue;
-            }
-            self.define_fresh_object_descriptor_property(
-                &result,
-                &key,
-                descriptor,
-                "fresh Object.getOwnPropertyDescriptors result rejected a property",
-            )?;
-        }
-        Ok(Completion::Return(Value::Object(result)))
+                property::PropertyKind::ObjectDescriptors,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_is(
@@ -1887,74 +1053,6 @@ impl Runtime {
         Ok(Completion::Return(Value::Bool(left.same_value(right))))
     }
 
-    fn copy_data_properties_into_fresh_object(
-        &self,
-        realm: ContextId,
-        target: &ObjectRef,
-        source: &ObjectRef,
-        excluded: Option<&ObjectRef>,
-        enumerable_at_snapshot: bool,
-        rejection: &'static str,
-    ) -> Result<Completion, RuntimeError> {
-        if !target.belongs_to(self)
-            || !source.belongs_to(self)
-            || excluded.is_some_and(|object| !object.belongs_to(self))
-        {
-            return Err(RuntimeError::WrongRuntime("CopyDataProperties object"));
-        }
-
-        let enumerable_at_snapshot = enumerable_at_snapshot && !self.is_proxy_object(source)?;
-        // Both QuickJS paths begin with one OwnPropertyKeys snapshot. Its
-        // ordinary-object path applies the ENUM_ONLY optimization during this
-        // pass. Proxy sources select the live mode because QuickJS cannot use
-        // that optimization across observable descriptor traps.
-        let mut keys = Vec::new();
-        let own_keys = match self.internal_own_property_keys(realm, source)? {
-            NativeConversion::Value(keys) => keys,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        for key in own_keys {
-            let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-            if !matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
-                continue;
-            }
-            if enumerable_at_snapshot && !self.own_property_is_enumerable(source, &key)? {
-                continue;
-            }
-            keys.push(key);
-        }
-
-        for key in keys {
-            // QuickJS checks the private exclusion Object before consulting
-            // the source descriptor. It is an own-property membership test,
-            // not ordinary `HasProperty`, so neither prototypes nor getters
-            // on the exclusion values participate.
-            if let Some(excluded) = excluded {
-                if self.has_own_property(excluded, &key)? {
-                    continue;
-                }
-            }
-            if !enumerable_at_snapshot {
-                let enumerable =
-                    match self.internal_own_property_is_enumerable(realm, source, &key)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                if !enumerable {
-                    continue;
-                }
-            }
-            let value = match self.get_property_in_realm(realm, source, &key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            self.define_fresh_object_descriptor_property(target, &key, value, rejection)?;
-        }
-        Ok(Completion::Return(Value::Undefined))
-    }
-
     /// Pinned QuickJS `JS_CopyDataProperties(..., setprop = 0)` as used by an
     /// Object literal spread. This intentionally preserves two upstream
     /// details which differ from a naive spec helper reuse:
@@ -1969,16 +1067,10 @@ impl Runtime {
         target: &ObjectRef,
         source: Value,
     ) -> Result<Completion, RuntimeError> {
-        let Value::Object(source) = source else {
-            return Ok(Completion::Return(Value::Undefined));
-        };
-        self.copy_data_properties_into_fresh_object(
+        copy::finish(
+            self,
             realm,
-            target,
-            &source,
-            None,
-            true,
-            "fresh Object literal rejected a spread data property",
+            copy::CopyStep::start(self, target.clone(), source, None)?,
         )
     }
 
@@ -1995,13 +1087,15 @@ impl Runtime {
         source: &ObjectRef,
         excluded: &ObjectRef,
     ) -> Result<Completion, RuntimeError> {
-        self.copy_data_properties_into_fresh_object(
+        copy::finish(
+            self,
             realm,
-            target,
-            source,
-            Some(excluded),
-            true,
-            "fresh Object rest result rejected a copied data property",
+            copy::CopyStep::start(
+                self,
+                target.clone(),
+                Value::Object(source.clone()),
+                Some(excluded.clone()),
+            )?,
         )
     }
 
@@ -2016,89 +1110,11 @@ impl Runtime {
                 "Object.assign did not receive a generic invocation",
             ));
         };
-        let target = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object.assign target argv was not padded",
-            ))?;
-        let target = match self.native_to_object(realm, target)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        for source in arguments
-            .readable
-            .iter()
-            .skip(1)
-            .take(arguments.actual_arg_count.saturating_sub(1))
-        {
-            if matches!(source, Value::Null | Value::Undefined) {
-                continue;
-            }
-            let source = match self.native_to_object(realm, source.clone())? {
-                NativeConversion::Value(object) => object,
-                NativeConversion::Throw(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "non-nullish Object.assign source failed ToObject",
-                    ));
-                }
-            };
-
-            // QuickJS's ordinary-object fast path applies ENUM_ONLY while it
-            // snapshots all string and Symbol keys. A Proxy's observable
-            // ownKeys path cannot use that optimization: it snapshots every
-            // key first, then rechecks each descriptor immediately before Get.
-            let enumerable_at_snapshot = !self.is_proxy_object(&source)?;
-            let mut keys = Vec::new();
-            let own_keys = match self.internal_own_property_keys(realm, &source)? {
-                NativeConversion::Value(keys) => keys,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            for key in own_keys {
-                let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-                if !matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
-                    continue;
-                }
-                if enumerable_at_snapshot {
-                    let enumerable = match self
-                        .internal_snapshot_own_property_is_enumerable(realm, &source, &key)?
-                    {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    if !enumerable {
-                        continue;
-                    }
-                }
-                keys.push(key);
-            }
-            for key in keys {
-                if !enumerable_at_snapshot {
-                    let enumerable =
-                        match self.internal_own_property_is_enumerable(realm, &source, &key)? {
-                            NativeConversion::Value(value) => value,
-                            NativeConversion::Throw(value) => {
-                                return Ok(Completion::Throw(value));
-                            }
-                        };
-                    if !enumerable {
-                        continue;
-                    }
-                }
-                let value = match self.get_property_in_realm(realm, &source, &key)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if let Some(value) = self.set_property_or_throw(realm, &target, &key, value)? {
-                    return Ok(Completion::Throw(value));
-                }
-            }
-        }
-        Ok(Completion::Return(Value::Object(target)))
+        property::finish(
+            self,
+            realm,
+            property::PropertyStep::start(self, realm, property::PropertyKind::Assign, arguments)?,
+        )
     }
 
     pub(crate) fn call_object_integrity(
@@ -2113,115 +1129,16 @@ impl Runtime {
                 "Object integrity method did not receive a generic invocation",
             ));
         };
-        let value = arguments
-            .readable
-            .first()
-            .cloned()
-            .ok_or(RuntimeError::Invariant(
-                "Object integrity argv was not padded",
-            ))?;
-        let Value::Object(object) = &value else {
-            return Ok(Completion::Return(match kind {
-                ObjectIntegrityKind::Seal | ObjectIntegrityKind::Freeze => value,
-                ObjectIntegrityKind::IsSealed | ObjectIntegrityKind::IsFrozen => Value::Bool(true),
-            }));
-        };
-
-        let mut keys = Vec::new();
-        match kind {
-            ObjectIntegrityKind::Seal | ObjectIntegrityKind::Freeze => {
-                // QuickJS prevents extensions before it snapshots any key.
-                match self.internal_prevent_extensions(realm, object)? {
-                    NativeConversion::Value(true) => {}
-                    NativeConversion::Value(false) => {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Type,
-                            "proxy preventExtensions handler returned false",
-                        )?));
-                    }
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-                let own_keys = match self.internal_own_property_keys(realm, object)? {
-                    NativeConversion::Value(keys) => keys,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                for key in own_keys {
-                    let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-                    if matches!(key_kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
-                        keys.push(key);
-                    }
-                }
-                for key in keys {
-                    let mut descriptor = OrdinaryPropertyDescriptor {
-                        configurable: DescriptorField::Present(false),
-                        ..OrdinaryPropertyDescriptor::new()
-                    };
-                    let current = match self.internal_get_own_property(realm, object, &key)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    if kind == ObjectIntegrityKind::Freeze
-                        && matches!(
-                            current,
-                            Some(CompleteOrdinaryPropertyDescriptor::Data { writable: true, .. })
-                        )
-                    {
-                        descriptor.writable = DescriptorField::Present(false);
-                    }
-                    if let Some(value) =
-                        self.define_property_or_throw(realm, object, &key, &descriptor)?
-                    {
-                        return Ok(Completion::Throw(value));
-                    }
-                }
-                Ok(Completion::Return(value))
-            }
-            ObjectIntegrityKind::IsSealed | ObjectIntegrityKind::IsFrozen => {
-                let own_keys = match self.internal_own_property_keys(realm, object)? {
-                    NativeConversion::Value(keys) => keys,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                for key in own_keys {
-                    let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-                    if matches!(key_kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
-                        keys.push(key);
-                    }
-                }
-                for key in keys {
-                    let descriptor = match self.internal_get_own_property(realm, object, &key)? {
-                        NativeConversion::Value(value) => value,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
-                        }
-                    };
-                    let Some(descriptor) = descriptor else {
-                        continue;
-                    };
-                    let violates = match descriptor {
-                        CompleteOrdinaryPropertyDescriptor::Data {
-                            writable,
-                            configurable,
-                            ..
-                        } => configurable || (kind == ObjectIntegrityKind::IsFrozen && writable),
-                        CompleteOrdinaryPropertyDescriptor::Accessor { configurable, .. } => {
-                            configurable
-                        }
-                    };
-                    if violates {
-                        return Ok(Completion::Return(Value::Bool(false)));
-                    }
-                }
-                Ok(match self.internal_is_extensible(realm, object)? {
-                    NativeConversion::Value(extensible) => {
-                        Completion::Return(Value::Bool(!extensible))
-                    }
-                    NativeConversion::Throw(value) => Completion::Throw(value),
-                })
-            }
-        }
+        property::finish(
+            self,
+            realm,
+            property::PropertyStep::start(
+                self,
+                realm,
+                property::PropertyKind::Integrity(kind),
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_has_own_property(
@@ -2230,34 +1147,16 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype.hasOwnProperty did not receive a generic invocation",
-            ));
-        };
-        // QuickJS converts the key before checking the receiver.
-        let key = match self.native_to_property_key(
+        predicate::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .first()
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "hasOwnProperty argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let object = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(
-            match self.internal_has_own_property(realm, &object, &key)? {
-                NativeConversion::Value(value) => Completion::Return(Value::Bool(value)),
-                NativeConversion::Throw(value) => Completion::Throw(value),
-            },
+            predicate::PredicateStep::start(
+                self,
+                realm,
+                predicate::PredicateKind::PrototypeHasOwn,
+                &invocation,
+                arguments,
+            )?,
         )
     }
 
@@ -2267,33 +1166,16 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype.propertyIsEnumerable did not receive a generic invocation",
-            ));
-        };
-        let key = match self.native_to_property_key(
+        predicate::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .first()
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "propertyIsEnumerable argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let object = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(
-            match self.internal_own_property_is_enumerable(realm, &object, &key)? {
-                NativeConversion::Value(enumerable) => Completion::Return(Value::Bool(enumerable)),
-                NativeConversion::Throw(value) => Completion::Throw(value),
-            },
+            predicate::PredicateStep::start(
+                self,
+                realm,
+                predicate::PredicateKind::Enumerable,
+                &invocation,
+                arguments,
+            )?,
         )
     }
 
@@ -2303,32 +1185,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype.isPrototypeOf did not receive a generic invocation",
-            ));
-        };
-        let Some(Value::Object(candidate)) = arguments.readable.first() else {
-            return Ok(Completion::Return(Value::Bool(false)));
-        };
-        let prototype = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let mut cursor = match self.internal_get_prototype_of(realm, candidate)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        while let Some(current) = cursor {
-            if current == prototype {
-                return Ok(Completion::Return(Value::Bool(true)));
-            }
-            cursor = match self.internal_get_prototype_of(realm, &current)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        }
-        Ok(Completion::Return(Value::Bool(false)))
+        prototype::finish(
+            self,
+            realm,
+            prototype::BuiltinPrototypeStep::start_invocation(
+                self,
+                realm,
+                prototype::BuiltinPrototypeKind::IsPrototype,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_proto_getter(
@@ -2336,21 +1203,20 @@ impl Runtime {
         realm: ContextId,
         invocation: NativeInvocation,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Getter { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype __proto__ getter received the wrong invocation",
-            ));
-        };
-        let object = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(match self.internal_get_prototype_of(realm, &object)? {
-            NativeConversion::Value(prototype) => {
-                Completion::Return(prototype.map_or(Value::Null, Value::Object))
-            }
-            NativeConversion::Throw(value) => Completion::Throw(value),
-        })
+        prototype::finish(
+            self,
+            realm,
+            prototype::BuiltinPrototypeStep::start_invocation(
+                self,
+                realm,
+                prototype::BuiltinPrototypeKind::Getter,
+                &invocation,
+                &NativeArguments {
+                    actual_arg_count: 0,
+                    readable: Vec::new(),
+                },
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_proto_setter(
@@ -2359,33 +1225,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Setter { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype __proto__ setter received the wrong invocation",
-            ));
-        };
-        if matches!(this_value, Value::Undefined | Value::Null) {
-            return Ok(Completion::Throw(self.new_native_error(
+        prototype::finish(
+            self,
+            realm,
+            prototype::BuiltinPrototypeStep::start_invocation(
+                self,
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        }
-        let prototype = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Object.prototype __proto__ setter argv was not padded",
-        ))?;
-        let prototype = match prototype {
-            Value::Object(prototype) => Some(prototype),
-            Value::Null => None,
-            _ => return Ok(Completion::Return(Value::Undefined)),
-        };
-        let Value::Object(object) = this_value else {
-            return Ok(Completion::Return(Value::Undefined));
-        };
-        if let Some(value) = self.set_prototype_or_throw(realm, &object, prototype)? {
-            return Ok(Completion::Throw(value));
-        }
-        Ok(Completion::Return(Value::Undefined))
+                prototype::BuiltinPrototypeKind::Setter,
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_define_accessor(
@@ -2395,62 +1245,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype __define*__ did not receive a generic invocation",
-            ));
-        };
-        let object = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let accessor = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "Object.prototype __define*__ accessor argv was not padded",
-        ))?;
-        let Value::Object(accessor) = accessor else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(accessor) = self.as_callable(accessor)? else {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let key = match self.native_to_property_key(
+        predicate::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .first()
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Object.prototype __define*__ key argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let mut descriptor = OrdinaryPropertyDescriptor {
-            enumerable: DescriptorField::Present(true),
-            configurable: DescriptorField::Present(true),
-            ..OrdinaryPropertyDescriptor::new()
-        };
-        match kind {
-            ObjectAccessorKind::Getter => {
-                descriptor.get = DescriptorField::Present(AccessorValue::Callable(accessor));
-            }
-            ObjectAccessorKind::Setter => {
-                descriptor.set = DescriptorField::Present(AccessorValue::Callable(accessor));
-            }
-        }
-        if let Some(value) = self.define_property_or_throw(realm, &object, &key, &descriptor)? {
-            return Ok(Completion::Throw(value));
-        }
-        Ok(Completion::Return(Value::Undefined))
+            predicate::PredicateStep::start(
+                self,
+                realm,
+                predicate::PredicateKind::Define(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     pub(crate) fn call_object_prototype_lookup_accessor(
@@ -2460,52 +1265,19 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Object.prototype __lookup*__ did not receive a generic invocation",
-            ));
-        };
-        let object = match self.native_to_object(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let key = match self.native_to_property_key(
+        predicate::finish(
+            self,
             realm,
-            arguments
-                .readable
-                .first()
-                .cloned()
-                .ok_or(RuntimeError::Invariant(
-                    "Object.prototype __lookup*__ key argv was not padded",
-                ))?,
-        )? {
-            NativeConversion::Value(key) => key,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let mut cursor = Some(object);
-        while let Some(current) = cursor {
-            let descriptor = match self.internal_get_own_property(realm, &current, &key)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            if let Some(descriptor) = descriptor {
-                let value = match descriptor {
-                    CompleteOrdinaryPropertyDescriptor::Accessor { get, set, .. } => match kind {
-                        ObjectAccessorKind::Getter => get,
-                        ObjectAccessorKind::Setter => set,
-                    }
-                    .map_or(Value::Undefined, |callable| {
-                        Value::Object(callable.as_object().clone())
-                    }),
-                    CompleteOrdinaryPropertyDescriptor::Data { .. } => Value::Undefined,
-                };
-                return Ok(Completion::Return(value));
-            }
-            cursor = match self.internal_get_prototype_of(realm, &current)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        }
-        Ok(Completion::Return(Value::Undefined))
+            predicate::PredicateStep::start(
+                self,
+                realm,
+                predicate::PredicateKind::Lookup(kind),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 }
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<ObjectIteratorStep>() <= 64);

@@ -360,84 +360,29 @@ def check(ctx):
             "ToPropKey host conversion must preserve Int/String and Symbol identity, runtime ownership, the defining-realm string hint, arbitrary Throw identity, and canonical primitive-to-String fallback",
         )
 
-    stage3j_to_primitive = ctx.stage3b_function(
-        "src/engine/heap/runtime/mod.rs",
-        "to_primitive",
-        "stage3j-to-propkey-primitive-semantics",
-    )
-
-    stage3j_to_primitive_source = ctx.stage3j_source_function(
-        "src/engine/heap/runtime/mod.rs",
-        "to_primitive",
-        "stage3j-to-propkey-primitive-semantics",
-    )
-
+    # S11: requests retain the same owned domain allocation across Get/Call.
+    # The reviewed source keeps one-use replies, drop order and literal hints.
+    # Pin the entry route and every phase, literal, receiver and completion in
+    # the raw state source; stage3i canaries mutate hints, realm and ordering.
     ctx.require_normalized_code_sha256(
         "stage3j-to-propkey-primitive-semantics",
-        "Runtime::to_primitive must retain primitive identity, @@toPrimitive lookup/call/Throw behavior, defining-realm TypeErrors, and ordinary fallback",
-        stage3j_to_primitive,
-        "abcd2b0699c336532fa0b0f19ba13a36a912b9801ebaacbff6b497ac2becb727",
-    )
-
-    ctx.require_normalized_code_sha256(
-        "stage3j-to-propkey-primitive-semantics",
-        "the bounded raw Runtime::to_primitive source, including the exact hint and error literals, must remain exact",
-        stage3j_to_primitive_source,
-        "fe6d2c76335f23517797e73f3341a176328dcde4aca78a2cbbc9be22f36d5592",
-    )
-
-    normalized_stage3j_to_primitive = " ".join(stage3j_to_primitive_source.split())
-
-    stage3j_to_primitive_fragments = deepcopy(evidence.STAGE3J_TO_PRIMITIVE_FRAGMENTS)
-
-    if any(
-        normalized_stage3j_to_primitive.count(fragment) != expected_count
-        for fragment, expected_count in stage3j_to_primitive_fragments
-    ):
-        ctx.fail(
+        "ToPrimitive must enter and consume the shared owned conversion state",
+        ctx.stage3j_source_function(
+            "src/engine/value/conversion.rs", "to_primitive",
             "stage3j-to-propkey-primitive-semantics",
-            "@@toPrimitive must receive the exact string hint once, preserve primitive and Throw identity, reject Object results with a defining-realm TypeError, and fall back ordinarily",
-        )
-
-    stage3j_ordinary_to_primitive = ctx.stage3b_function(
-        "src/engine/builtins/object.rs",
-        "ordinary_to_primitive",
+        ),
+        "3e253fe05620ea38f86b0c50d1add60b2779db21fd0c4efc2920cfc8ba2231d8",
+    )
+    primitive_state_source = ctx.read_source("src/engine/value/conversion/primitive.rs")
+    for diagnostic in (
+        "stage3j-to-propkey-primitive-semantics",
         "stage3j-to-propkey-ordinary-fallback",
-    )
-
-    stage3j_ordinary_to_primitive_source = ctx.stage3j_source_function(
-        "src/engine/builtins/object.rs",
-        "ordinary_to_primitive",
-        "stage3j-to-propkey-ordinary-fallback",
-    )
-
-    ctx.require_normalized_code_sha256(
-        "stage3j-to-propkey-ordinary-fallback",
-        "Runtime::ordinary_to_primitive must retain callable lookup, completion propagation, Object-result retry, and defining-realm failure",
-        stage3j_ordinary_to_primitive,
-        "f19aa3f0ecca0598753bc7c8daa96fb546d98b518e17b10c64d1c6f7ea403c7b",
-    )
-
-    ctx.require_normalized_code_sha256(
-        "stage3j-to-propkey-ordinary-fallback",
-        "the bounded raw ordinary ToPrimitive fallback, including exact method ordering, must remain exact",
-        stage3j_ordinary_to_primitive_source,
-        "85e0451154b83269f31f8c9a85ae64e3c6d39ab31777894bb3b96a57dc1c5aef",
-    )
-
-    normalized_stage3j_ordinary_to_primitive = " ".join(
-        stage3j_ordinary_to_primitive_source.split()
-    )
-
-    stage3j_ordinary_to_primitive_fragments = deepcopy(evidence.STAGE3J_ORDINARY_TO_PRIMITIVE_FRAGMENTS)
-
-    if any(
-        normalized_stage3j_ordinary_to_primitive.count(fragment) != expected_count
-        for fragment, expected_count in stage3j_ordinary_to_primitive_fragments
     ):
-        ctx.fail(
-            "stage3j-to-propkey-ordinary-fallback",
-            "ordinary string-hint conversion must call toString before valueOf, preserve getter/call completions, retry only Object results, and materialize the defining-realm TypeError after exhaustion",
+        ctx.require_normalized_code_sha256(
+            diagnostic,
+            "owned ToPrimitive phases must preserve one-use replies, hint ordering, receiver and Throw identity, realm errors and the ordinary entry route",
+            primitive_state_source,
+            "1c3d0ff8a94307fe9c7995c41ce4066f345bbe98192068c6ed587631d222fcad",
         )
 
     stage3g_test_contracts = deepcopy(evidence.STAGE3G_TEST_CONTRACTS)

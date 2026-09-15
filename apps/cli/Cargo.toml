@@ -21,6 +21,7 @@ path = "src/main.rs"
 default = []
 test262-host = ["quickjs-oxide/test262-host"]
 profiling = ["quickjs-oxide/profiling"]
+stack-vm = ["quickjs-oxide/stack-vm"]
 
 [dev-dependencies]
 quickjs-oxide = { workspace = true, features = ["test-support"] }

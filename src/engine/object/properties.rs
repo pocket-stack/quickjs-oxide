@@ -46,6 +46,32 @@ impl RuntimeState {
         flags: PropertyFlags,
         replacement: PropertySlot,
     ) -> Result<(), RuntimeError> {
+        self.append_unique_layout_inner(object, atom, flags, replacement, None)
+    }
+
+    pub(super) fn append_selected_unique_layout(
+        &mut self,
+        selected: super::SelectedMissingAppend,
+        flags: PropertyFlags,
+        replacement: PropertySlot,
+    ) -> Result<(), RuntimeError> {
+        self.append_unique_layout_inner(
+            selected.object(),
+            selected.atom(),
+            flags,
+            replacement,
+            Some(selected),
+        )
+    }
+
+    fn append_unique_layout_inner(
+        &mut self,
+        object: ObjectId,
+        atom: Atom,
+        flags: PropertyFlags,
+        replacement: PropertySlot,
+        selected: Option<super::SelectedMissingAppend>,
+    ) -> Result<(), RuntimeError> {
         let shape = self.heap.object(object)?.shape;
         if self.heap.shape_strong_count(shape)? != 1 {
             return Err(RuntimeError::Invariant(
@@ -69,10 +95,16 @@ impl RuntimeState {
             }
             (fingerprint, owned_cache_entry)
         });
-        if let Err(error) =
-            self.heap
-                .append_unique_object_property(object, atom, flags, replacement)
-        {
+        let result = match selected {
+            Some(selected) => {
+                self.heap
+                    .append_selected_missing_object_property(selected, flags, replacement)
+            }
+            None => self
+                .heap
+                .append_unique_object_property(object, atom, flags, replacement),
+        };
+        if let Err(error) = result {
             if let Some((fingerprint, owned_cache_entry)) = unlinked {
                 if owned_cache_entry {
                     self.shape_cache.insert(fingerprint.clone(), shape);
@@ -525,6 +557,15 @@ impl Runtime {
             ArrayLengthConversion::Length(length) => length,
             ArrayLengthConversion::Throw(value) => return Ok(PropertySetAction::Throw(value)),
         };
+        self.apply_set_array_length(object, key, new_length)
+    }
+
+    pub(crate) fn apply_set_array_length(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        new_length: u32,
+    ) -> Result<PropertySetAction, RuntimeError> {
         let (_, writable) = self.array_length_state(object)?;
         if !writable {
             return Ok(PropertySetAction::Rejected(
@@ -536,7 +577,7 @@ impl Runtime {
             ..OrdinaryPropertyDescriptor::new()
         };
         Ok(
-            match self.define_array_length(realm, object, key, &descriptor)? {
+            match self.apply_array_length_descriptor(object, key, &descriptor, new_length)? {
                 PropertyDefineOutcome::Defined(true) => PropertySetAction::Complete,
                 PropertyDefineOutcome::Defined(false) => {
                     PropertySetAction::Rejected(PropertySetRejection::NotConfigurable)
@@ -806,7 +847,7 @@ impl Runtime {
         }
     }
 
-    fn replace_dense_array_value(
+    pub(super) fn replace_dense_array_value(
         &self,
         object: &ObjectRef,
         index: u32,
@@ -837,13 +878,23 @@ impl Runtime {
     ) -> Result<Option<(u32, bool)>, RuntimeError> {
         let length = self.intern_property_key("length")?;
         let state = self.0.state.borrow();
-        let object_data = state.heap.object(object.object_id())?;
+        Self::array_length_state_in_heap(&state.heap, object.object_id(), length.atom())
+    }
+
+    // Shared structural contract for the public rooted accessor and short
+    // non-observing Array iterator storage transactions.
+    pub(crate) fn array_length_state_in_heap(
+        heap: &crate::engine::heap::Heap,
+        object: ObjectId,
+        length: Atom,
+    ) -> Result<Option<(u32, bool)>, RuntimeError> {
+        let object_data = heap.object(object)?;
         if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
             return Ok(None);
         }
-        let shape = state.heap.shape(object_data.shape)?;
+        let shape = heap.shape(object_data.shape)?;
         let index = shape
-            .find(length.atom())
+            .find(length)
             .ok_or(RuntimeError::Invariant("Array has no length property"))?;
         if index != 0 {
             return Err(RuntimeError::Invariant(
@@ -902,6 +953,85 @@ impl Runtime {
         } else {
             Value::Float(f64::from(length))
         }
+    }
+
+    /// The caller has selected an absent consecutive dense element and walked
+    /// its ordinary prototypes without callbacks. Reuse that descriptor fact;
+    /// permission failures retain Set's existing precise rejection path.
+    #[cfg(feature = "stack-vm")]
+    pub(super) fn define_selected_dense_array_append(
+        &self,
+        object: &ObjectRef,
+        index: u32,
+        value: &Value,
+    ) -> Result<Option<PropertySetRejection>, RuntimeError> {
+        let (old_length, length_writable) = self.array_length_state(object)?;
+        let extensible = self.is_extensible(object)?;
+        if index >= old_length && !length_writable {
+            return Ok(Some(if !extensible {
+                PropertySetRejection::NotExtensible
+            } else {
+                PropertySetRejection::ArrayLengthReadOnly
+            }));
+        }
+        let descriptor = crate::engine::object::property::PropertyDescriptor {
+            value: Some(value),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..crate::engine::object::property::PropertyDescriptor::new()
+        };
+        if validate_and_apply_property_descriptor(
+            extensible,
+            &descriptor,
+            None,
+            &&Value::Undefined,
+            |a, b| Value::same_value(a, b),
+        )
+        .is_err()
+        {
+            return Ok(Some(PropertySetRejection::NotExtensible));
+        }
+        self.commit_dense_array_index_append(object, index, old_length, value)?;
+        #[cfg(feature = "profiling")]
+        crate::engine::api::profiling::record_owned_execution_event(
+            "set_dense_append_from_selection",
+        );
+        Ok(None)
+    }
+
+    // The authoritative append/length-growth tail shared by descriptor Define
+    // and an immediately selected Set. Keep append before length-key creation
+    // and growth publication, including the original partial-failure behavior.
+    fn commit_dense_array_index_append(
+        &self,
+        object: &ObjectRef,
+        index: u32,
+        old_length: u32,
+        value: &Value,
+    ) -> Result<(), RuntimeError> {
+        self.append_dense_array_value(object, value)?;
+        if index < old_length {
+            return Ok(());
+        }
+        let length = self.intern_property_key("length")?;
+        let next_length = index
+            .checked_add(1)
+            .ok_or(RuntimeError::Invariant("Array index exceeded Uint32 range"))?;
+        let updated = self.define_ordinary_own_property(
+            object,
+            &length,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Self::array_length_value(next_length)),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )?;
+        if !updated {
+            return Err(RuntimeError::Invariant(
+                "writable Array length rejected dense index growth",
+            ));
+        }
+        Ok(())
     }
 
     fn define_array_index(
@@ -967,27 +1097,7 @@ impl Runtime {
             if index == dense_len
                 && let Some(value) = compatible_value
             {
-                self.append_dense_array_value(object, value)?;
-                if index < old_length {
-                    return Ok(PropertyDefineOutcome::Defined(true));
-                }
-                let length = self.intern_property_key("length")?;
-                let next_length = index
-                    .checked_add(1)
-                    .ok_or(RuntimeError::Invariant("Array index exceeded Uint32 range"))?;
-                let updated = self.define_ordinary_own_property(
-                    object,
-                    &length,
-                    &OrdinaryPropertyDescriptor {
-                        value: DescriptorField::Present(Self::array_length_value(next_length)),
-                        ..OrdinaryPropertyDescriptor::new()
-                    },
-                )?;
-                if !updated {
-                    return Err(RuntimeError::Invariant(
-                        "writable Array length rejected dense index growth",
-                    ));
-                }
+                self.commit_dense_array_index_append(object, index, old_length, value)?;
                 return Ok(PropertyDefineOutcome::Defined(true));
             }
             self.materialize_dense_array(object)?;
@@ -1020,6 +1130,57 @@ impl Runtime {
         Ok(PropertyDefineOutcome::Defined(true))
     }
 
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn prepare_typed_array_definition(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        descriptor: &OrdinaryPropertyDescriptor,
+    ) -> Result<Option<crate::engine::builtins::TypedWriteStep>, RuntimeError> {
+        use crate::engine::builtins::TypedWriteStep;
+        if !self.typed_array_is_object(object)? {
+            return Ok(None);
+        }
+        self.validate_object_and_key(object, key)?;
+        self.validate_descriptor_domains(descriptor)?;
+        if descriptor.is_mixed_descriptor() {
+            return Err(PropertyDefinitionError::InvalidDescriptor.into());
+        }
+        let Some(numeric) = self.typed_array_canonical_numeric_index(key)? else {
+            return Ok(None);
+        };
+        let CanonicalNumericIndex::Valid(index) = numeric else {
+            return Ok(Some(TypedWriteStep::Complete(NativeConversion::Value(
+                false,
+            ))));
+        };
+        TypedWriteStep::define(self, object.clone(), index, descriptor).map(Some)
+    }
+
+    /// Prepare the only Array DefineOwnProperty branch that can invoke JS.
+    /// Arrays cannot take the ordinary-value fast path or another exotic branch.
+    #[cfg(feature = "stack-vm")]
+    pub(crate) fn prepare_array_length_definition(
+        &self,
+        realm: Option<ContextId>,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        descriptor: &OrdinaryPropertyDescriptor,
+    ) -> Result<Option<super::ArrayLengthStep>, RuntimeError> {
+        if self.array_own_key(object, key)? != ArrayOwnKey::Length {
+            return Ok(None);
+        }
+        self.validate_object_and_key(object, key)?;
+        self.validate_descriptor_domains(descriptor)?;
+        if descriptor.is_mixed_descriptor() {
+            return Err(PropertyDefinitionError::InvalidDescriptor.into());
+        }
+        let DescriptorField::Present(value) = &descriptor.value else {
+            return Ok(None);
+        };
+        super::ArrayLengthStep::start(self, realm, value.clone()).map(Some)
+    }
+
     fn define_array_length(
         &self,
         realm: Option<ContextId>,
@@ -1039,6 +1200,16 @@ impl Runtime {
             }
         };
 
+        self.apply_array_length_descriptor(object, key, descriptor, new_length)
+    }
+
+    pub(crate) fn apply_array_length_descriptor(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        descriptor: &OrdinaryPropertyDescriptor,
+        new_length: u32,
+    ) -> Result<PropertyDefineOutcome, RuntimeError> {
         // Conversion may execute JavaScript and mutate this same Array. Match
         // QuickJS by reloading the length slot only after conversion returns.
         let (old_length, old_writable) = self.array_length_state(object)?;
@@ -1146,36 +1317,15 @@ impl Runtime {
         realm: Option<ContextId>,
         value: &Value,
     ) -> Result<ArrayLengthConversion, RuntimeError> {
-        match value {
-            Value::Int(value) if *value >= 0 => {
-                return Ok(ArrayLengthConversion::Length(*value as u32));
-            }
-            Value::Bool(value) => {
-                return Ok(ArrayLengthConversion::Length(u32::from(*value)));
-            }
-            Value::Null => return Ok(ArrayLengthConversion::Length(0)),
-            Value::Float(value) => return self.validate_array_length_number(realm, *value, None),
-            Value::Int(_) => return self.invalid_array_length(realm),
-            Value::Undefined
-            | Value::BigInt(_)
-            | Value::String(_)
-            | Value::Symbol(_)
-            | Value::Object(_) => {}
+        let mut step = crate::engine::object::ArrayLengthStep::start(self, realm, value.clone())?;
+        loop {
+            step = match step {
+                crate::engine::object::ArrayLengthStep::Complete(result) => return Ok(result),
+                crate::engine::object::ArrayLengthStep::Number { value, resume } => {
+                    resume.number(self, self.array_length_to_number(realm, &value)?)?
+                }
+            };
         }
-
-        // QuickJS deliberately preserves the legacy two-conversion behavior
-        // for non-number Array length definitions: ToUint32(value), then a
-        // second ToNumber(value), followed by equality with an exact Uint32.
-        let first = match self.array_length_to_number(realm, value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(ArrayLengthConversion::Throw(value)),
-        };
-        let uint32 = Self::to_uint32_number(first);
-        let second = match self.array_length_to_number(realm, value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(ArrayLengthConversion::Throw(value)),
-        };
-        self.validate_array_length_number(realm, second, Some(uint32))
     }
 
     fn array_length_to_number(

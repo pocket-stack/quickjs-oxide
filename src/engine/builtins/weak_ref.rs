@@ -25,10 +25,12 @@ use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WeakIntrinsicKind {
+pub(crate) enum WeakIntrinsicKind {
     WeakRef,
     FinalizationRegistry,
 }
+
+pub(super) mod constructor;
 
 impl Runtime {
     fn weak_intrinsic_mutation_error(error: HeapError) -> RuntimeError {
@@ -171,18 +173,6 @@ impl Runtime {
         })
     }
 
-    fn weak_intrinsic_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-        kind: WeakIntrinsicKind,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            let prototype = self.weak_intrinsic_prototype(fallback_realm, kind)?;
-            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-        })
-    }
-
     fn weak_target_key(
         &self,
         value: &Value,
@@ -289,42 +279,17 @@ impl Runtime {
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
         match kind {
-            WeakRefNativeKind::Constructor => {
-                let NativeInvocation::Construct { new_target } = invocation else {
-                    return Err(RuntimeError::Invariant(
-                        "WeakRef constructor received the wrong native invocation",
-                    ));
-                };
-                if matches!(new_target, Value::Undefined) {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Type,
-                        "constructor requires 'new'",
-                    )?));
-                }
-                let target_value =
-                    arguments
-                        .readable
-                        .first()
-                        .cloned()
-                        .ok_or(RuntimeError::Invariant(
-                            "WeakRef target argv was not padded",
-                        ))?;
-                let Some(target) = self.weak_target_key(&target_value, "WeakRef target")? else {
-                    return self.invalid_weak_target(realm, "invalid target");
-                };
-                let prototype = match self.weak_intrinsic_prototype_from_new_target(
+            WeakRefNativeKind::Constructor => constructor::finish(
+                self,
+                realm,
+                constructor::WeakConstructorStep::start(
+                    self,
                     realm,
-                    new_target,
                     WeakIntrinsicKind::WeakRef,
-                )? {
-                    NativeConversion::Value(prototype) => prototype,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                Ok(Completion::Return(Value::Object(
-                    self.new_weak_ref_object(&prototype, target)?,
-                )))
-            }
+                    &invocation,
+                    arguments,
+                )?,
+            ),
             WeakRefNativeKind::Deref => {
                 let NativeInvocation::Call { this_value } = invocation else {
                     return Err(RuntimeError::Invariant(
@@ -423,43 +388,17 @@ impl Runtime {
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
         if kind == FinalizationRegistryNativeKind::Constructor {
-            let NativeInvocation::Construct { new_target } = invocation else {
-                return Err(RuntimeError::Invariant(
-                    "FinalizationRegistry constructor received the wrong native invocation",
-                ));
-            };
-            if matches!(new_target, Value::Undefined) {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "constructor requires 'new'",
-                )?));
-            }
-            let callback_value =
-                arguments
-                    .readable
-                    .first()
-                    .cloned()
-                    .ok_or(RuntimeError::Invariant(
-                        "FinalizationRegistry callback argv was not padded",
-                    ))?;
-            let Value::Object(callback_object) = callback_value else {
-                return self.invalid_weak_target(realm, "argument must be a function");
-            };
-            let Some(callback) = self.as_callable(&callback_object)? else {
-                return self.invalid_weak_target(realm, "argument must be a function");
-            };
-            let prototype = match self.weak_intrinsic_prototype_from_new_target(
+            return constructor::finish(
+                self,
                 realm,
-                new_target,
-                WeakIntrinsicKind::FinalizationRegistry,
-            )? {
-                NativeConversion::Value(prototype) => prototype,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            return Ok(Completion::Return(Value::Object(
-                self.new_finalization_registry_object(&prototype, &callback, realm)?,
-            )));
+                constructor::WeakConstructorStep::start(
+                    self,
+                    realm,
+                    WeakIntrinsicKind::FinalizationRegistry,
+                    &invocation,
+                    arguments,
+                )?,
+            );
         }
 
         let registry = match self.finalization_registry_receiver(realm, invocation)? {

@@ -144,12 +144,25 @@ pub struct QuickJsSourceIndex<'source> {
     checkpoints: Vec<LineColumn>,
 }
 
-impl QuickJsSourceIndex<'_> {
+impl<'source> QuickJsSourceIndex<'source> {
     pub fn locate(&self, offset: SourceOffset) -> Result<LineColumn, DebugMetadataError> {
         self.locate_byte_offset(offset.as_usize())
     }
 
     pub fn locate_byte_offset(&self, byte_offset: usize) -> Result<LineColumn, DebugMetadataError> {
+        self.validate_byte_offset(byte_offset)?;
+        self.locate_validated_byte_offset(byte_offset)
+    }
+
+    /// Keep adjacent lookups local without changing the shared immutable index.
+    pub(crate) fn cursor(&self) -> QuickJsSourceCursor<'_, 'source> {
+        QuickJsSourceCursor {
+            index: self,
+            previous: None,
+        }
+    }
+
+    fn validate_byte_offset(&self, byte_offset: usize) -> Result<(), DebugMetadataError> {
         if byte_offset > self.locator.source.len() {
             return Err(DebugMetadataError::OffsetOutOfBounds);
         }
@@ -160,11 +173,55 @@ impl QuickJsSourceIndex<'_> {
         {
             return Err(DebugMetadataError::OffsetNotUtf8Boundary);
         }
+        Ok(())
+    }
+
+    fn locate_validated_byte_offset(
+        &self,
+        byte_offset: usize,
+    ) -> Result<LineColumn, DebugMetadataError> {
         let checkpoint = byte_offset / SOURCE_CHECKPOINT_BYTES;
         advance_position(
             self.checkpoints[checkpoint],
             &self.locator.source[checkpoint * SOURCE_CHECKPOINT_BYTES..byte_offset],
         )
+    }
+}
+
+/// A function-local cursor over the source-owned index. Only successful
+/// coordinates are cached, and every lookup retains the index's validation.
+/// Forward lookups within one checkpoint reuse the same byte-level kernel on
+/// a shorter suffix; all other lookups retain the bounded checkpoint scan.
+pub(crate) struct QuickJsSourceCursor<'index, 'source> {
+    index: &'index QuickJsSourceIndex<'source>,
+    previous: Option<(usize, LineColumn)>,
+}
+
+impl QuickJsSourceCursor<'_, '_> {
+    pub(crate) fn locate(
+        &mut self,
+        offset: SourceOffset,
+    ) -> Result<LineColumn, DebugMetadataError> {
+        self.locate_byte_offset(offset.as_usize())
+    }
+
+    fn locate_byte_offset(&mut self, byte_offset: usize) -> Result<LineColumn, DebugMetadataError> {
+        self.index.validate_byte_offset(byte_offset)?;
+        let position = match self.previous {
+            Some((previous_offset, position))
+                if previous_offset <= byte_offset
+                    && previous_offset / SOURCE_CHECKPOINT_BYTES
+                        == byte_offset / SOURCE_CHECKPOINT_BYTES =>
+            {
+                advance_position(
+                    position,
+                    &self.index.locator.source[previous_offset..byte_offset],
+                )?
+            }
+            _ => self.index.locate_validated_byte_offset(byte_offset)?,
+        };
+        self.previous = Some((byte_offset, position));
+        Ok(position)
     }
 }
 
@@ -216,5 +273,62 @@ mod tests {
         }
         let empty = QuickJsSourceLocator::from_bytes(b"").index().unwrap();
         assert_eq!(empty.locate_byte_offset(0), Ok(LineColumn::new(0, 0)));
+    }
+    #[test]
+    fn cursor_matches_index_and_scan_for_forward_backward_and_invalid_offsets() {
+        let raw = [b'a', 0x80, 0xff, b'\r', b'\n', 0xe2, 0x80, 0xa8].repeat(100);
+        let text = ("é\r\n𝄞\u{2028}".to_owned() + &"x".repeat(600)).repeat(3);
+        for locator in [
+            QuickJsSourceLocator::from_bytes(&raw),
+            QuickJsSourceLocator::new(&text),
+            QuickJsSourceLocator::from_bytes(b""),
+        ] {
+            let index = locator.index().unwrap();
+            let mut cursor = index.cursor();
+            let length = locator.source.len();
+            let offsets = (0..=length + 1)
+                .chain((0..=length + 1).rev())
+                .chain((0..=length).flat_map(|offset| {
+                    [offset, usize::MAX, offset, length.saturating_sub(offset)]
+                }));
+            for offset in offsets {
+                let previous = cursor.previous;
+                let expected = index.locate_byte_offset(offset);
+                assert_eq!(expected, locator.locate_byte_offset(offset));
+                assert_eq!(
+                    cursor.locate_byte_offset(offset),
+                    expected,
+                    "offset={offset}"
+                );
+                if expected.is_err() {
+                    assert_eq!(cursor.previous, previous);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_preserves_line_and_column_overflow_and_last_success() {
+        // Synthetic checkpoints exercise overflow without allocating sources
+        // larger than the public offset limit. Both paths use the same kernel.
+        for (bytes, position) in [
+            (&b"\nx"[..], LineColumn::new(u32::MAX, 0)),
+            (&b"x\n"[..], LineColumn::new(0, u32::MAX)),
+        ] {
+            let index = QuickJsSourceIndex {
+                locator: QuickJsSourceLocator::from_bytes(bytes),
+                checkpoints: vec![position],
+            };
+            let mut cursor = index.cursor();
+            assert_eq!(cursor.locate_byte_offset(0), Ok(position));
+            for offset in [1, 2, 0, usize::MAX, 1] {
+                let previous = cursor.previous;
+                let expected = index.locate_byte_offset(offset);
+                assert_eq!(cursor.locate_byte_offset(offset), expected);
+                if expected.is_err() {
+                    assert_eq!(cursor.previous, previous);
+                }
+            }
+        }
     }
 }

@@ -478,7 +478,7 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
         current_function: 0,
         in_mode: InMode::Allow,
         functions: vec![
-            FunctionIr::new(
+            FunctionBuilder::new(
                 None,
                 FunctionKind::Script,
                 FunctionSourceInfo {

@@ -54,3 +54,23 @@ impl HostServices for quickjs_oxide_host::SystemHostServices {
         quickjs_oxide_host::engine_test::HostServices::random_seed(self)
     }
 }
+
+/// Enter only around an actual embedder callback. Domain algorithms keep their
+/// JavaScript continuations in the driver and must never use this boundary.
+impl crate::engine::api::runtime::Runtime {
+    pub(crate) fn with_host_callback<T>(
+        &self,
+        callback: impl FnOnce() -> T,
+    ) -> Result<T, crate::engine::api::runtime_error::RuntimeError> {
+        use crate::engine::api::{error::Error, runtime_error::RuntimeError};
+        let _stack = crate::engine::vm::native_stack::ModuleHostCallbackGuard::enter(self)
+            .map_err(|_| RuntimeError::Engine(Error::internal("stack overflow")))?;
+        #[cfg(feature = "stack-vm")]
+        let boundary =
+            crate::engine::vm::HostBoundaryGuard::enter(self).map_err(RuntimeError::Engine)?;
+        let result = callback();
+        #[cfg(feature = "stack-vm")]
+        boundary.finish(self).map_err(RuntimeError::Engine)?;
+        Ok(result)
+    }
+}

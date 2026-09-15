@@ -5,7 +5,7 @@
 //! pattern conversion precedes the derived `.prototype` lookup, and flags are
 //! converted only after the branded object has been allocated.
 
-use crate::engine::api::error::{Error, NativeErrorKind};
+use crate::engine::api::error::Error;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
@@ -16,8 +16,11 @@ use crate::engine::object::shape::{PropertyFlags, ShapeEntry};
 use crate::engine::object::{ObjectRef, PropertyKey, WellKnownSymbol};
 use crate::engine::value::conversion::NativeConversion;
 use crate::engine::value::{JsString, Value};
-use crate::engine::vm::Completion;
-use crate::engine::vm::call::{ConstructorRef, NativeArguments, NativeInvocation};
+use crate::engine::vm::call::{
+    ConstructorPrototypeSource, ConstructorRef, NativeArguments, NativeInvocation,
+    prototype::{ProtoSourceStep, finish as finish_source},
+};
+use crate::engine::vm::{Completion, ToPrimitiveHint};
 use crate::regexp::CompiledRegExp;
 use std::rc::Rc;
 
@@ -35,40 +38,17 @@ impl Runtime {
         realm: ContextId,
         regexp: &ObjectRef,
     ) -> Result<NativeConversion<ConstructorRef>, RuntimeError> {
-        let default_id = self.regexp_realm_data(realm)?.constructor;
-        let default = ObjectRef::from_borrowed_handle(self.clone(), default_id)?;
-        let default = ConstructorRef::from_validated_object(default);
-
-        let constructor_key = self.intern_property_key("constructor")?;
-        let constructor = match self.get_property_in_realm(realm, regexp, &constructor_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(constructor, Value::Undefined) {
-            return Ok(NativeConversion::Value(default));
+        let mut step = super::species::RegExpSpeciesStep::start(self, realm, regexp.clone())?;
+        loop {
+            step = match step {
+                super::species::RegExpSpeciesStep::Complete(result) => return Ok(result),
+                super::species::RegExpSpeciesStep::Read {
+                    object,
+                    key,
+                    resume,
+                } => resume.resume(self, self.get_property_in_realm(realm, &object, &key)?)?,
+            };
         }
-        let Value::Object(constructor) = constructor else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?));
-        };
-
-        let species_key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::Species));
-        let species = match self.get_property_in_realm(realm, &constructor, &species_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if matches!(species, Value::Undefined | Value::Null) {
-            return Ok(NativeConversion::Value(default));
-        }
-        if !matches!(species, Value::Object(_)) {
-            return Ok(NativeConversion::Throw(
-                self.new_not_constructor_error(realm, &species)?,
-            ));
-        }
-        self.constructor_from_value(realm, species)
     }
 
     pub(crate) fn call_regexp_constructor(
@@ -77,113 +57,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { mut new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "RegExp constructor did not receive constructor-or-function invocation",
-            ));
-        };
-        let pattern_argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "RegExp constructor pattern argv was not padded",
-        ))?;
-        let flags_argument = arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-            "RegExp constructor flags argv was not padded",
-        ))?;
-
-        // This observable @@match lookup is deliberately the first semantic
-        // operation, including for genuine RegExp objects.
-        let pattern_is_regexp = match self.native_is_regexp(realm, pattern_argument)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        if matches!(new_target, Value::Undefined) {
-            let active_constructor = self.active_function()?;
-            new_target = Value::Object(active_constructor.clone());
-            if pattern_is_regexp && matches!(flags_argument, Value::Undefined) {
-                let constructor_key = self.intern_property_key("constructor")?;
-                let constructor = match self.get_value_property_in_realm(
-                    realm,
-                    pattern_argument.clone(),
-                    &constructor_key,
-                )? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if constructor.same_value(&Value::Object(active_constructor)) {
-                    return Ok(Completion::Return(pattern_argument.clone()));
-                }
-            }
-        }
-
-        // Exact brand checking remains independent of IsRegExp.  A genuine
-        // object whose @@match is false still copies its internal source and
-        // program; only the function-call identity shortcut was suppressed.
-        let genuine = self.genuine_regexp(pattern_argument)?;
-        if matches!(flags_argument, Value::Undefined) {
-            if let Some(genuine) = genuine.as_ref() {
-                let object = match self.allocate_regexp_from_new_target(realm, new_target)? {
-                    NativeConversion::Value(object) => object,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                self.publish_regexp(&object, genuine.pattern.clone(), genuine.program.clone())?;
-                return Ok(Completion::Return(Value::Object(object)));
-            }
-        }
-
-        let (pattern_value, flags_value) = if let Some(genuine) = genuine {
-            (Value::String(genuine.pattern), flags_argument.clone())
-        } else if pattern_is_regexp {
-            let Value::Object(pattern_object) = pattern_argument else {
-                return Err(RuntimeError::Invariant(
-                    "IsRegExp accepted a primitive pattern",
-                ));
-            };
-            let source_key = self.intern_property_key("source")?;
-            let pattern = match self.get_property_in_realm(realm, pattern_object, &source_key)? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-            let flags = if matches!(flags_argument, Value::Undefined) {
-                let flags_key = self.intern_property_key("flags")?;
-                match self.get_property_in_realm(realm, pattern_object, &flags_key)? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            } else {
-                flags_argument.clone()
-            };
-            (pattern, flags)
-        } else {
-            (pattern_argument.clone(), flags_argument.clone())
-        };
-
-        let pattern = if matches!(pattern_value, Value::Undefined) {
-            JsString::from_static("")
-        } else {
-            match self.native_to_js_string(realm, &pattern_value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        };
-
-        // Pinned QuickJS performs this Get(newTarget, "prototype") and the
-        // branded allocation before ToString(flags) and compilation.
-        let object = match self.allocate_regexp_from_new_target(realm, new_target)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let flags = if matches!(flags_value, Value::Undefined) {
-            JsString::from_static("")
-        } else {
-            match self.native_to_js_string(realm, &flags_value)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        };
-        let program = Self::compile_regexp_program(&pattern, &flags)?;
-        self.publish_regexp(&object, pattern, program)?;
-        Ok(Completion::Return(Value::Object(object)))
+        finish_constructor(
+            self,
+            realm,
+            RegExpConstructorStep::start(self, realm, &invocation, arguments)?,
+        )
     }
 
     pub(crate) fn compile_regexp_program(
@@ -274,27 +152,6 @@ impl Runtime {
         })
     }
 
-    fn allocate_regexp_from_new_target(
-        &self,
-        caller_realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let prototype = match self.prototype_from_constructor_value(
-            caller_realm,
-            &new_target,
-            |fallback_realm| {
-                let prototype = self.regexp_realm_data(fallback_realm)?.prototype;
-                Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
-            },
-        )? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        Ok(NativeConversion::Value(
-            self.new_uninitialized_regexp(&prototype)?,
-        ))
-    }
-
     fn new_uninitialized_regexp(&self, prototype: &ObjectRef) -> Result<ObjectRef, RuntimeError> {
         let _operation = self.operation();
         if !prototype.belongs_to(self) {
@@ -357,45 +214,6 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant("realm has no RegExp intrinsic"))
     }
 
-    /// Call the realm's retained intrinsic RegExp constructor as a constructor.
-    /// String protocol fallbacks use this root directly, so replacing the
-    /// global `RegExp` binding is unobservable while mutations on the retained
-    /// constructor (notably its `prototype` value) remain visible to ordinary
-    /// construction.
-    pub(crate) fn construct_intrinsic_regexp(
-        &self,
-        realm: ContextId,
-        pattern: Value,
-    ) -> Result<Completion, RuntimeError> {
-        self.construct_intrinsic_regexp_arguments(realm, &[pattern])
-    }
-
-    /// MatchAll's fallback uses the same retained constructor root as the
-    /// one-argument String protocols but supplies the literal global flag.
-    pub(crate) fn construct_intrinsic_regexp_with_flags(
-        &self,
-        realm: ContextId,
-        pattern: Value,
-        flags: Value,
-    ) -> Result<Completion, RuntimeError> {
-        self.construct_intrinsic_regexp_arguments(realm, &[pattern, flags])
-    }
-
-    fn construct_intrinsic_regexp_arguments(
-        &self,
-        realm: ContextId,
-        arguments: &[Value],
-    ) -> Result<Completion, RuntimeError> {
-        let constructor_id = self.regexp_realm_data(realm)?.constructor;
-        let constructor = ObjectRef::from_borrowed_handle(self.clone(), constructor_id)?;
-        let callable = self
-            .as_callable(&constructor)?
-            .ok_or(RuntimeError::Invariant(
-                "realm RegExp constructor root was not callable",
-            ))?;
-        self.construct_internal(realm, &callable, &callable, arguments)
-    }
-
     /// QuickJS `OP_regexp`: instantiate one already-compiled literal using
     /// the bytecode realm's canonical RegExp shape. This path intentionally
     /// performs no `Get` on the global constructor or its mutable `prototype`
@@ -422,3 +240,466 @@ impl Runtime {
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 }
+
+pub(crate) enum RegExpConstructorStep {
+    Complete(Completion),
+    Read {
+        object: ObjectRef,
+        key: PropertyKey,
+        resume: RegExpConstructorResume,
+    },
+    Primitive {
+        value: Value,
+        resume: RegExpConstructorResume,
+    },
+    Prototype {
+        new_target: Value,
+        resume: RegExpConstructorResume,
+    },
+}
+pub(crate) struct RegExpConstructorResume(Box<RegExpConstructorResumeState>);
+impl std::ops::Deref for RegExpConstructorResume {
+    type Target = RegExpConstructorResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for RegExpConstructorResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<RegExpConstructorResume>() <= 8);
+pub(crate) struct RegExpConstructorResumeState {
+    realm: ContextId,
+    new_target: Value,
+    pattern: Value,
+    flags: Value,
+    is_regexp: bool,
+    phase: RegExpConstructorPhase,
+}
+enum RegExpConstructorPhase {
+    Match,
+    Identity(ObjectRef),
+    Source,
+    SourceFlags(Value),
+    Pattern(Value),
+    Prototype(RegExpPublication),
+    Flags {
+        object: ObjectRef,
+        pattern: JsString,
+    },
+}
+enum RegExpPublication {
+    Copy(GenuineRegExp),
+    Compile { pattern: JsString, flags: Value },
+}
+impl RegExpConstructorStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let NativeInvocation::Construct { new_target } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "RegExp constructor did not receive constructor-or-function invocation",
+            ));
+        };
+        let pattern = arguments
+            .readable
+            .first()
+            .ok_or(RuntimeError::Invariant(
+                "RegExp constructor pattern argv was not padded",
+            ))?
+            .clone();
+        let flags = arguments
+            .readable
+            .get(1)
+            .ok_or(RuntimeError::Invariant(
+                "RegExp constructor flags argv was not padded",
+            ))?
+            .clone();
+        let resume = RegExpConstructorResume(Box::new(RegExpConstructorResumeState {
+            realm,
+            new_target: new_target.clone(),
+            pattern,
+            flags,
+            is_regexp: false,
+            phase: RegExpConstructorPhase::Match,
+        }));
+        if let Value::Object(object) = &resume.pattern {
+            Ok(Self::Read {
+                object: object.clone(),
+                key: PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Match)),
+                resume,
+            })
+        } else {
+            resume.checked(runtime, false)
+        }
+    }
+}
+impl RegExpConstructorResume {
+    fn checked(
+        mut self,
+        runtime: &Runtime,
+        is_regexp: bool,
+    ) -> Result<RegExpConstructorStep, RuntimeError> {
+        self.0.is_regexp = is_regexp;
+        if matches!(self.0.new_target, Value::Undefined) {
+            let active = runtime.active_function()?;
+            self.0.new_target = Value::Object(active.clone());
+            if is_regexp && matches!(self.0.flags, Value::Undefined) {
+                let Value::Object(object) = &self.0.pattern else {
+                    return Err(RuntimeError::Invariant(
+                        "IsRegExp accepted a primitive pattern",
+                    ));
+                };
+                return Ok(RegExpConstructorStep::Read {
+                    object: object.clone(),
+                    key: runtime.intern_property_key("constructor")?,
+                    resume: {
+                        let updated_0 = RegExpConstructorPhase::Identity(active);
+                        self.0.phase = updated_0;
+                        self
+                    },
+                });
+            }
+        }
+        self.prepare(runtime)
+    }
+    fn prepare(mut self, runtime: &Runtime) -> Result<RegExpConstructorStep, RuntimeError> {
+        let genuine = runtime.genuine_regexp(&self.0.pattern)?;
+        if matches!(self.0.flags, Value::Undefined)
+            && let Some(genuine) = genuine.as_ref()
+        {
+            return Ok(self.lookup(RegExpPublication::Copy(genuine.clone())));
+        }
+        if let Some(genuine) = genuine {
+            let flags = self.0.flags.clone();
+            self.pattern_value(Value::String(genuine.pattern), flags)
+        } else if self.0.is_regexp {
+            let Value::Object(object) = &self.0.pattern else {
+                return Err(RuntimeError::Invariant(
+                    "IsRegExp accepted a primitive pattern",
+                ));
+            };
+            Ok(RegExpConstructorStep::Read {
+                object: object.clone(),
+                key: runtime.intern_property_key("source")?,
+                resume: {
+                    let updated_0 = RegExpConstructorPhase::Source;
+                    self.0.phase = updated_0;
+                    self
+                },
+            })
+        } else {
+            let pattern = self.0.pattern.clone();
+            let flags = self.0.flags.clone();
+            self.pattern_value(pattern, flags)
+        }
+    }
+    fn pattern_value(
+        mut self,
+        pattern: Value,
+        flags: Value,
+    ) -> Result<RegExpConstructorStep, RuntimeError> {
+        if matches!(pattern, Value::Undefined) {
+            Ok(self.lookup(RegExpPublication::Compile {
+                pattern: JsString::from_static(""),
+                flags,
+            }))
+        } else {
+            Ok(RegExpConstructorStep::Primitive {
+                value: pattern,
+                resume: {
+                    let updated_0 = RegExpConstructorPhase::Pattern(flags);
+                    self.0.phase = updated_0;
+                    self
+                },
+            })
+        }
+    }
+    fn lookup(mut self, publication: RegExpPublication) -> RegExpConstructorStep {
+        RegExpConstructorStep::Prototype {
+            new_target: self.0.new_target.clone(),
+            resume: {
+                let updated_0 = RegExpConstructorPhase::Prototype(publication);
+                self.0.phase = updated_0;
+                self
+            },
+        }
+    }
+    fn publish(
+        runtime: &Runtime,
+        object: ObjectRef,
+        pattern: JsString,
+        flags: JsString,
+    ) -> Result<RegExpConstructorStep, RuntimeError> {
+        let program = Runtime::compile_regexp_program(&pattern, &flags)?;
+        runtime.publish_regexp(&object, pattern, program)?;
+        Ok(RegExpConstructorStep::Complete(Completion::Return(
+            Value::Object(object),
+        )))
+    }
+    pub(crate) fn prototype(
+        mut self,
+        runtime: &Runtime,
+        result: NativeConversion<ConstructorPrototypeSource>,
+    ) -> Result<RegExpConstructorStep, RuntimeError> {
+        let prototype = match result {
+            NativeConversion::Value(ConstructorPrototypeSource::Explicit(value)) => value,
+            NativeConversion::Value(ConstructorPrototypeSource::Realm(realm)) => {
+                ObjectRef::from_borrowed_handle(
+                    runtime.clone(),
+                    runtime.regexp_realm_data(realm)?.prototype,
+                )?
+            }
+            NativeConversion::Throw(value) => {
+                return Ok(RegExpConstructorStep::Complete(Completion::Throw(value)));
+            }
+        };
+        let object = runtime.new_uninitialized_regexp(&prototype)?;
+        let RegExpConstructorPhase::Prototype(publication) = self.0.phase else {
+            return Err(RuntimeError::Invariant(
+                "RegExp constructor received an unexpected prototype reply",
+            ));
+        };
+        match publication {
+            RegExpPublication::Copy(genuine) => {
+                runtime.publish_regexp(&object, genuine.pattern, genuine.program)?;
+                Ok(RegExpConstructorStep::Complete(Completion::Return(
+                    Value::Object(object),
+                )))
+            }
+            RegExpPublication::Compile { pattern, flags } => {
+                if matches!(flags, Value::Undefined) {
+                    Self::publish(runtime, object, pattern, JsString::from_static(""))
+                } else {
+                    Ok(RegExpConstructorStep::Primitive {
+                        value: flags,
+                        resume: {
+                            let updated_0 = RegExpConstructorPhase::Flags { object, pattern };
+                            self.0.phase = updated_0;
+                            self
+                        },
+                    })
+                }
+            }
+        }
+    }
+    pub(crate) fn resume(
+        mut self,
+        runtime: &Runtime,
+        result: Completion,
+    ) -> Result<RegExpConstructorStep, RuntimeError> {
+        let value = match result {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(RegExpConstructorStep::Complete(Completion::Throw(value)));
+            }
+        };
+        match self.0.phase {
+            RegExpConstructorPhase::Match => {
+                let Value::Object(object) = &self.0.pattern else {
+                    return Err(RuntimeError::Invariant(
+                        "RegExp match check lost its object",
+                    ));
+                };
+                let is_regexp = runtime.is_regexp_from_match(object, &value)?;
+                self.checked(runtime, is_regexp)
+            }
+            RegExpConstructorPhase::Identity(active) => {
+                if value.same_value(&Value::Object(active)) {
+                    Ok(RegExpConstructorStep::Complete(Completion::Return(
+                        self.0.pattern,
+                    )))
+                } else {
+                    {
+                        let updated_0 = RegExpConstructorPhase::Match;
+                        self.0.phase = updated_0;
+                        self
+                    }
+                    .prepare(runtime)
+                }
+            }
+            RegExpConstructorPhase::Source => {
+                if matches!(self.0.flags, Value::Undefined) {
+                    let Value::Object(object) = &self.0.pattern else {
+                        return Err(RuntimeError::Invariant(
+                            "RegExp source lookup lost its object",
+                        ));
+                    };
+                    Ok(RegExpConstructorStep::Read {
+                        object: object.clone(),
+                        key: runtime.intern_property_key("flags")?,
+                        resume: {
+                            let updated_0 = RegExpConstructorPhase::SourceFlags(value);
+                            self.0.phase = updated_0;
+                            self
+                        },
+                    })
+                } else {
+                    let flags = self.0.flags.clone();
+                    self.pattern_value(value, flags)
+                }
+            }
+            RegExpConstructorPhase::SourceFlags(pattern) => {
+                let updated_0 = RegExpConstructorPhase::Match;
+                self.0.phase = updated_0;
+                self
+            }
+            .pattern_value(pattern, value),
+            RegExpConstructorPhase::Pattern(flags) => {
+                if matches!(value, Value::Object(_)) {
+                    return Err(RuntimeError::Invariant(
+                        "RegExp pattern conversion returned an object",
+                    ));
+                }
+                let pattern = match runtime.native_to_js_string(self.0.realm, &value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(RegExpConstructorStep::Complete(Completion::Throw(value)));
+                    }
+                };
+                Ok({
+                    let updated_0 = RegExpConstructorPhase::Match;
+                    self.0.phase = updated_0;
+                    self
+                }
+                .lookup(RegExpPublication::Compile { pattern, flags }))
+            }
+            RegExpConstructorPhase::Flags { object, pattern } => {
+                if matches!(value, Value::Object(_)) {
+                    return Err(RuntimeError::Invariant(
+                        "RegExp flags conversion returned an object",
+                    ));
+                }
+                let flags = match runtime.native_to_js_string(self.0.realm, &value)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(RegExpConstructorStep::Complete(Completion::Throw(value)));
+                    }
+                };
+                Self::publish(runtime, object, pattern, flags)
+            }
+            RegExpConstructorPhase::Prototype(_) => Err(RuntimeError::Invariant(
+                "RegExp prototype request received an untyped reply",
+            )),
+        }
+    }
+}
+fn finish_constructor(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: RegExpConstructorStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            RegExpConstructorStep::Complete(result) => return Ok(result),
+            RegExpConstructorStep::Read {
+                object,
+                key,
+                resume,
+            } => resume.resume(
+                runtime,
+                runtime.get_property_in_realm(realm, &object, &key)?,
+            )?,
+            RegExpConstructorStep::Primitive { value, resume } => {
+                let result = if matches!(value, Value::Object(_)) {
+                    runtime.to_primitive(realm, value, ToPrimitiveHint::String)?
+                } else {
+                    Completion::Return(value)
+                };
+                resume.resume(runtime, result)?
+            }
+            RegExpConstructorStep::Prototype { new_target, resume } => resume.prototype(
+                runtime,
+                finish_source(
+                    runtime,
+                    realm,
+                    ProtoSourceStep::start(runtime, realm, new_target)?,
+                )?,
+            )?,
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unpublished_regexp_is_rooted_during_flags_conversion_and_reclaimed_on_abandonment() {
+        let runtime = Runtime::new();
+        let weak = Rc::downgrade(&runtime.0);
+        let mut context = runtime.new_context();
+        let new_target = context.eval("(function(){})").unwrap();
+        let flags = runtime.new_object(None).unwrap();
+        let flags_id = flags.object_id();
+        let invocation = NativeInvocation::Construct { new_target };
+        let arguments = NativeArguments {
+            actual_arg_count: 2,
+            readable: vec![
+                Value::String(JsString::from_static("a")),
+                Value::Object(flags),
+            ],
+        };
+        let RegExpConstructorStep::Primitive { resume, .. } =
+            RegExpConstructorStep::start(&runtime, context.realm, &invocation, &arguments).unwrap()
+        else {
+            panic!("expected pattern conversion")
+        };
+        drop(invocation);
+        drop(arguments);
+        let RegExpConstructorStep::Prototype { resume, .. } = resume
+            .resume(
+                &runtime,
+                Completion::Return(Value::String(JsString::from_static("a"))),
+            )
+            .unwrap()
+        else {
+            panic!("expected prototype request")
+        };
+        let prototype = runtime.new_object(None).unwrap();
+        let prototype_id = prototype.object_id();
+        let RegExpConstructorStep::Primitive { resume, .. } = resume
+            .prototype(
+                &runtime,
+                NativeConversion::Value(ConstructorPrototypeSource::Explicit(prototype)),
+            )
+            .unwrap()
+        else {
+            panic!("expected flags conversion")
+        };
+        let RegExpConstructorPhase::Flags { object, .. } = &resume.phase else {
+            panic!("expected unpublished result")
+        };
+        let object_id = object.object_id();
+        runtime.run_gc().unwrap();
+        for id in [object_id, prototype_id, flags_id] {
+            assert!(runtime.0.state.borrow().heap.object(id).is_ok());
+        }
+        assert!(matches!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .object(object_id)
+                .unwrap()
+                .payload,
+            ObjectPayload::RegExp(RegExpObjectData::Uninitialized)
+        ));
+        drop(resume);
+        runtime.run_gc().unwrap();
+        for id in [object_id, prototype_id, flags_id] {
+            assert!(runtime.0.state.borrow().heap.object(id).is_err());
+        }
+        drop(context);
+        drop(runtime);
+        assert!(weak.upgrade().is_none());
+    }
+}
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<RegExpConstructorStep>() <= 64);

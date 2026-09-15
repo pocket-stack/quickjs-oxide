@@ -11,7 +11,24 @@
 use crate::engine::builtins::native::{DataViewElementKind, DataViewNativeKind};
 use crate::engine::heap::{ArrayBufferViewData, DataViewRealmData, ObjectData, ObjectPayload};
 
-use super::*;
+#[cfg(test)]
+use crate::engine::api::context::Context;
+use crate::engine::{
+    api::{error::NativeErrorKind, runtime::Runtime, runtime_error::RuntimeError},
+    builtins::native::NativeFunctionId,
+    heap::{ContextId, ObjectId},
+    object::{
+        DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,
+    },
+    value::{JsString, Value, conversion::NativeConversion},
+    vm::{
+        Completion, ToPrimitiveHint,
+        call::{
+            ConstructorPrototypeSource, NativeArguments, NativeInvocation,
+            prototype::{ProtoSourceStep, finish as finish_source},
+        },
+    },
+};
 
 #[cfg(test)]
 mod tests;
@@ -167,90 +184,20 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { new_target } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "DataView constructor did not receive a constructor invocation",
-            ));
-        };
-        let buffer = match self.require_data_view_array_buffer(
+        finish_constructor(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "DataView buffer argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(buffer) => buffer,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-
-        let byte_offset = if arguments.actual_arg_count > 1 {
-            match self.native_to_index(
-                realm,
-                arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                    "DataView byteOffset argument was not padded",
-                ))?,
-            )? {
-                NativeConversion::Value(offset) => offset,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            }
-        } else {
-            0
-        };
-
-        let initial = self.snapshot_buffer_access(buffer.object_id())?.state;
-        if initial.detached {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "ArrayBuffer is detached",
-            )?));
-        }
-        if byte_offset > u64::from(initial.byte_length) {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Range,
-                "invalid byteOffset",
-            )?));
-        }
-
-        let byte_offset = u32::try_from(byte_offset)
-            .map_err(|_| RuntimeError::Invariant("validated DataView offset overflowed u32"))?;
-        let fixed_byte_length =
-            if arguments.actual_arg_count > 2
-                && !matches!(arguments.readable.get(2), Some(Value::Undefined))
-            {
-                let requested = match self.native_to_index(
-                    realm,
-                    arguments.readable.get(2).ok_or(RuntimeError::Invariant(
-                        "DataView byteLength argument was not padded",
-                    ))?,
-                )? {
-                    NativeConversion::Value(length) => length,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                let available = u64::from(initial.byte_length - byte_offset);
-                if requested > available {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Range,
-                        "invalid byteLength",
-                    )?));
-                }
-                Some(u32::try_from(requested).map_err(|_| {
-                    RuntimeError::Invariant("validated DataView length overflowed u32")
-                })?)
-            } else if initial.max_byte_length.is_some() {
-                None
-            } else {
-                Some(initial.byte_length - byte_offset)
-            };
-
-        // `GetPrototypeFromConstructor` is observable. It may detach or
-        // resize the already-validated buffer, so no backing-store borrow may
-        // cross this call and every bound is checked again below.
-        let prototype = match self.data_view_prototype_from_new_target(realm, new_target)? {
-            NativeConversion::Value(prototype) => prototype,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+            DataViewConstructorStep::start(self, realm, &invocation, arguments)?,
+        )
+    }
+    fn finish_data_view_construction(
+        &self,
+        realm: ContextId,
+        buffer: ObjectRef,
+        byte_offset: u32,
+        fixed_byte_length: Option<u32>,
+        prototype: ObjectRef,
+    ) -> Result<Completion, RuntimeError> {
         let current = self.snapshot_buffer_access(buffer.object_id())?.state;
         if current.detached {
             return Ok(Completion::Throw(self.new_native_error(
@@ -333,40 +280,18 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "DataView getter method received a constructor invocation",
-            ));
-        };
-        let object = match self.require_data_view(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let view = self.data_view_snapshot(&object)?;
-        let position = match self.native_to_index(
+        finish_access(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "DataView get byteOffset argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(position) => position,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let little_endian = match arguments.readable.get(1) {
-            Some(value) => self.value_to_boolean(value)?,
-            None => false,
-        };
-        let bytes = match self.data_view_read_word(realm, view, position, element)? {
-            NativeConversion::Value(bytes) => bytes,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        Ok(Completion::Return(data_view_decode(
-            element,
-            bytes,
-            little_endian,
-        )))
+            DataViewAccessStep::start(
+                self,
+                realm,
+                DataViewNativeKind::Get(element),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
-
     fn call_data_view_set(
         &self,
         realm: ContextId,
@@ -374,44 +299,17 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { this_value } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "DataView setter method received a constructor invocation",
-            ));
-        };
-        let object = match self.require_data_view(realm, this_value)? {
-            NativeConversion::Value(object) => object,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let view = self.data_view_snapshot(&object)?;
-        let position = match self.native_to_index(
+        finish_access(
+            self,
             realm,
-            arguments.readable.first().ok_or(RuntimeError::Invariant(
-                "DataView set byteOffset argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(position) => position,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let converted = match self.data_view_convert_set_value(
-            realm,
-            element,
-            arguments.readable.get(1).ok_or(RuntimeError::Invariant(
-                "DataView set value argument was not padded",
-            ))?,
-        )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let little_endian = match arguments.readable.get(2) {
-            Some(value) => self.value_to_boolean(value)?,
-            None => false,
-        };
-        let bytes = data_view_encode(element, converted, little_endian);
-        match self.data_view_write_word(realm, view, position, element, &bytes)? {
-            NativeConversion::Value(()) => Ok(Completion::Return(Value::Undefined)),
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-        }
+            DataViewAccessStep::start(
+                self,
+                realm,
+                DataViewNativeKind::Set(element),
+                &invocation,
+                arguments,
+            )?,
+        )
     }
 
     fn data_view_convert_set_value(
@@ -641,16 +539,6 @@ impl Runtime {
         })
     }
 
-    fn data_view_prototype_from_new_target(
-        &self,
-        realm: ContextId,
-        new_target: Value,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
-            self.data_view_default_prototype(fallback_realm)
-        })
-    }
-
     fn data_view_default_prototype(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {
         let prototype = self
             .0
@@ -844,3 +732,474 @@ fn data_view_decode(element: DataViewElementKind, bytes: [u8; 8], little_endian:
         DataViewElementKind::Float64 => Value::number(f64::from_bits(u64_value())),
     }
 }
+
+/// A DataView keeps its branded owner alive, but never retains an access
+/// certificate across user conversion. The immutable view metadata and the
+/// current backing-store bounds are acquired again at the final access.
+pub(crate) enum DataViewAccessStep {
+    Complete(Completion),
+    Primitive {
+        value: Value,
+        resume: DataViewAccessResume,
+    },
+}
+pub(crate) struct DataViewAccessResume(Box<DataViewAccessResumeState>);
+impl std::ops::Deref for DataViewAccessResume {
+    type Target = DataViewAccessResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for DataViewAccessResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<DataViewAccessResume>() <= 8);
+pub(crate) struct DataViewAccessResumeState {
+    realm: ContextId,
+    object: ObjectRef,
+    element: DataViewElementKind,
+    endian: Value,
+    phase: AccessPhase,
+}
+enum AccessPhase {
+    GetPosition,
+    SetPosition(Value),
+    SetValue(u64),
+}
+impl DataViewAccessStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        kind: DataViewNativeKind,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let (element, set) = match kind {
+            DataViewNativeKind::Get(element) => (element, false),
+            DataViewNativeKind::Set(element) => (element, true),
+            _ => {
+                return Err(RuntimeError::Invariant(
+                    "DataView access received a non-access operation",
+                ));
+            }
+        };
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(if set {
+                "DataView setter method received a constructor invocation"
+            } else {
+                "DataView getter method received a constructor invocation"
+            }));
+        };
+        let object = match runtime.require_data_view(realm, this_value.clone())? {
+            NativeConversion::Value(object) => object,
+            NativeConversion::Throw(value) => return Ok(Self::Complete(Completion::Throw(value))),
+        };
+        // Preserve the original payload check before the first coercion.
+        runtime.data_view_snapshot(&object)?;
+        let value = arguments
+            .readable
+            .first()
+            .ok_or(RuntimeError::Invariant(if set {
+                "DataView set byteOffset argument was not padded"
+            } else {
+                "DataView get byteOffset argument was not padded"
+            }))?
+            .clone();
+        let phase = if set {
+            AccessPhase::SetPosition(
+                arguments
+                    .readable
+                    .get(1)
+                    .ok_or(RuntimeError::Invariant(
+                        "DataView set value argument was not padded",
+                    ))?
+                    .clone(),
+            )
+        } else {
+            AccessPhase::GetPosition
+        };
+        let endian = arguments
+            .readable
+            .get(if set { 2 } else { 1 })
+            .cloned()
+            .unwrap_or(Value::Bool(false));
+        Ok(Self::Primitive {
+            value,
+            resume: DataViewAccessResume(Box::new(DataViewAccessResumeState {
+                realm,
+                object,
+                element,
+                endian,
+                phase,
+            })),
+        })
+    }
+}
+impl DataViewAccessResume {
+    pub(crate) fn resume(
+        mut self,
+        runtime: &Runtime,
+        result: Completion,
+    ) -> Result<DataViewAccessStep, RuntimeError> {
+        let value = match result {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(DataViewAccessStep::Complete(Completion::Throw(value)));
+            }
+        };
+        if matches!(value, Value::Object(_)) {
+            return Err(RuntimeError::Invariant(
+                "DataView conversion returned an object",
+            ));
+        }
+        match self.0.phase {
+            AccessPhase::GetPosition | AccessPhase::SetPosition(_) => {
+                let position = match runtime.native_to_index(self.0.realm, &value)? {
+                    NativeConversion::Value(position) => position,
+                    NativeConversion::Throw(value) => {
+                        return Ok(DataViewAccessStep::Complete(Completion::Throw(value)));
+                    }
+                };
+                if let AccessPhase::SetPosition(value) = self.0.phase {
+                    return Ok(DataViewAccessStep::Primitive {
+                        value,
+                        resume: {
+                            let updated_0 = AccessPhase::SetValue(position);
+                            self.0.phase = updated_0;
+                            self
+                        },
+                    });
+                }
+                let little_endian = runtime.value_to_boolean(&self.0.endian)?;
+                let view = runtime.data_view_snapshot(&self.0.object)?;
+                let bytes = match runtime.data_view_read_word(
+                    self.0.realm,
+                    view,
+                    position,
+                    self.0.element,
+                )? {
+                    NativeConversion::Value(bytes) => bytes,
+                    NativeConversion::Throw(value) => {
+                        return Ok(DataViewAccessStep::Complete(Completion::Throw(value)));
+                    }
+                };
+                Ok(DataViewAccessStep::Complete(Completion::Return(
+                    data_view_decode(self.0.element, bytes, little_endian),
+                )))
+            }
+            AccessPhase::SetValue(position) => {
+                let converted = match runtime.data_view_convert_set_value(
+                    self.0.realm,
+                    self.0.element,
+                    &value,
+                )? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(DataViewAccessStep::Complete(Completion::Throw(value)));
+                    }
+                };
+                let little_endian = runtime.value_to_boolean(&self.0.endian)?;
+                let bytes = data_view_encode(self.0.element, converted, little_endian);
+                let view = runtime.data_view_snapshot(&self.0.object)?;
+                Ok(DataViewAccessStep::Complete(
+                    match runtime.data_view_write_word(
+                        self.0.realm,
+                        view,
+                        position,
+                        self.0.element,
+                        &bytes,
+                    )? {
+                        NativeConversion::Value(()) => Completion::Return(Value::Undefined),
+                        NativeConversion::Throw(value) => Completion::Throw(value),
+                    },
+                ))
+            }
+        }
+    }
+}
+fn finish_access(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: DataViewAccessStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            DataViewAccessStep::Complete(result) => return Ok(result),
+            DataViewAccessStep::Primitive { value, resume } => {
+                let result = if matches!(value, Value::Object(_)) {
+                    runtime.to_primitive(realm, value, ToPrimitiveHint::Number)?
+                } else {
+                    Completion::Return(value)
+                };
+                resume.resume(runtime, result)?
+            }
+        };
+    }
+}
+
+pub(crate) enum DataViewConstructorStep {
+    Complete(Completion),
+    Primitive {
+        value: Value,
+        resume: DataViewConstructorResume,
+    },
+    Prototype {
+        new_target: Value,
+        resume: DataViewConstructorResume,
+    },
+}
+pub(crate) struct DataViewConstructorResume(Box<DataViewConstructorResumeState>);
+impl std::ops::Deref for DataViewConstructorResume {
+    type Target = DataViewConstructorResumeState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for DataViewConstructorResume {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+const _: () = assert!(std::mem::size_of::<DataViewConstructorResume>() <= 8);
+pub(crate) struct DataViewConstructorResumeState {
+    realm: ContextId,
+    buffer: ObjectRef,
+    new_target: Value,
+    length: Option<Value>,
+    phase: DataViewConstructorPhase,
+}
+enum DataViewConstructorPhase {
+    Offset,
+    Length { offset: u32, available: u32 },
+    Prototype { offset: u32, length: Option<u32> },
+}
+impl DataViewConstructorStep {
+    pub(crate) fn start(
+        runtime: &Runtime,
+        realm: ContextId,
+        invocation: &NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Self, RuntimeError> {
+        let NativeInvocation::Construct { new_target } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "DataView constructor did not receive a constructor invocation",
+            ));
+        };
+        let buffer = match runtime.require_data_view_array_buffer(
+            realm,
+            arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "DataView buffer argument was not padded",
+            ))?,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Self::Complete(Completion::Throw(value))),
+        };
+        let length = if arguments.actual_arg_count > 2
+            && !matches!(arguments.readable.get(2), Some(Value::Undefined))
+        {
+            Some(
+                arguments
+                    .readable
+                    .get(2)
+                    .ok_or(RuntimeError::Invariant(
+                        "DataView byteLength argument was not padded",
+                    ))?
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let resume = DataViewConstructorResume(Box::new(DataViewConstructorResumeState {
+            realm,
+            buffer,
+            new_target: new_target.clone(),
+            length,
+            phase: DataViewConstructorPhase::Offset,
+        }));
+        if arguments.actual_arg_count > 1 {
+            Ok(Self::Primitive {
+                value: arguments
+                    .readable
+                    .get(1)
+                    .ok_or(RuntimeError::Invariant(
+                        "DataView byteOffset argument was not padded",
+                    ))?
+                    .clone(),
+                resume,
+            })
+        } else {
+            resume.offset(runtime, 0)
+        }
+    }
+}
+impl DataViewConstructorResume {
+    fn lookup(mut self, offset: u32, length: Option<u32>) -> DataViewConstructorStep {
+        DataViewConstructorStep::Prototype {
+            new_target: self.0.new_target.clone(),
+            resume: {
+                let updated_0 = DataViewConstructorPhase::Prototype { offset, length };
+                self.0.phase = updated_0;
+                self
+            },
+        }
+    }
+    fn offset(
+        mut self,
+        runtime: &Runtime,
+        offset: u64,
+    ) -> Result<DataViewConstructorStep, RuntimeError> {
+        let initial = runtime
+            .snapshot_buffer_access(self.0.buffer.object_id())?
+            .state;
+        if initial.detached {
+            return Ok(DataViewConstructorStep::Complete(Completion::Throw(
+                runtime.new_native_error(
+                    self.0.realm,
+                    NativeErrorKind::Type,
+                    "ArrayBuffer is detached",
+                )?,
+            )));
+        }
+        if offset > u64::from(initial.byte_length) {
+            return Ok(DataViewConstructorStep::Complete(Completion::Throw(
+                runtime.new_native_error(
+                    self.0.realm,
+                    NativeErrorKind::Range,
+                    "invalid byteOffset",
+                )?,
+            )));
+        }
+        let offset = u32::try_from(offset)
+            .map_err(|_| RuntimeError::Invariant("validated DataView offset overflowed u32"))?;
+        if let Some(length) = &self.0.length {
+            Ok(DataViewConstructorStep::Primitive {
+                value: length.clone(),
+                resume: {
+                    let updated_0 = DataViewConstructorPhase::Length {
+                        offset,
+                        available: initial.byte_length - offset,
+                    };
+                    self.0.phase = updated_0;
+                    self
+                },
+            })
+        } else {
+            Ok(self.lookup(
+                offset,
+                if initial.max_byte_length.is_some() {
+                    None
+                } else {
+                    Some(initial.byte_length - offset)
+                },
+            ))
+        }
+    }
+    pub(crate) fn resume(
+        self,
+        runtime: &Runtime,
+        result: Completion,
+    ) -> Result<DataViewConstructorStep, RuntimeError> {
+        let value = match result {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => {
+                return Ok(DataViewConstructorStep::Complete(Completion::Throw(value)));
+            }
+        };
+        if matches!(value, Value::Object(_)) {
+            return Err(RuntimeError::Invariant(
+                "DataView constructor numeric conversion returned an object",
+            ));
+        }
+        let value = match runtime.native_to_index(self.0.realm, &value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => {
+                return Ok(DataViewConstructorStep::Complete(Completion::Throw(value)));
+            }
+        };
+        match self.0.phase {
+            DataViewConstructorPhase::Offset => self.offset(runtime, value),
+            DataViewConstructorPhase::Length { offset, available } => {
+                if value > u64::from(available) {
+                    return Ok(DataViewConstructorStep::Complete(Completion::Throw(
+                        runtime.new_native_error(
+                            self.0.realm,
+                            NativeErrorKind::Range,
+                            "invalid byteLength",
+                        )?,
+                    )));
+                }
+                let length = u32::try_from(value).map_err(|_| {
+                    RuntimeError::Invariant("validated DataView length overflowed u32")
+                })?;
+                Ok(self.lookup(offset, Some(length)))
+            }
+            DataViewConstructorPhase::Prototype { .. } => Err(RuntimeError::Invariant(
+                "DataView prototype request received an untyped reply",
+            )),
+        }
+    }
+    pub(crate) fn prototype(
+        self,
+        runtime: &Runtime,
+        result: NativeConversion<ConstructorPrototypeSource>,
+    ) -> Result<DataViewConstructorStep, RuntimeError> {
+        let prototype = match result {
+            NativeConversion::Value(ConstructorPrototypeSource::Explicit(value)) => value,
+            NativeConversion::Value(ConstructorPrototypeSource::Realm(realm)) => {
+                runtime.data_view_default_prototype(realm)?
+            }
+            NativeConversion::Throw(value) => {
+                return Ok(DataViewConstructorStep::Complete(Completion::Throw(value)));
+            }
+        };
+        let DataViewConstructorPhase::Prototype { offset, length } = self.0.phase else {
+            return Err(RuntimeError::Invariant(
+                "DataView constructor received an unexpected prototype reply",
+            ));
+        };
+        Ok(DataViewConstructorStep::Complete(
+            runtime.finish_data_view_construction(
+                self.0.realm,
+                self.0.buffer,
+                offset,
+                length,
+                prototype,
+            )?,
+        ))
+    }
+}
+fn finish_constructor(
+    runtime: &Runtime,
+    realm: ContextId,
+    mut step: DataViewConstructorStep,
+) -> Result<Completion, RuntimeError> {
+    loop {
+        step = match step {
+            DataViewConstructorStep::Complete(result) => return Ok(result),
+            DataViewConstructorStep::Primitive { value, resume } => {
+                let result = if matches!(value, Value::Object(_)) {
+                    runtime.to_primitive(realm, value, ToPrimitiveHint::Number)?
+                } else {
+                    Completion::Return(value)
+                };
+                resume.resume(runtime, result)?
+            }
+            DataViewConstructorStep::Prototype { new_target, resume } => resume.prototype(
+                runtime,
+                finish_source(
+                    runtime,
+                    realm,
+                    ProtoSourceStep::start(runtime, realm, new_target)?,
+                )?,
+            )?,
+        };
+    }
+}
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<DataViewAccessStep>() <= 64);
+
+// S11 all-domain protocol bound; inline completion stays allocation-free.
+const _: () = assert!(std::mem::size_of::<DataViewConstructorStep>() <= 64);

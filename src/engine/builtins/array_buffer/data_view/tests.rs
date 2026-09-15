@@ -568,3 +568,51 @@ fn access_methods_coerce_in_spec_order_and_revalidate_after_reentry() {
         })()"#,
     );
 }
+
+#[test]
+fn pending_data_view_access_roots_the_view_and_buffer_until_abandonment() {
+    let runtime = Runtime::new();
+    let weak = std::rc::Rc::downgrade(&runtime.0);
+    let mut context = runtime.new_context();
+    let view = context.eval("new DataView(new ArrayBuffer(8))").unwrap();
+    let Value::Object(object) = &view else {
+        panic!("expected view")
+    };
+    let id = object.object_id();
+    let buffer = runtime.data_view_snapshot(object).unwrap().buffer;
+    let invocation = NativeInvocation::Call { this_value: view };
+    let arguments = NativeArguments {
+        actual_arg_count: 2,
+        readable: vec![Value::Int(0), Value::Int(42)],
+    };
+    let DataViewAccessStep::Primitive { resume, .. } = DataViewAccessStep::start(
+        &runtime,
+        context.realm,
+        DataViewNativeKind::Set(DataViewElementKind::Uint8),
+        &invocation,
+        &arguments,
+    )
+    .unwrap() else {
+        panic!("expected position conversion")
+    };
+    drop(invocation);
+    drop(arguments);
+    let DataViewAccessStep::Primitive { resume, .. } = resume
+        .resume(&runtime, Completion::Return(Value::Int(0)))
+        .unwrap()
+    else {
+        panic!("expected value conversion")
+    };
+    runtime.run_gc().unwrap();
+    for id in [id, buffer] {
+        assert!(runtime.0.state.borrow().heap.object(id).is_ok());
+    }
+    drop(resume);
+    runtime.run_gc().unwrap();
+    for id in [id, buffer] {
+        assert!(runtime.0.state.borrow().heap.object(id).is_err());
+    }
+    drop(context);
+    drop(runtime);
+    assert!(weak.upgrade().is_none());
+}

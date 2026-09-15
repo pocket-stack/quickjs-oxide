@@ -6,6 +6,8 @@
 //! `Arc`/`Mutex` coordinator; no `Runtime`, `Context`, `Value`, `ObjectRef`, or
 //! other runtime root ever crosses a thread boundary.
 
+pub(crate) mod operation;
+
 use crate::engine::api::context::Context;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
@@ -17,8 +19,8 @@ use crate::engine::heap::ContextId;
 use crate::engine::heap::shared_memory::SharedBufferHandle;
 
 use crate::engine::object::{CallableRef, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor};
+use crate::engine::value::Value;
 use crate::engine::value::conversion::NativeConversion;
-use crate::engine::value::{JsString, Value};
 use crate::engine::vm::Completion;
 use crate::engine::vm::call::{NativeArguments, NativeInvocation};
 use std::cell::RefCell;
@@ -616,128 +618,22 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Call { .. } = invocation else {
-            return Err(RuntimeError::Invariant(
-                "Test262 agent function received a constructor invocation",
-            ));
-        };
-        let Some((session, role)) = registered_session_and_role(self, realm) else {
-            return Err(RuntimeError::Invariant(
-                "Test262 agent function has no registered session",
-            ));
-        };
-        match kind {
-            Test262AgentKind::Start => {
-                if role == AgentRole::Worker {
-                    return self
-                        .test262_agent_type_error(realm, "cannot be called inside an agent");
+        use operation::AgentStep;
+        let mut step = AgentStep::start(self, realm, kind, invocation, arguments)?;
+        loop {
+            step = match step {
+                AgentStep::Complete(result) => return Ok(result),
+                AgentStep::String { value, resume } => {
+                    let result = match self.native_to_js_string(realm, &value)? {
+                        NativeConversion::Value(value) => Completion::Return(Value::String(value)),
+                        NativeConversion::Throw(value) => Completion::Throw(value),
+                    };
+                    resume.resume(self, result)?
                 }
-                let source = match self.native_to_js_string(realm, &arguments.readable[0])? {
-                    NativeConversion::Value(source) => source,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                let source = match String::from_utf16(&source.utf16_units().collect::<Vec<_>>()) {
-                    Ok(source) => source,
-                    Err(_) => {
-                        return Ok(Completion::Throw(self.new_native_error(
-                            realm,
-                            NativeErrorKind::Internal,
-                            "agent source containing a lone UTF-16 surrogate is not implemented",
-                        )?));
-                    }
-                };
-                if let Err(error) = session.start_worker(source) {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Internal,
-                        &error,
-                    )?));
+                AgentStep::Number { value, resume } => {
+                    resume.number(self, self.native_to_number(realm, &value)?)?
                 }
-                Ok(Completion::Return(Value::Undefined))
-            }
-            Test262AgentKind::GetReport => {
-                let report = lock_unpoisoned(&session.inner.reports).pop_front();
-                Ok(Completion::Return(match report {
-                    Some(report) => Value::String(JsString::try_from_utf8(&report)?),
-                    None => Value::Null,
-                }))
-            }
-            Test262AgentKind::Broadcast => {
-                if role == AgentRole::Worker {
-                    return self
-                        .test262_agent_type_error(realm, "cannot be called inside an agent");
-                }
-                // JS_GetArrayBuffer performs its ArrayBuffer/SAB brand and
-                // detached checks before JS_ToInt32 can run user code.
-                let handle = match self
-                    .test262_agent_export_broadcast_buffer(realm, &arguments.readable[0])?
-                {
-                    NativeConversion::Value(handle) => handle,
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                let value = match self.native_to_number(realm, &arguments.readable[1])? {
-                    NativeConversion::Value(value) => crate::engine::value::number::to_int32(value),
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                if let Err(error) = session.broadcast(handle, value) {
-                    return Ok(Completion::Throw(self.new_native_error(
-                        realm,
-                        NativeErrorKind::Internal,
-                        &error,
-                    )?));
-                }
-                Ok(Completion::Return(Value::Undefined))
-            }
-            Test262AgentKind::Report => {
-                // QuickJS's implementation does not enforce the comment's
-                // worker-only role here; preserve the observable code behavior.
-                let report = match self.native_to_js_string(realm, &arguments.readable[0])? {
-                    NativeConversion::Value(report) => report.to_utf8_lossy(),
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                lock_unpoisoned(&session.inner.reports).push_back(report);
-                Ok(Completion::Return(Value::Undefined))
-            }
-            Test262AgentKind::Leaving => {
-                if role == AgentRole::Main {
-                    return self.test262_agent_type_error(realm, "must be called inside an agent");
-                }
-                // Pinned QuickJS performs no state transition or signal here.
-                Ok(Completion::Return(Value::Undefined))
-            }
-            Test262AgentKind::ReceiveBroadcast => {
-                if role == AgentRole::Main {
-                    return self.test262_agent_type_error(realm, "must be called inside an agent");
-                }
-                let callback = match &arguments.readable[0] {
-                    Value::Object(object) => self.as_callable(object)?,
-                    _ => None,
-                };
-                let Some(callback) = callback else {
-                    return self.test262_agent_type_error(realm, "expecting function");
-                };
-                install_worker_callback(self.domain_id(), callback);
-                Ok(Completion::Return(Value::Undefined))
-            }
-            Test262AgentKind::Sleep => {
-                let duration = match self.native_to_number(realm, &arguments.readable[0])? {
-                    NativeConversion::Value(duration) => Self::to_uint32_number(duration),
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                };
-                #[cfg(not(target_family = "wasm"))]
-                thread::sleep(std::time::Duration::from_millis(u64::from(duration)));
-                #[cfg(target_family = "wasm")]
-                if duration != 0 {
-                    return self
-                        .test262_agent_type_error(realm, "sleep is unavailable on wasm targets");
-                }
-                Ok(Completion::Return(Value::Undefined))
-            }
-            Test262AgentKind::MonotonicNow => {
-                let milliseconds = session.inner.clock_origin.elapsed().as_millis();
-                #[allow(clippy::cast_precision_loss)]
-                Ok(Completion::Return(Value::Float(milliseconds as f64)))
-            }
+            };
         }
     }
 
