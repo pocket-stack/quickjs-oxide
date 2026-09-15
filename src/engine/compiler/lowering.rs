@@ -1,5 +1,7 @@
 //! Lower resolved IR to verified bytecode and source debug information.
 
+use crate::source::coordinates::QuickJsSourceIndex;
+
 #[cfg(test)]
 use super::DetachedBytecode;
 use super::{
@@ -225,6 +227,15 @@ pub(super) fn lower_unlinked_tree(
         module: _,
         pending_unsupported: _,
     } = tree;
+    let source_index = if debug_info == DebugInfoMode::StripDebug {
+        None
+    } else {
+        Some(
+            QuickJsSourceLocator::from_bytes(source.raw_bytes())
+                .index()
+                .map_err(|error| Error::internal(error.to_string()))?,
+        )
+    };
     let function_count = tree_functions.len();
     let captured_locals = captured_locals_by_function(&tree_functions)?;
     // A descendant eval descriptor names bindings owned by each ancestor and
@@ -558,6 +569,9 @@ pub(super) fn lower_unlinked_tree(
         let debug = match debug_info {
             DebugInfoMode::Full | DebugInfoMode::StripSource => Some(build_unlinked_debug(
                 &source,
+                source_index
+                    .as_ref()
+                    .ok_or_else(|| Error::internal("debug lowering has no source index"))?,
                 filename.clone(),
                 function.source.definition,
                 if debug_info == DebugInfoMode::Full {
@@ -1383,13 +1397,13 @@ fn fold_quickjs_constant_branches(code: &mut [Instruction]) {
 
 fn build_unlinked_debug(
     source: &SourceText,
+    locator: &QuickJsSourceIndex<'_>,
     filename: JsString,
     definition: SourceOffset,
     source_range: Option<Range<SourceOffset>>,
     pc_sites: &[Option<SourceOffset>],
 ) -> Result<UnlinkedFunctionDebug, Error> {
     let carrier = source.carrier();
-    let locator = QuickJsSourceLocator::from_bytes(source.raw_bytes());
     let definition = locator
         .locate(definition)
         .map_err(|error| Error::internal(error.to_string()))?;
@@ -1480,6 +1494,7 @@ mod tests {
                 kind: ScopeKind::With,
                 is_parameter_initializer: false,
                 bindings: Vec::new(),
+                bindings_by_name: Default::default(),
             });
             function.locals.push(WITH_OBJECT_LOCAL_NAME.to_owned());
             function.add_binding(

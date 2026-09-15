@@ -25,3 +25,13 @@
 - [template.rs](template.rs)：QuickJS-shaped template literal and tagged-template lowering.。
 - [tests/](tests/README.md)：子模块职责与文件说明。
 - [tests.rs](tests.rs)：模块回归测试。
+
+作用域的 `bindings` 保留声明顺序和稳定 BindingId；名称索引仅用于选择该
+顺序中最后一个同名绑定。正常声明通过 `FunctionIr::add_binding` 同步索引，
+晚插入的函数私有名称在调整顺序后重建索引。遮蔽、重复声明是否合法以及
+参数环境边界仍由解析和验证逻辑决定，不能依赖 HashMap 的覆盖行为判定。
+
+常量池仍按追加顺序决定字节码编号。所有追加通过
+`FunctionIr::append_constant`；字符串索引记录第一个 primitive string，
+仅供 `ensure_string_constant` 复用名称。普通字面量追加不会去重，AtomString
+和模板常量也不会混入这个索引。模板后处理只修改模板载荷。

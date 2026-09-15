@@ -853,7 +853,7 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             let value = match self.get_property_in_realm(realm, source, &key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -1076,7 +1076,7 @@ impl Runtime {
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
         for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             let mut value = match self.get_property_in_realm(realm, &source, &key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -1290,7 +1290,7 @@ impl Runtime {
             )?));
         }
         for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             let value = match self.get_property_in_realm(realm, &source, &key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -1753,6 +1753,14 @@ impl Runtime {
         &self,
         key: &PropertyKey,
     ) -> Result<Option<CanonicalNumericIndex>, RuntimeError> {
+        if !key.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("property key"));
+        }
+        // Immediate atoms are canonical nonnegative integer strings. Numeric
+        // -0 has already become the zero atom; the string "-0" falls through.
+        if let Some(index) = key.atom().immediate_integer() {
+            return Ok(Some(CanonicalNumericIndex::Valid(u64::from(index))));
+        }
         if self.0.state.borrow().atoms.property_key_kind(key.atom())? != PropertyKeyKind::String {
             return Ok(None);
         }

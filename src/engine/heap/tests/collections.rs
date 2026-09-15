@@ -3,6 +3,102 @@ use crate::engine::heap::native::{MapNativeKind, NativeCProto, SetNativeKind};
 use super::*;
 
 #[test]
+fn collection_churn_reclaims_records_with_a_paused_iterator() {
+    let mut heap = Heap::new();
+    let shape = empty_shape(&mut heap);
+    let map = heap
+        .allocate_object(ObjectData::map(shape, Vec::new()))
+        .unwrap();
+    let iterator = heap
+        .allocate_object(ObjectData::map_iterator(
+            shape,
+            Vec::new(),
+            map,
+            MapIteratorKind::Key,
+        ))
+        .unwrap();
+    for index in 0..4096 {
+        heap.map_insert_record(map, RawValue::Int(1), RawValue::Int(2))
+            .unwrap();
+        if index == 0 {
+            heap.set_map_iterator_index(iterator, 1).unwrap();
+            heap.set_map_iterator_current(iterator, 0).unwrap();
+        }
+        heap.map_delete_record(map, index).unwrap();
+    }
+    assert_eq!(
+        heap.map_records(map).unwrap().len(),
+        0,
+        "deleted history is not live storage"
+    );
+    heap.map_insert_record(map, RawValue::Int(1), RawValue::Int(3))
+        .unwrap();
+    assert_eq!(heap.map_find_record(map, &RawValue::Int(1)), Ok(Some(4096)));
+    heap.map_clear(map).unwrap();
+    heap.map_insert_record(map, RawValue::Int(1), RawValue::Int(4))
+        .unwrap();
+    assert_eq!(heap.map_find_record(map, &RawValue::Int(1)), Ok(Some(4097)));
+    heap.release_object(iterator).unwrap();
+    heap.release_object(map).unwrap();
+    heap.release_shape(shape).unwrap();
+    assert_eq!(heap.counts().live, 0);
+}
+
+#[test]
+fn set_index_matches_zero_signs_and_survives_reinsertion() {
+    let mut heap = Heap::new();
+    let shape = empty_shape(&mut heap);
+    let set = heap
+        .allocate_object(ObjectData::set(shape, Vec::new()))
+        .unwrap();
+    heap.set_insert_record(set, RawValue::Int(0)).unwrap();
+    assert_eq!(
+        heap.set_find_record(set, &RawValue::Float(-0.0)),
+        Ok(Some(0))
+    );
+    heap.set_delete_record(set, 0).unwrap();
+    assert_eq!(heap.set_find_record(set, &RawValue::Int(0)), Ok(None));
+    heap.set_insert_record(set, RawValue::Int(0)).unwrap();
+    assert_eq!(
+        heap.set_find_record(set, &RawValue::Float(0.0)),
+        Ok(Some(1))
+    );
+    heap.set_clear(set).unwrap();
+    assert_eq!(heap.set_find_record(set, &RawValue::Int(0)), Ok(None));
+}
+
+#[test]
+fn map_index_matches_numeric_keys_and_survives_delete_and_clear() {
+    let mut heap = Heap::new();
+    let shape = empty_shape(&mut heap);
+    let map = heap
+        .allocate_object(ObjectData::map(shape, Vec::new()))
+        .unwrap();
+    heap.map_insert_record(map, RawValue::Int(1), RawValue::Int(7))
+        .unwrap();
+    heap.map_insert_record(map, RawValue::Float(f64::NAN), RawValue::Int(8))
+        .unwrap();
+    assert_eq!(
+        heap.map_find_record(map, &RawValue::Float(1.0)),
+        Ok(Some(0))
+    );
+    assert_eq!(
+        heap.map_find_record(map, &RawValue::Float(-f64::NAN)),
+        Ok(Some(1))
+    );
+    heap.map_delete_record(map, 0).unwrap();
+    assert_eq!(heap.map_find_record(map, &RawValue::Int(1)), Ok(None));
+    heap.map_insert_record(map, RawValue::Int(1), RawValue::Int(9))
+        .unwrap();
+    assert_eq!(heap.map_find_record(map, &RawValue::Int(1)), Ok(Some(2)));
+    heap.map_clear(map).unwrap();
+    assert_eq!(
+        heap.map_find_record(map, &RawValue::Float(f64::NAN)),
+        Ok(None)
+    );
+}
+
+#[test]
 fn map_records_retain_gc_edges_and_delete_releases_them() {
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
@@ -42,13 +138,7 @@ fn map_records_retain_gc_edges_and_delete_releases_them() {
         Err(HeapError::Stale { .. })
     ));
     assert_eq!(heap.map_size(map), Ok(0));
-    assert_eq!(
-        heap.map_records(map),
-        Ok(&[MapRecord {
-            key: None,
-            value: RawValue::Undefined,
-        }][..])
-    );
+    assert!(heap.map_records(map).unwrap().is_empty());
 
     heap.release_object(map).unwrap();
     heap.release_shape(shape).unwrap();
@@ -56,7 +146,7 @@ fn map_records_retain_gc_edges_and_delete_releases_them() {
 }
 
 #[test]
-fn map_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
+fn map_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let map = heap
@@ -85,8 +175,8 @@ fn map_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
     )
     .unwrap();
     assert_eq!(
-        heap.map_records(map).unwrap()[1].key,
-        Some(RawValue::Int(2))
+        heap.map_records(map).unwrap().get(1).unwrap().key,
+        RawValue::Int(2)
     );
     heap.map_delete_record(map, 1).unwrap();
     heap.map_insert_record(
@@ -97,13 +187,13 @@ fn map_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
     .unwrap();
 
     let records = heap.map_records(map).unwrap();
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[0].key, Some(RawValue::Int(1)));
-    assert_eq!(records[1].key, None);
-    assert_eq!(records[1].value, RawValue::Undefined);
-    assert_eq!(records[2].key, Some(RawValue::Int(2)));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records.next_id(), 3);
+    assert_eq!(records.get(0).unwrap().key, RawValue::Int(1));
+    assert!(records.get(1).is_none());
+    assert_eq!(records.get(2).unwrap().key, RawValue::Int(2));
     assert_eq!(
-        records[2].value,
+        records.get(2).unwrap().value,
         RawValue::String(JsString::from_static("second"))
     );
     let (source, next_index, kind) = heap.map_iterator_state(iterator).unwrap();
@@ -111,9 +201,9 @@ fn map_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
     assert_eq!(next_index, 1);
     assert_eq!(kind, MapIteratorKind::KeyAndValue);
     assert_eq!(
-        records[next_index..]
-            .iter()
-            .find_map(|record| record.key.as_ref()),
+        records
+            .next_at_or_after(next_index)
+            .map(|(_, record)| &record.key),
         Some(&RawValue::Int(2))
     );
 
@@ -310,7 +400,7 @@ fn map_native_descriptors_preserve_quickjs_call_protocols() {
 }
 
 #[test]
-fn set_records_retain_key_edges_and_tombstone_with_undefined_value() {
+fn set_records_retain_key_edges_and_release_deleted_storage() {
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let set = heap
@@ -325,11 +415,15 @@ fn set_records_retain_key_edges_and_tombstone_with_undefined_value() {
     assert_eq!(heap.set_size(set), Ok(1));
     assert_eq!(heap.object_strong_count(key), Ok(2));
     assert_eq!(
-        heap.set_records(set),
-        Ok(&[MapRecord {
-            key: Some(RawValue::Object(key)),
+        heap.set_records(set)
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![MapRecord {
+            key: RawValue::Object(key),
             value: RawValue::Undefined,
-        }][..])
+        }]
     );
     heap.release_object(key).unwrap();
 
@@ -337,13 +431,7 @@ fn set_records_retain_key_edges_and_tombstone_with_undefined_value() {
     assert_eq!(cleanup.finalized_objects, 1);
     assert!(matches!(heap.object(key), Err(HeapError::Stale { .. })));
     assert_eq!(heap.set_size(set), Ok(0));
-    assert_eq!(
-        heap.set_records(set),
-        Ok(&[MapRecord {
-            key: None,
-            value: RawValue::Undefined,
-        }][..])
-    );
+    assert!(heap.set_records(set).unwrap().is_empty());
     assert!(matches!(
         heap.set_delete_record(set, 0),
         Err(HeapError::Invariant(
@@ -379,7 +467,7 @@ fn set_records_retain_key_edges_and_tombstone_with_undefined_value() {
 }
 
 #[test]
-fn set_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
+fn set_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let set = heap
@@ -401,10 +489,11 @@ fn set_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
     heap.set_insert_record(set, RawValue::Int(2)).unwrap();
 
     let records = heap.set_records(set).unwrap();
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[0].key, Some(RawValue::Int(1)));
-    assert_eq!(records[1].key, None);
-    assert_eq!(records[2].key, Some(RawValue::Int(2)));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records.next_id(), 3);
+    assert_eq!(records.get(0).unwrap().key, RawValue::Int(1));
+    assert!(records.get(1).is_none());
+    assert_eq!(records.get(2).unwrap().key, RawValue::Int(2));
     assert!(
         records
             .iter()
@@ -416,7 +505,7 @@ fn set_tombstones_preserve_readd_order_and_live_iterator_sees_appends() {
         Ok((Some(set), 1, SetIteratorKind::KeyAndValue))
     );
     assert_eq!(
-        records[1..].iter().find_map(|record| record.key.as_ref()),
+        records.next_at_or_after(1).map(|(_, record)| &record.key),
         Some(&RawValue::Int(2))
     );
 
@@ -488,12 +577,14 @@ fn set_layout_and_iterator_source_are_structurally_validated() {
         is_constructor: false,
         kind: ObjectKind::Set,
         payload: ObjectPayload::Set {
-            records: vec![MapRecord {
-                key: Some(RawValue::Int(1)),
-                value: RawValue::Int(2),
-            }],
-            live_indices: [0].into_iter().collect(),
-            size: 1,
+            records: {
+                let mut records = CollectionRecords::default();
+                records.insert(MapRecord {
+                    key: RawValue::Int(1),
+                    value: RawValue::Int(2),
+                });
+                records
+            },
         },
     };
     assert!(matches!(

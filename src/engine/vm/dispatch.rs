@@ -468,9 +468,7 @@ impl VmActivation {
                 host.dynamic_import(specifier, options)?
             }
             Instruction::Call(argument_count) => {
-                let arguments = self.take_call_arguments(*argument_count, 1)?;
-                let function = self.pop()?;
-                host.call(function, Value::Undefined, arguments)?
+                self.call_from_stack(*argument_count, false, host)?
             }
             Instruction::TailCall(argument_count) => {
                 let arguments = self.take_call_arguments(*argument_count, 1)?;
@@ -486,10 +484,7 @@ impl VmActivation {
                 self.execute_eval_call(function, arguments, *environment, host)?
             }
             Instruction::CallMethod(argument_count) => {
-                let arguments = self.take_call_arguments(*argument_count, 2)?;
-                let function = self.pop()?;
-                let receiver = self.pop()?;
-                host.call(function, receiver, arguments)?
+                self.call_from_stack(*argument_count, true, host)?
             }
             Instruction::TailCallMethod(argument_count) => {
                 let arguments = self.take_call_arguments(*argument_count, 2)?;

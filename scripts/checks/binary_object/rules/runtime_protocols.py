@@ -204,7 +204,17 @@ def check(ctx):
         "stage3c-tail-vm",
         "execute_call_instruction must retain its alias-free exhaustive call-family dispatch",
         call_dispatch_item,
-        "f6b13bdb02ab06e2177beba9cd3bda2f626c6baa97fa09420cbfa2459ef5a97d",
+        "a3bd9bbdd07df461a0f2fcbf0b5129bf3b5432eb668629384ccedb9a4a73d978",
+    )
+
+    # Ordinary calls now borrow the activation suffix. Tail/eval/construct
+    # retain their owned-vector path. Authenticate cleanup on every host exit,
+    # checked operand counts, and exact callee/receiver positions separately.
+    ctx.require_normalized_code_sha256(
+        "stage3c-tail-vm",
+        "call_from_stack must keep its checked, nonescaping suffix and unconditional operand cleanup",
+        ctx.stage3b_function("src/engine/vm/mod.rs", "call_from_stack", "stage3c-tail-vm"),
+        "f53a3bca472b7aed011405d2e7e3da46e53b34e5a2163d260b688edf600f89f9",
     )
 
     tail_call_arm = ctx.unique_braced_item(
@@ -820,7 +830,13 @@ def check(ctx):
             runtime_vm_host_relative,
             "call",
             "RuntimeVmHost::call must forward nested callable completions without remapping Throw before caller catch",
-            "c1970423cb9f5a75f26e5c309dcc724ee92f74bd48a6e8d24311a3fc94bb6a14",
+            "ecdfa0d7291697c269e3bdfaefedd491bec7415540122677e3bae5bfe3235f49",
+        ),
+        (
+            runtime_vm_host_relative,
+            "call_with_borrowed_arguments",
+            "borrowed call entry must forward the unchanged completion and argument slice into the runtime",
+            "ed0307d5eb9f2f7dcc84c5bfe650bbcb3aa673840f57517a329597c6830b935d",
         ),
         (
             "src/engine/object/internal_methods.rs",

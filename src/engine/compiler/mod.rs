@@ -624,6 +624,15 @@ struct IrScope {
     /// initializer, but must never be mistaken for authored body lexicals.
     is_parameter_initializer: bool,
     bindings: Vec<BindingId>,
+    /// Last binding in declaration order for each name. The ordered list remains
+    /// authoritative for validation, lowering and observable declaration order.
+    bindings_by_name: HashMap<String, BindingId>,
+}
+
+impl IrScope {
+    fn binding_named(&self, name: &str) -> Option<BindingId> {
+        self.bindings_by_name.get(name).copied()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1431,6 +1440,8 @@ struct FunctionIr {
     /// an outer operation. Parentheses deliberately preserve this marker.
     last_optional_chain: Option<FinalizedOptionalChain>,
     constants: Vec<IrConstant>,
+    /// First primitive string occurrence; constant ordinals remain append-only.
+    string_constants: HashMap<JsString, u32>,
     closure_variables: Vec<ClosureVariable>,
     /// Exact flattened caller bindings imported by a synthetic direct-eval
     /// root. Entries retain their original R1w descriptor indices even though
@@ -1554,6 +1565,7 @@ impl FunctionIr {
                 kind: ScopeKind::FunctionRoot,
                 is_parameter_initializer: false,
                 bindings: Vec::new(),
+                bindings_by_name: Default::default(),
             },
             IrScope {
                 parent: Some(function_root),
@@ -1567,6 +1579,7 @@ impl FunctionIr {
                 },
                 is_parameter_initializer: false,
                 bindings: Vec::new(),
+                bindings_by_name: Default::default(),
             },
         ];
         let current_scope = body;
@@ -1645,6 +1658,7 @@ impl FunctionIr {
             last_identifier_reference: None,
             last_optional_chain: None,
             constants: Vec::new(),
+            string_constants: HashMap::new(),
             closure_variables: Vec::new(),
             external_bindings: Vec::new(),
             eval_caller_profile: EvalCallerProfile {
@@ -1724,6 +1738,18 @@ impl FunctionIr {
         Ok(())
     }
 
+    /// Preserve every authored constant and its ordinal. Only name-constant
+    /// reuse consults the derived first-occurrence index.
+    fn append_constant(&mut self, constant: IrConstant) -> Result<u32, Error> {
+        let index = u32::try_from(self.constants.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?;
+        if let IrConstant::Primitive(Value::String(value)) = &constant {
+            self.string_constants.entry(value.clone()).or_insert(index);
+        }
+        self.constants.push(constant);
+        Ok(index)
+    }
+
     fn add_binding(
         &mut self,
         storage_scope: ScopeId,
@@ -1746,6 +1772,9 @@ impl FunctionIr {
             declaration_span,
         });
         self.scopes[storage_scope.0].bindings.push(binding);
+        self.scopes[storage_scope.0]
+            .bindings_by_name
+            .insert(self.bindings[binding.0].name.clone(), binding);
         binding
     }
 
@@ -1769,12 +1798,19 @@ impl FunctionIr {
     }
 
     fn binding_id_in_scope(&self, scope: ScopeId, name: &str) -> Option<BindingId> {
-        self.scopes[scope.0]
-            .bindings
-            .iter()
-            .rev()
-            .copied()
-            .find(|binding| self.bindings[binding.0].name == name)
+        self.scopes[scope.0].binding_named(name)
+    }
+
+    /// Rare late function-name insertion changes order after normal appends.
+    /// Rebuild once there, rather than burdening every name lookup with a scan.
+    fn rebuild_scope_name_index(&mut self, scope: ScopeId) {
+        let scope = &mut self.scopes[scope.0];
+        scope.bindings_by_name.clear();
+        for &binding in &scope.bindings {
+            scope
+                .bindings_by_name
+                .insert(self.bindings[binding.0].name.clone(), binding);
+        }
     }
 
     fn binding_id_from_scope(
@@ -7360,12 +7396,8 @@ impl<'source> Parser<'source> {
         self.register_var_binding(&name, declaration_span, conflict_span)?;
 
         let function = &mut self.functions[self.current_function];
-        let binding = function.scopes[function.var_scope.0]
-            .bindings
-            .iter()
-            .rev()
-            .copied()
-            .find(|binding| function.bindings[binding.0].name == name)
+        let binding = function
+            .binding_id_in_scope(function.var_scope, &name)
             .ok_or_else(|| Error::internal("function declaration binding was not registered"))?;
         let metadata = &function.bindings[binding.0];
         if metadata.kind != BindingKind::Normal
@@ -7829,11 +7861,7 @@ impl<'source> Parser<'source> {
     }
 
     fn add_constant(&mut self, constant: IrConstant) -> Result<u32, Error> {
-        let function = self.current_ir_mut();
-        let index = u32::try_from(function.constants.len())
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?;
-        function.constants.push(constant);
-        Ok(index)
+        self.current_ir_mut().append_constant(constant)
     }
 
     fn emit_instruction(&mut self, instruction: Instruction) -> Result<usize, Error> {
@@ -8819,6 +8847,7 @@ impl<'source> Parser<'source> {
             kind: ScopeKind::Parameter,
             is_parameter_initializer: true,
             bindings: Vec::new(),
+            bindings_by_name: Default::default(),
         });
         function.parameter_scope = Some(parameter_scope);
         function.current_scope = parameter_scope;
@@ -8866,6 +8895,7 @@ impl<'source> Parser<'source> {
                 kind: ScopeKind::Parameter,
                 is_parameter_initializer: true,
                 bindings: Vec::new(),
+                bindings_by_name: Default::default(),
             });
             function.parameter_scope = Some(parameter_scope);
             function.current_scope = parameter_scope;
@@ -9114,6 +9144,7 @@ impl<'source> Parser<'source> {
             kind,
             is_parameter_initializer,
             bindings: Vec::new(),
+            bindings_by_name: HashMap::new(),
         });
         function.ops.push(SpannedIrOp {
             op: IrOp::EnterScope(scope),

@@ -290,6 +290,38 @@ impl VmActivation {
             .ok_or_else(|| Error::internal("bytecode stack depth operand is out of bounds"))
     }
 
+    /// Reuse this activation's argument tail for ordinary calls. Callee and
+    /// receiver move out once; the argument values remain rooted in place.
+    /// Always detach consumed operands after the synchronous host entry,
+    /// including throws/internal errors, before the interpreter can unwind.
+    pub(in crate::engine::vm) fn call_from_stack(
+        &mut self,
+        argument_count: u16,
+        method: bool,
+        host: &mut impl VmHost,
+    ) -> Result<Completion, Error> {
+        let fixed_values = if method { 2 } else { 1 };
+        let required = usize::from(argument_count)
+            .checked_add(fixed_values)
+            .ok_or_else(|| Error::internal("call operand count overflow"))?;
+        let base = self
+            .stack
+            .len()
+            .checked_sub(required)
+            .ok_or_else(|| Error::internal("call operands underflow the VM stack"))?;
+        let arguments_start = base + fixed_values;
+        let function = std::mem::replace(&mut self.stack[arguments_start - 1], Value::Undefined);
+        let receiver = if method {
+            std::mem::replace(&mut self.stack[base], Value::Undefined)
+        } else {
+            Value::Undefined
+        };
+        let result =
+            host.call_with_borrowed_arguments(function, receiver, &self.stack[arguments_start..]);
+        self.stack.truncate(base);
+        result
+    }
+
     pub(in crate::engine::vm) fn take_call_arguments(
         &mut self,
         argument_count: u16,

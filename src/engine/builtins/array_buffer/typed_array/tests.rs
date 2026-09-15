@@ -1433,3 +1433,36 @@ fn context_free_host_definition_converts_primitive_typed_array_values() {
         )))
     );
 }
+
+#[test]
+fn typed_array_integer_key_fast_path_keeps_domains_and_noncanonical_strings() {
+    use crate::engine::builtins::CanonicalNumericIndex;
+    let runtime = Runtime::new();
+    for index in [0, 1, 2_147_483_647] {
+        let key = runtime.property_key_for_index(index).unwrap();
+        assert!(
+            matches!(runtime.typed_array_canonical_numeric_index(&key).unwrap(), Some(CanonicalNumericIndex::Valid(value)) if value == index)
+        );
+    }
+    for text in ["-0", "NaN", "Infinity", "-1", "0.5"] {
+        let key = runtime.intern_property_key(text).unwrap();
+        assert!(matches!(
+            runtime.typed_array_canonical_numeric_index(&key).unwrap(),
+            Some(CanonicalNumericIndex::Invalid)
+        ));
+    }
+    for text in ["01", "1.0", "+0", " 0", "1e0"] {
+        let key = runtime.intern_property_key(text).unwrap();
+        assert!(
+            runtime
+                .typed_array_canonical_numeric_index(&key)
+                .unwrap()
+                .is_none()
+        );
+    }
+    let foreign = Runtime::new().property_key_for_index(0).unwrap();
+    assert!(matches!(
+        runtime.typed_array_canonical_numeric_index(&foreign),
+        Err(RuntimeError::WrongRuntime(_))
+    ));
+}

@@ -112,20 +112,109 @@ impl<'source> QuickJsSourceLocator<'source> {
             return Err(DebugMetadataError::OffsetNotUtf8Boundary);
         }
 
-        let mut line = 0_u32;
-        let mut column = 0_u32;
-        for byte in &self.source[..byte_offset] {
-            if *byte == b'\n' {
-                line = line
-                    .checked_add(1)
-                    .ok_or(DebugMetadataError::LineOrColumnOverflow)?;
-                column = 0;
-            } else if byte & 0xc0 != 0x80 {
-                column = column
-                    .checked_add(1)
-                    .ok_or(DebugMetadataError::LineOrColumnOverflow)?;
-            }
+        advance_position(LineColumn::default(), &self.source[..byte_offset])
+    }
+
+    /// Prepare bounded-distance lookups for consumers with many source sites.
+    /// One-off diagnostics can keep using the allocation-free locator.
+    pub fn index(self) -> Result<QuickJsSourceIndex<'source>, DebugMetadataError> {
+        let mut checkpoints = Vec::with_capacity(self.source.len() / SOURCE_CHECKPOINT_BYTES + 1);
+        let mut position = LineColumn::default();
+        checkpoints.push(position);
+        for chunk in self.source.chunks_exact(SOURCE_CHECKPOINT_BYTES) {
+            position = advance_position(position, chunk)?;
+            checkpoints.push(position);
         }
-        Ok(LineColumn { line, column })
+        Ok(QuickJsSourceIndex {
+            locator: self,
+            checkpoints,
+        })
+    }
+}
+
+const SOURCE_CHECKPOINT_BYTES: usize = 256;
+
+/// Source-owned coordinate index shared across all functions in one lowering.
+/// Construction is O(source bytes); each query scans at most 255 bytes after
+/// an O(1) checkpoint lookup. Storage is eight bytes per 256 source bytes,
+/// excluding Vec metadata/capacity. Long single-line sources remain bounded.
+#[derive(Debug)]
+pub struct QuickJsSourceIndex<'source> {
+    locator: QuickJsSourceLocator<'source>,
+    checkpoints: Vec<LineColumn>,
+}
+
+impl QuickJsSourceIndex<'_> {
+    pub fn locate(&self, offset: SourceOffset) -> Result<LineColumn, DebugMetadataError> {
+        self.locate_byte_offset(offset.as_usize())
+    }
+
+    pub fn locate_byte_offset(&self, byte_offset: usize) -> Result<LineColumn, DebugMetadataError> {
+        if byte_offset > self.locator.source.len() {
+            return Err(DebugMetadataError::OffsetOutOfBounds);
+        }
+        if self
+            .locator
+            .utf8
+            .is_some_and(|source| !source.is_char_boundary(byte_offset))
+        {
+            return Err(DebugMetadataError::OffsetNotUtf8Boundary);
+        }
+        let checkpoint = byte_offset / SOURCE_CHECKPOINT_BYTES;
+        advance_position(
+            self.checkpoints[checkpoint],
+            &self.locator.source[checkpoint * SOURCE_CHECKPOINT_BYTES..byte_offset],
+        )
+    }
+}
+
+/// Shared byte-level rule, including malformed UTF-8 and CR-only source.
+fn advance_position(
+    mut position: LineColumn,
+    bytes: &[u8],
+) -> Result<LineColumn, DebugMetadataError> {
+    for &byte in bytes {
+        if byte == b'\n' {
+            position.line = position
+                .line
+                .checked_add(1)
+                .ok_or(DebugMetadataError::LineOrColumnOverflow)?;
+            position.column = 0;
+        } else if byte & 0xc0 != 0x80 {
+            position.column = position
+                .column
+                .checked_add(1)
+                .ok_or(DebugMetadataError::LineOrColumnOverflow)?;
+        }
+    }
+    Ok(position)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexed_coordinates_match_scans_at_every_raw_byte_and_utf8_boundary() {
+        let raw = [b'a', 0x80, 0xff, b'\r', b'\n', 0xe2, 0x80, 0xa8].repeat(100);
+        let locator = QuickJsSourceLocator::from_bytes(&raw);
+        let indexed = locator.index().unwrap();
+        for offset in (0..=raw.len() + 1).rev() {
+            assert_eq!(
+                indexed.locate_byte_offset(offset),
+                locator.locate_byte_offset(offset)
+            );
+        }
+        let text = ("é\r\n𝄞\u{2028}".to_owned() + &"x".repeat(600)).repeat(3);
+        let locator = QuickJsSourceLocator::new(&text);
+        let indexed = locator.index().unwrap();
+        for offset in 0..=text.len() + 1 {
+            assert_eq!(
+                indexed.locate_byte_offset(offset),
+                locator.locate_byte_offset(offset)
+            );
+        }
+        let empty = QuickJsSourceLocator::from_bytes(b"").index().unwrap();
+        assert_eq!(empty.locate_byte_offset(0), Ok(LineColumn::new(0, 0)));
     }
 }

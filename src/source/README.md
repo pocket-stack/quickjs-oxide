@@ -10,3 +10,8 @@
 - [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
 - [text.rs](text.rs)：Byte-exact carrier text for dynamically supplied ECMAScript source.。
 - [unicode/](unicode/README.md)：子模块职责与文件说明。
+
+`QuickJsSourceLocator` 服务一次性诊断，保持无分配；大量位置查询使用其
+`index()` 生成的 `QuickJsSourceIndex`。索引按每 256 个原始字节记录行列，
+跨所有子函数共享，查询最多扫描 255 字节，单个超长行也不会退化。
+两者使用相同 LF/UTF-8 continuation 计数规则，不把解析字节改成标准 UTF-8。

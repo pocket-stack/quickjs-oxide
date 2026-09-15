@@ -1,5 +1,54 @@
 # Performance tools
 
+## Data structure scaling
+
+`scaling.py` generates project-authored diagnostic workloads and reuses the
+process runner below. It records **whole-process wall time**, including startup,
+compilation, setup, validation output and teardown. These are not upstream scores
+or compile/link-only measurements.
+
+```sh
+python3 scripts/benchmark/scaling.py \
+  --engine before=/absolute/baseline/qjs --engine after=/absolute/changed/qjs \
+  --sizes 32 128 512 2048 --operations 32768 --repeat 5 \
+  --output target/scaling-comparison
+```
+
+Use `--case` repeatedly to select workloads. First pilot a workload, then freeze
+its operations and sizes for both engines. Sizes must divide operations; the
+runner never silently rounds the total work. Samples rotate engine order, retain
+stdout/stderr and timeouts, and require an independently computed exact result.
+Any failed repetition disqualifies its group. Metadata includes binary hashes,
+available verified build receipts, workload files/hashes and generator identity.
+Use ordinary builds and the build/provenance procedure below for formal timing.
+
+Only batched workloads require size to divide operations. History, width, key
+length and generated-source sizes can vary independently of query counts.
+
+The scaling dimensions differ intentionally:
+
+| Cases | Size changes | Operations controls |
+| --- | --- | --- |
+| map-int, map-string, set | Entries per collection | Total inserts and membership checks |
+| map-churn, set-churn | Prior delete/reinsert history, one live entry | Subsequent membership checks; setup grows with history |
+| map-iterate-churn, set-iterate-churn | Prior delete/reinsert history with a paused iterator | New iterators over one live entry; also validate the paused cursor |
+| set-intersection | Entries per pair | Total entries across pairs; includes construction |
+| prop-write | Object width | Writes to the same existing property |
+| prop-delete, array-truncate | Object/array width | Total constructed entries; includes construction and validation |
+| scope, constants, module, module-imports | Declarations, names, exports or import/reexport bindings | Unused; each generated program executes once |
+| long-key | String length | Repeated lookup of one separately constructed equal key |
+
+This initial runner measures time, not allocation counts or memory reclamation.
+Churn timings include history creation and cannot alone prove a memory bound.
+Use storage tests and a separate memory experiment for that acceptance criterion.
+All generated programs live in the requested output directory. Results directories
+must not already exist, protecting previous evidence from accidental overwrite.
+
+Run admission and workload smoke tests with
+`python3 -m unittest discover -s scripts/benchmark -p 'test_*.py'`.
+Node, when present, independently checks every generated workload at small sizes;
+its absence skips only that check. Repeat a CLI smoke run against Oxide as well.
+
 These tools orchestrate external workloads; they do not vendor benchmark code.
 Use Python 3.10+ on a Unix host. Run timing and heavier validation on PocketLab,
 serially, without competing builds or tests. `run.py` uses process-group timeout
@@ -125,3 +174,5 @@ cargo test --locked -p quickjs-oxide --lib --features profiling profiling_
 Run the broader Rust/QuickJS comparison tests and Test262 independently of
 benchmarking. Never revise conformance baselines to turn a performance change
 into an apparent pass.
+
+Scaling workloads also cover Array/TypedArray integer reads and writes, repeated interior Array deletion/reinsertion, strict and mapped Arguments construction, and RegExp named groups/indices. Use sizes below 255 for regexp-groups. Mapped arguments use a non-strict Function body explicitly because workload files are modules.

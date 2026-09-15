@@ -2793,18 +2793,10 @@ fn capture_global_path(
 
 pub(super) fn ensure_string_constant(function: &mut FunctionIr, name: &str) -> Result<u32, Error> {
     let name = JsString::try_from_utf8(name)?;
-    if let Some(index) = function.constants.iter().position(
-        |constant| matches!(constant, IrConstant::Primitive(Value::String(value)) if value == &name),
-    ) {
-        return u32::try_from(index)
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"));
+    if let Some(&index) = function.string_constants.get(&name) {
+        return Ok(index);
     }
-    let index = u32::try_from(function.constants.len())
-        .map_err(|_| Error::new(ErrorKind::JsInternal, "out of memory"))?;
-    function
-        .constants
-        .push(IrConstant::Primitive(Value::String(name)));
-    Ok(index)
+    function.append_constant(IrConstant::Primitive(Value::String(name)))
 }
 
 /// A parentless parameter environment is a deliberate visibility barrier, not
@@ -2911,6 +2903,7 @@ fn find_or_create_private_function_name_binding(
         ));
     }
     function.scopes[root.0].bindings.insert(insertion, binding);
+    function.rebuild_scope_name_index(root);
     Ok(Some(ResolvedBinding {
         storage: BindingStorage::Local(index),
         kind,

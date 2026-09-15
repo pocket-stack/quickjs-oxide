@@ -854,7 +854,7 @@ impl Runtime {
         index: u32,
         value: Value,
     ) -> Result<Option<Value>, RuntimeError> {
-        let key = self.intern_property_key(&index.to_string())?;
+        let key = self.property_key_for_index(index as u64)?;
         self.set_property_or_throw(realm, object, &key, value)
     }
 
@@ -876,7 +876,7 @@ impl Runtime {
                 )?))
             }
             NativeConversion::Value(InternalDefineResult::RejectedOrdinary(target)) => {
-                let key = self.intern_property_key(&index.to_string())?;
+                let key = self.property_key_for_index(index)?;
                 let array_length_read_only =
                     if let ArrayOwnKey::Index(index) = self.array_own_key(&target, &key)? {
                         let (length, writable) = self.array_length_state(&target)?;
@@ -909,7 +909,7 @@ impl Runtime {
         index: u64,
         value: Value,
     ) -> Result<NativeConversion<InternalDefineResult>, RuntimeError> {
-        let key = self.intern_property_key(&index.to_string())?;
+        let key = self.property_key_for_index(index)?;
         let descriptor = OrdinaryPropertyDescriptor {
             value: DescriptorField::Present(value),
             writable: DescriptorField::Present(true),
@@ -1152,7 +1152,7 @@ impl Runtime {
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
         for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             let mut value = match self.get_property_in_realm(realm, &source, &key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -1365,7 +1365,7 @@ impl Runtime {
         if index < 0 || index >= length {
             return Ok(Completion::Return(Value::Undefined));
         }
-        let key = self.intern_property_key(&index.to_string())?;
+        let key = self.property_key_for_index(index as u64)?;
         let present = match self.has_property_in_realm(realm, &object, &key)? {
             Completion::Return(Value::Bool(value)) => value,
             Completion::Return(_) => {
@@ -1457,7 +1457,7 @@ impl Runtime {
                 *slot = replacement.clone();
                 continue;
             }
-            let key = self.intern_property_key(&position.to_string())?;
+            let key = self.property_key_for_index(position as u64)?;
             let present = match self.has_property_in_realm(realm, &object, &key)? {
                 Completion::Return(Value::Bool(value)) => value,
                 Completion::Return(_) => {
@@ -1555,7 +1555,7 @@ impl Runtime {
                     )?));
                 }
                 for source_index in 0..length {
-                    let key = self.intern_property_key(&source_index.to_string())?;
+                    let key = self.property_key_for_index(source_index)?;
                     let present = match self.has_property_in_realm(realm, &element, &key)? {
                         Completion::Return(Value::Bool(value)) => value,
                         Completion::Return(_) => {
@@ -1663,7 +1663,7 @@ impl Runtime {
         ))?;
 
         while start < end {
-            let key = self.intern_property_key(&start.to_string())?;
+            let key = self.property_key_for_index(start as u64)?;
             if let Some(value) =
                 self.set_property_or_throw(realm, &object, &key, fill_value.clone())?
             {
@@ -1737,7 +1737,7 @@ impl Runtime {
         let mut selected_count = 0_u64;
 
         for index in 0..length {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index as u64)?;
             let present = match self.has_property_in_realm(realm, &object, &key)? {
                 Completion::Return(Value::Bool(value)) => value,
                 Completion::Return(_) => {
@@ -1944,7 +1944,7 @@ impl Runtime {
                     ArrayReduceKind::ReduceRight => length - step - 1,
                 };
                 step += 1;
-                let key = self.intern_property_key(&index.to_string())?;
+                let key = self.property_key_for_index(index as u64)?;
                 let present = match self.has_property_in_realm(realm, &object, &key)? {
                     Completion::Return(Value::Bool(value)) => value,
                     Completion::Return(_) => {
@@ -1978,7 +1978,7 @@ impl Runtime {
                 ArrayReduceKind::ReduceRight => length - step - 1,
             };
             step += 1;
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index as u64)?;
             let present = match self.has_property_in_realm(realm, &object, &key)? {
                 Completion::Return(Value::Bool(value)) => value,
                 Completion::Return(_) => {
@@ -2058,7 +2058,7 @@ impl Runtime {
         };
 
         while index != end {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index as u64)?;
             let value = match self.get_property_in_realm(realm, &object, &key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -2454,7 +2454,7 @@ impl Runtime {
         };
 
         while index != end {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index as u64)?;
             let value = match kind {
                 ArraySearchKind::Includes => {
                     match self.get_property_in_realm(realm, &object, &key)? {
@@ -2593,7 +2593,7 @@ impl Runtime {
             }
             // Pinned QuickJS passes its Int64 loop index through
             // JS_GetPropertyUint32, including Uint32 wraparound above 2^32.
-            let key = self.intern_property_key(&(index as u32).to_string())?;
+            let key = self.property_key_for_index(u64::from(index as u32))?;
             let element = match self.get_property_in_realm(realm, &object, &key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -2680,7 +2680,7 @@ impl Runtime {
         object: &ObjectRef,
         index: u64,
     ) -> Result<NativeConversion<Option<Value>>, RuntimeError> {
-        let key = self.intern_property_key(&index.to_string())?;
+        let key = self.property_key_for_index(index)?;
         let present = match self.has_property_in_realm(realm, object, &key)? {
             Completion::Return(Value::Bool(value)) => value,
             Completion::Return(_) => {
@@ -2728,7 +2728,7 @@ impl Runtime {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Some(value)),
             };
-            let to_key = self.intern_property_key(&to.to_string())?;
+            let to_key = self.property_key_for_index(to)?;
             if let Some(value) = value {
                 if let Some(value) = self.set_property_or_throw(realm, object, &to_key, value)? {
                     return Ok(Some(value));
@@ -2756,7 +2756,7 @@ impl Runtime {
         object: &ObjectRef,
         index: u64,
     ) -> Result<Option<Value>, RuntimeError> {
-        let key = self.intern_property_key(&index.to_string())?;
+        let key = self.property_key_for_index(index)?;
         match self.internal_delete_property(realm, object, &key)? {
             NativeConversion::Value(true) => Ok(None),
             NativeConversion::Value(false) => Ok(Some(self.new_native_error(
@@ -2871,7 +2871,7 @@ impl Runtime {
             let index = from
                 .checked_add(offset)
                 .ok_or(RuntimeError::Invariant("Array push index overflowed"))?;
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             if let Some(value) = self.set_property_or_throw(realm, &object, &key, value)? {
                 return Ok(Completion::Throw(value));
             }
@@ -2924,14 +2924,14 @@ impl Runtime {
 
             match (lower_value, upper_value) {
                 (lower_value, Some(upper_value)) => {
-                    let lower_key = self.intern_property_key(&lower.to_string())?;
+                    let lower_key = self.property_key_for_index(lower)?;
                     if let Some(value) =
                         self.set_property_or_throw(realm, &object, &lower_key, upper_value)?
                     {
                         return Ok(Completion::Throw(value));
                     }
                     if let Some(lower_value) = lower_value {
-                        let upper_key = self.intern_property_key(&upper.to_string())?;
+                        let upper_key = self.property_key_for_index(upper)?;
                         if let Some(value) =
                             self.set_property_or_throw(realm, &object, &upper_key, lower_value)?
                         {
@@ -2949,7 +2949,7 @@ impl Runtime {
                     {
                         return Ok(Completion::Throw(value));
                     }
-                    let upper_key = self.intern_property_key(&upper.to_string())?;
+                    let upper_key = self.property_key_for_index(upper)?;
                     if let Some(value) =
                         self.set_property_or_throw(realm, &object, &upper_key, lower_value)?
                     {
@@ -3237,7 +3237,7 @@ impl Runtime {
                 slot.value = Value::Undefined;
                 continue;
             }
-            let key = self.intern_property_key(&position.to_string())?;
+            let key = self.property_key_for_index(position)?;
             let value = std::mem::replace(&mut slot.value, Value::Undefined);
             if let Some(value) = self.set_property_or_throw(realm, object, &key, value)? {
                 return Ok(Some(value));
@@ -3247,7 +3247,7 @@ impl Runtime {
 
         let mut index = defined_count;
         for _ in 0..undefined_count {
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             if let Some(value) =
                 self.set_property_or_throw(realm, object, &key, Value::Undefined)?
             {
@@ -3543,7 +3543,7 @@ impl Runtime {
             let index = start.checked_add(offset).ok_or(RuntimeError::Invariant(
                 "Array.splice item index overflowed",
             ))?;
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index)?;
             if let Some(value) = self.set_property_or_throw(realm, &object, &key, value)? {
                 return Ok(Completion::Throw(value));
             }
@@ -3797,7 +3797,7 @@ impl Runtime {
         let value = match kind {
             ArrayIteratorKind::Key => key_value,
             ArrayIteratorKind::Value | ArrayIteratorKind::KeyAndValue => {
-                let key = self.intern_property_key(&index.to_string())?;
+                let key = self.property_key_for_index(index as u64)?;
                 let value = match self.get_property_in_realm(realm, &source, &key)? {
                     Completion::Return(value) => value,
                     Completion::Throw(value) => {

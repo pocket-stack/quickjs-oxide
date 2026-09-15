@@ -4,23 +4,11 @@
 //! These operations maintain records and transfer or release their owned heap edges.
 
 use super::{
-    Atom, Heap, HeapCleanup, HeapError, MapIteratorKind, NodeData, ObjectData, ObjectId,
-    ObjectPayload, RawId, RawValue, SetIteratorKind, SlotState, is_map_storable_value,
-    raw_value_atom, raw_value_edges,
+    Atom, CollectionRecords, Heap, HeapCleanup, HeapError, MapIteratorKind, MapRecord, NodeData,
+    ObjectData, ObjectId, ObjectPayload, RawId, RawValue, SetIteratorKind, SlotState,
+    is_map_storable_value, raw_value_atom, raw_value_edges,
 };
 use std::collections::{HashMap, HashSet};
-
-/// One stable insertion-order slot in a genuine Map.
-///
-/// Deletion clears `key` and resets `value` to `undefined` rather than
-/// removing the record. Stable indices are observable through live Map
-/// iterators: deleting and re-adding a key appends a fresh record, and records
-/// appended after iterator creation remain visible until exhaustion.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MapRecord {
-    pub key: Option<RawValue>,
-    pub value: RawValue,
-}
 
 /// Printer-only snapshot of Map/Set records retained by live iterators.
 ///
@@ -68,8 +56,8 @@ struct WeakCollectionRecord<V> {
 
 /// O(1) weak-record storage in QuickJS insertion order.
 ///
-/// Unlike ordinary Map, weak collections expose no live iterator and need no
-/// tombstones. Deletion unlinks and removes the hash entry, while re-adding
+/// Weak collections expose no live iterator, so identity-linked ordering needs
+/// no monotonic cursor index. Deletion removes the entry, while re-adding
 /// the same identity appends a fresh record at the tail.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeakCollectionRecords<V> {
@@ -313,9 +301,27 @@ impl<V> WeakCollectionRecords<V> {
 }
 
 impl Heap {
-    /// Borrow the stable insertion-order record array of one genuine Map.
-    /// Tombstones remain present with a `None` key and `undefined` value.
-    pub fn map_records(&self, id: ObjectId) -> Result<&[MapRecord], HeapError> {
+    /// Resolve a validated key without snapshots or per-candidate root handles.
+    pub(crate) fn map_find_record(
+        &self,
+        id: ObjectId,
+        key: &RawValue,
+    ) -> Result<Option<usize>, HeapError> {
+        if !is_map_storable_value(key) {
+            return Err(HeapError::Invariant(
+                "Map lookup contains an internal value sentinel",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::Map { records } => Ok(records.find(key)),
+            _ => Err(HeapError::Invariant(
+                "Map lookup reached an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Borrow live Map records by stable insertion identity.
+    pub fn map_records(&self, id: ObjectId) -> Result<&CollectionRecords, HeapError> {
         match &self.object(id)?.payload {
             ObjectPayload::Map { records, .. } => Ok(records),
             _ => Err(HeapError::Invariant(
@@ -327,7 +333,7 @@ impl Heap {
     /// Read the number of live records in one genuine Map.
     pub fn map_size(&self, id: ObjectId) -> Result<usize, HeapError> {
         match &self.object(id)?.payload {
-            ObjectPayload::Map { size, .. } => Ok(*size),
+            ObjectPayload::Map { records } => Ok(records.len()),
             _ => Err(HeapError::Invariant(
                 "Map size requested for an object with the wrong class",
             )),
@@ -349,10 +355,8 @@ impl Heap {
                 "Map record contains an internal value sentinel",
             ));
         }
-        let next_size = match &self.object(id)?.payload {
-            ObjectPayload::Map { size, .. } => size.checked_add(1).ok_or(HeapError::Overflow {
-                operation: "growing Map size",
-            })?,
+        match &self.object(id)?.payload {
+            ObjectPayload::Map { records } => records.preflight_insert()?,
             _ => {
                 return Err(HeapError::Invariant(
                     "Map insertion reached an object with the wrong class",
@@ -364,22 +368,10 @@ impl Heap {
         new_edges.extend(raw_value_edges(&value));
         self.retain_edges_transactionally(&new_edges)?;
 
-        let ObjectPayload::Map {
-            records,
-            live_indices,
-            size,
-        } = &mut self.object_mut(id)?.payload
-        else {
+        let ObjectPayload::Map { records } = &mut self.object_mut(id)?.payload else {
             unreachable!("Map payload was validated before retaining record edges")
         };
-        let record_index = records.len();
-        records.push(MapRecord {
-            key: Some(key),
-            value,
-        });
-        let inserted = live_indices.insert(record_index);
-        debug_assert!(inserted, "fresh Map record index was already live");
-        *size = next_size;
+        records.insert(MapRecord { key, value });
         Ok(HeapCleanup::default())
     }
 
@@ -399,10 +391,7 @@ impl Heap {
             ));
         }
         match &self.object(id)?.payload {
-            ObjectPayload::Map { records, .. }
-                if records
-                    .get(index)
-                    .is_some_and(|record| record.key.is_some()) => {}
+            ObjectPayload::Map { records, .. } if records.get(index).is_some() => {}
             ObjectPayload::Map { .. } => {
                 return Err(HeapError::Invariant(
                     "Map value replacement requires a live record index",
@@ -421,7 +410,9 @@ impl Heap {
             let ObjectPayload::Map { records, .. } = &mut self.object_mut(id)?.payload else {
                 unreachable!("Map payload was validated before retaining replacement edges")
             };
-            std::mem::replace(&mut records[index].value, value)
+            records
+                .replace_value(index, value)
+                .expect("validated live Map record")
         };
 
         let mut cleanup = HeapCleanup::default();
@@ -433,44 +424,24 @@ impl Heap {
         Ok(cleanup)
     }
 
-    /// Turn a caller-resolved live Map record into a tombstone without
-    /// changing stable record indices. Owned key/value edges and Symbol atoms
-    /// are detached together.
+    /// Remove a live Map record without reusing its ID. Owned key/value edges
+    /// and Symbol atoms are detached together.
     pub fn map_delete_record(
         &mut self,
         id: ObjectId,
         index: usize,
     ) -> Result<HeapCleanup, HeapError> {
         let (key, value) = {
-            let ObjectPayload::Map {
-                records,
-                live_indices,
-                size,
-            } = &mut self.object_mut(id)?.payload
-            else {
+            let ObjectPayload::Map { records } = &mut self.object_mut(id)?.payload else {
                 return Err(HeapError::Invariant(
                     "Map deletion reached an object with the wrong class",
                 ));
             };
-            if *size == 0 {
-                return Err(HeapError::Invariant(
-                    "Map deletion requires a live record index",
-                ));
-            }
-            let record = records.get_mut(index).ok_or(HeapError::Invariant(
+            let record = records.remove(index).ok_or(HeapError::Invariant(
                 "Map deletion requires a live record index",
             ))?;
-            if record.key.is_none() || !live_indices.remove(&index) {
-                return Err(HeapError::Invariant(
-                    "Map deletion requires a live record index",
-                ));
-            }
-            let key = record.key.take().ok_or(HeapError::Invariant(
-                "Map deletion requires a live record index",
-            ))?;
-            let value = std::mem::replace(&mut record.value, RawValue::Undefined);
-            *size -= 1;
-            (key, value)
+            let key = record.key;
+            (key, record.value)
         };
 
         let mut cleanup = HeapCleanup::default();
@@ -486,35 +457,22 @@ impl Heap {
         Ok(cleanup)
     }
 
-    /// Tombstone every live Map record while preserving the record array for
-    /// existing iterators. All detached edges and Symbol atoms are finalized
-    /// after the object mutation has completed.
+    /// Remove every live Map record while preserving the insertion ID clock.
+    /// Detached edges and Symbol atoms are finalized after payload mutation.
     pub fn map_clear(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
         let removed = {
-            let ObjectPayload::Map {
-                records,
-                live_indices,
-                size,
-            } = &mut self.object_mut(id)?.payload
-            else {
+            let ObjectPayload::Map { records } = &mut self.object_mut(id)?.payload else {
                 return Err(HeapError::Invariant(
                     "Map clear reached an object with the wrong class",
                 ));
             };
-            let mut removed = Vec::with_capacity(*size);
-            for record in records {
-                if let Some(key) = record.key.take() {
-                    let value = std::mem::replace(&mut record.value, RawValue::Undefined);
-                    removed.push((key, value));
-                }
-            }
-            live_indices.clear();
-            *size = 0;
-            removed
+            records.take_all()
         };
 
         let mut cleanup = HeapCleanup::default();
-        for (key, value) in removed {
+        for record in removed {
+            let key = record.key;
+            let value = record.value;
             cleanup.atoms.extend(raw_value_atom(&key));
             cleanup.atoms.extend(raw_value_atom(&value));
             for edge in raw_value_edges(&key)
@@ -650,10 +608,27 @@ impl Heap {
         self.drain_zero_queue()
     }
 
-    /// Borrow the stable insertion-order record array of one genuine Set.
-    /// Live elements occupy `key`; both live and tombstoned `value` slots are
-    /// always `undefined`.
-    pub fn set_records(&self, id: ObjectId) -> Result<&[MapRecord], HeapError> {
+    /// Set uses the same non-owning index and key semantics as Map.
+    pub(crate) fn set_find_record(
+        &self,
+        id: ObjectId,
+        key: &RawValue,
+    ) -> Result<Option<usize>, HeapError> {
+        if !is_map_storable_value(key) {
+            return Err(HeapError::Invariant(
+                "Set lookup contains an internal value sentinel",
+            ));
+        }
+        match &self.object(id)?.payload {
+            ObjectPayload::Set { records } => Ok(records.find(key)),
+            _ => Err(HeapError::Invariant(
+                "Set lookup reached an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Borrow live Set records. Elements occupy `key`; values are undefined.
+    pub fn set_records(&self, id: ObjectId) -> Result<&CollectionRecords, HeapError> {
         match &self.object(id)?.payload {
             ObjectPayload::Set { records, .. } => Ok(records),
             _ => Err(HeapError::Invariant(
@@ -665,7 +640,7 @@ impl Heap {
     /// Read the number of live records in one genuine Set.
     pub fn set_size(&self, id: ObjectId) -> Result<usize, HeapError> {
         match &self.object(id)?.payload {
-            ObjectPayload::Set { size, .. } => Ok(*size),
+            ObjectPayload::Set { records } => Ok(records.len()),
             _ => Err(HeapError::Invariant(
                 "Set size requested for an object with the wrong class",
             )),
@@ -686,10 +661,8 @@ impl Heap {
                 "Set record contains an internal value sentinel",
             ));
         }
-        let next_size = match &self.object(id)?.payload {
-            ObjectPayload::Set { size, .. } => size.checked_add(1).ok_or(HeapError::Overflow {
-                operation: "growing Set size",
-            })?,
+        match &self.object(id)?.payload {
+            ObjectPayload::Set { records } => records.preflight_insert()?,
             _ => {
                 return Err(HeapError::Invariant(
                     "Set insertion reached an object with the wrong class",
@@ -700,67 +673,41 @@ impl Heap {
         let new_edges = raw_value_edges(&key);
         self.retain_edges_transactionally(&new_edges)?;
 
-        let ObjectPayload::Set {
-            records,
-            live_indices,
-            size,
-        } = &mut self.object_mut(id)?.payload
-        else {
+        let ObjectPayload::Set { records } = &mut self.object_mut(id)?.payload else {
             unreachable!("Set payload was validated before retaining record edges")
         };
-        let record_index = records.len();
-        records.push(MapRecord {
-            key: Some(key),
+        records.insert(MapRecord {
+            key,
             value: RawValue::Undefined,
         });
-        let inserted = live_indices.insert(record_index);
-        debug_assert!(inserted, "fresh Set record index was already live");
-        *size = next_size;
         Ok(HeapCleanup::default())
     }
 
-    /// Turn a caller-resolved live Set record into a tombstone without
-    /// changing stable record indices. The owned element edge and Symbol atom
-    /// are detached together.
+    /// Remove a live Set record without reusing its ID. The owned element
+    /// edge and Symbol atom are detached together.
     pub fn set_delete_record(
         &mut self,
         id: ObjectId,
         index: usize,
     ) -> Result<HeapCleanup, HeapError> {
         let key = {
-            let ObjectPayload::Set {
-                records,
-                live_indices,
-                size,
-            } = &mut self.object_mut(id)?.payload
-            else {
+            let ObjectPayload::Set { records } = &mut self.object_mut(id)?.payload else {
                 return Err(HeapError::Invariant(
                     "Set deletion reached an object with the wrong class",
                 ));
             };
-            if *size == 0 {
-                return Err(HeapError::Invariant(
-                    "Set deletion requires a live record index",
-                ));
-            }
-            let record = records.get_mut(index).ok_or(HeapError::Invariant(
+            let existing = records.get(index).ok_or(HeapError::Invariant(
                 "Set deletion requires a live record index",
             ))?;
-            if !matches!(record.value, RawValue::Undefined) {
+            if !matches!(existing.value, RawValue::Undefined) {
                 return Err(HeapError::Invariant(
                     "Set record value slot is not undefined",
                 ));
             }
-            if record.key.is_none() || !live_indices.remove(&index) {
-                return Err(HeapError::Invariant(
-                    "Set deletion requires a live record index",
-                ));
-            }
-            let key = record.key.take().ok_or(HeapError::Invariant(
+            let record = records.remove(index).ok_or(HeapError::Invariant(
                 "Set deletion requires a live record index",
             ))?;
-            *size -= 1;
-            key
+            record.key
         };
 
         let mut cleanup = HeapCleanup::default();
@@ -772,42 +719,21 @@ impl Heap {
         Ok(cleanup)
     }
 
-    /// Tombstone every live Set record while preserving stable indices for
-    /// existing iterators. Detached edges and Symbol atoms are finalized only
-    /// after the payload mutation completes.
+    /// Remove every live Set record while preserving the insertion ID clock.
+    /// Detached edges and Symbol atoms are finalized after payload mutation.
     pub fn set_clear(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
         let removed = {
-            let ObjectPayload::Set {
-                records,
-                live_indices,
-                size,
-            } = &mut self.object_mut(id)?.payload
-            else {
+            let ObjectPayload::Set { records } = &mut self.object_mut(id)?.payload else {
                 return Err(HeapError::Invariant(
                     "Set clear reached an object with the wrong class",
                 ));
             };
-            if records
-                .iter()
-                .any(|record| !matches!(record.value, RawValue::Undefined))
-            {
-                return Err(HeapError::Invariant(
-                    "Set record value slot is not undefined",
-                ));
-            }
-            let mut removed = Vec::with_capacity(*size);
-            for record in records {
-                if let Some(key) = record.key.take() {
-                    removed.push(key);
-                }
-            }
-            live_indices.clear();
-            *size = 0;
-            removed
+            records.take_all()
         };
 
         let mut cleanup = HeapCleanup::default();
-        for key in removed {
+        for record in removed {
+            let key = record.key;
             cleanup.atoms.extend(raw_value_atom(&key));
             for edge in raw_value_edges(&key) {
                 self.release_raw_no_drain(edge)?;

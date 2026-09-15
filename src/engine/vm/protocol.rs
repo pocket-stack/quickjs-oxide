@@ -497,6 +497,18 @@ pub(crate) trait VmHost {
         this_value: Value,
         arguments: Vec<Value>,
     ) -> Result<Completion, Error>;
+    /// Borrow a synchronous call-entry argument window. The caller keeps the
+    /// values rooted until this returns; any captured/suspended arguments must
+    /// acquire their own ownership before returning. Hosts without a borrowed
+    /// entry keep the existing owned-argument protocol through this fallback.
+    fn call_with_borrowed_arguments(
+        &mut self,
+        function: Value,
+        this_value: Value,
+        arguments: &[Value],
+    ) -> Result<Completion, Error> {
+        self.call(function, this_value, arguments.to_vec())
+    }
     /// QuickJS `OP_apply`. The host owns callable/constructor validation
     /// ordering around argument-list construction.
     fn apply(

@@ -6,6 +6,10 @@
 
 ## 文件与子目录
 
+- [dictionary_storage.rs](dictionary_storage.rs)：普通对象 dictionary 的单属性删除/替换事务；移动槽转移所有权，释放仅作用于被移除项。
+
+- [collection_records.rs](collection_records.rs)：Map/Set 存活记录、键索引和递增记录 ID 的统一拥有者；删除回收记录，游标不依赖物理槽。
+
 - [allocation.rs](allocation.rs)：分配及初始化。
 - [arena.rs](arena.rs)：槽位、发布状态、计数与节点访问。
 - [binding_records.rs](binding_records.rs)：binding 的原始堆记录、载荷与校验。
@@ -14,6 +18,7 @@
 - [buffers.rs](buffers.rs)：Borrow-contained ArrayBuffer storage operations and SharedArrayBuffer backing handles.。
 - [code_records.rs](code_records.rs)：code 的原始堆记录、载荷与校验。
 - [collections.rs](collections.rs)：Insertion-ordered Map/Set storage, weak collection records, and collection iterator state.。
+- [collection_index.rs](collection_index.rs)：强集合的非拥有型键索引；只保存哈希和稳定记录位置，由集合存储同步增删。查找不执行 JS；完整一致性扫描仅用于发布校验。
 - [deferred.rs](deferred.rs)：延迟操作队列、待处理状态和清理重入守卫。
 - [gc.rs](gc.rs)：Heap reference ownership, ordered weak-reference processing, and cycle collection.。
 - [identity.rs](identity.rs)：identity 的类型和操作实现。
@@ -42,3 +47,18 @@
 - [tests.rs](tests.rs)：模块回归测试。
 
 - [profiling.rs](profiling.rs)：可选 arena backing storage 跟踪和资源拥有者的内存统计。
+
+Map/Set 的 `CollectionRecords` 独占存活记录、键索引、存活 ID 顺序和递增 ID
+时钟。删除不复用 ID；clear 释放存储但保留时钟。游标只保存 ID，因此活迭代器
+不要求保留墓碑。打印器将已删除的 current ID 合成为空项，不能把它当成存活记录。
+记录 key 在发布后不可修改，value 替换通过专用入口，GC 边事务仍由 heap 拥有。
+
+顺序暂用标准库 BTreeSet：键/记录定位平均 O(1)，增删与寻找下一项 O(log n)，
+整表遍历 O(n)。这是为了在支持任意暂停游标时立即回收历史记录，避免引入游标
+注册表或自定义链接回收协议；不声称全部操作 O(1)。哈希表按几何阈值收缩，容量
+随存活规模变化；测试覆盖暂停游标、重插、clear、ID 耗尽与参考模型随机序列。
+
+长字符串哈希缓存属于单个 CollectionIndex 的随机种子域。它只记录最多 8 个
+长度至少 256 code units 的弱字符串身份，采用 FIFO 淘汰；每次 miss 仍按完整
+内容哈希，命中后的键相等性仍需验证。缓存不会持有字符串载荷，不参与存储相等性，
+clear 会释放它。短键不分配缓存；不能将缓存移交给使用不同种子的索引。

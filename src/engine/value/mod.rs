@@ -1,4 +1,5 @@
 pub mod bigint;
+pub(crate) mod collection_key;
 pub mod number;
 pub mod number_parse;
 use crate::engine::api::error::{Error, ErrorKind};

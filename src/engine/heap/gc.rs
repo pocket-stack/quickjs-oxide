@@ -980,6 +980,24 @@ impl Heap {
         &mut self,
         edges: &[RawId],
     ) -> Result<(), HeapError> {
+        // Property updates usually carry zero, one or two edges. Preflight
+        // this bounded list directly, including the accessor get == set case.
+        if edges.len() <= 2 {
+            if let Some(&first) = edges.first() {
+                let duplicate = edges.get(1) == Some(&first);
+                self.preflight_edge_retain(first, if duplicate { 2 } else { 1 })?;
+                if let Some(&second) = edges.get(1) {
+                    if !duplicate {
+                        self.preflight_edge_retain(second, 1)?;
+                    }
+                }
+                for &edge in edges {
+                    self.retain_raw(edge, 1)
+                        .expect("preflighted small edge retain failed before publication");
+                }
+            }
+            return Ok(());
+        }
         let mut counts = HashMap::<RawId, u32>::new();
         for &edge in edges {
             let count = counts.entry(edge).or_default();
@@ -991,15 +1009,22 @@ impl Heap {
         // A complete preflight makes the following increments infallible and
         // avoids a rollback path that could itself need to report atom cleanup.
         for (&edge, &additional) in &counts {
-            let strong = self.live_node(edge)?.strong;
-            strong.checked_add(additional).ok_or(HeapError::Overflow {
-                operation: "retaining outgoing heap edges",
-            })?;
+            self.preflight_edge_retain(edge, additional)?;
         }
         for (edge, additional) in counts {
             self.retain_raw(edge, additional)
                 .expect("preflighted heap edge retain failed before publication");
         }
+        Ok(())
+    }
+
+    fn preflight_edge_retain(&self, edge: RawId, additional: u32) -> Result<(), HeapError> {
+        self.live_node(edge)?
+            .strong
+            .checked_add(additional)
+            .ok_or(HeapError::Overflow {
+                operation: "retaining outgoing heap edges",
+            })?;
         Ok(())
     }
 
@@ -1361,17 +1386,15 @@ pub(super) fn object_edges(object: &ObjectData) -> Vec<RawId> {
         ObjectPayload::Map { records, .. } => records
             .iter()
             .map(|record| {
-                record
-                    .key
-                    .as_ref()
-                    .map_or(0, |key| raw_value_edges(key).len())
+                raw_value_edges(&record.key)
+                    .len()
                     .saturating_add(raw_value_edges(&record.value).len())
             })
             .sum(),
         ObjectPayload::MapIterator { .. } => 1,
         ObjectPayload::Set { records, .. } => records
             .iter()
-            .filter_map(|record| record.key.as_ref())
+            .map(|record| &record.key)
             .map(|key| raw_value_edges(key).len())
             .sum(),
         ObjectPayload::SetIterator { .. } => 1,
@@ -1475,21 +1498,17 @@ pub(super) fn object_edges(object: &ObjectData) -> Vec<RawId> {
             edges.extend(object.map(RawId::Object));
         }
         ObjectPayload::Map { records, .. } => {
-            for record in records {
-                if let Some(key) = &record.key {
-                    edges.extend(raw_value_edges(key));
-                    edges.extend(raw_value_edges(&record.value));
-                }
+            for record in records.iter() {
+                edges.extend(raw_value_edges(&record.key));
+                edges.extend(raw_value_edges(&record.value));
             }
         }
         ObjectPayload::MapIterator { object, .. } => {
             edges.extend(object.map(RawId::Object));
         }
         ObjectPayload::Set { records, .. } => {
-            for record in records {
-                if let Some(key) = &record.key {
-                    edges.extend(raw_value_edges(key));
-                }
+            for record in records.iter() {
+                edges.extend(raw_value_edges(&record.key));
             }
         }
         ObjectPayload::SetIterator { object, .. } => {
@@ -2004,17 +2023,14 @@ pub(super) fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + 
         ObjectPayload::Map { records, .. } => records
             .iter()
             .flat_map(|record| {
-                record
-                    .key
-                    .as_ref()
-                    .and_then(raw_value_atom)
+                raw_value_atom(&record.key)
                     .into_iter()
                     .chain(raw_value_atom(&record.value))
             })
             .collect::<Vec<_>>(),
         ObjectPayload::Set { records, .. } => records
             .iter()
-            .filter_map(|record| record.key.as_ref().and_then(raw_value_atom))
+            .filter_map(|record| raw_value_atom(&record.key))
             .collect::<Vec<_>>(),
         ObjectPayload::WeakMap { records } => records
             .values()

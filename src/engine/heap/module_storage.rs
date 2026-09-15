@@ -762,9 +762,10 @@ impl Heap {
     pub(crate) fn publish_loaded_module(
         &mut self,
         cache: ContextId,
-        record: RawModuleRecord,
+        mut record: RawModuleRecord,
     ) -> Result<RawModuleRef, HeapError> {
         self.validate_loaded_module_record(cache, None, &record)?;
+        record.rebuild_lookup_indexes();
         let cache_index = self.live_index(RawId::Context(cache))?;
         {
             let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(cache))?.data
@@ -819,7 +820,7 @@ impl Heap {
     pub(crate) fn replace_loaded_module(
         &mut self,
         module: RawModuleRef,
-        replacement: RawModuleRecord,
+        mut replacement: RawModuleRecord,
     ) -> Result<HeapCleanup, HeapError> {
         let current = self.loaded_module(module)?;
         self.validate_loaded_module_record(module.cache, Some(module.module), &replacement)?;
@@ -836,6 +837,13 @@ impl Heap {
             ));
         }
         validate_module_body_replacement(&current, &replacement)?;
+        if Rc::ptr_eq(&current.imports, &replacement.imports)
+            && Rc::ptr_eq(&current.exports, &replacement.exports)
+        {
+            replacement.lookup_indexes = current.lookup_indexes.clone();
+        } else {
+            replacement.rebuild_lookup_indexes();
+        }
         let cache_index = self.live_index(RawId::Context(module.cache))?;
 
         let old_edges = raw_module_record_edges(&current);

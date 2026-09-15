@@ -728,10 +728,13 @@ pub(crate) mod object_literal;
 
 pub(crate) mod private_elements;
 
+mod array_storage;
 pub(crate) mod properties;
 
 pub(crate) mod template_object;
 
+mod dictionary;
+mod dictionary_order;
 pub mod property;
 pub mod shape;
 

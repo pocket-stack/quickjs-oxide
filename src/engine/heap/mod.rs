@@ -42,6 +42,8 @@ use gc::{
     raw_module_record_edges, raw_value_atom, raw_value_edges, raw_value_matches_weak_key,
     shape_edges, var_ref_edges,
 };
+mod collection_index;
+mod collection_records;
 mod collections;
 use crate::engine::code::bytecode_validation;
 use bytecode_validation::{
@@ -50,8 +52,9 @@ use bytecode_validation::{
     validate_eval_environment_phase_layout, validate_parameter_bytecode_layout,
     validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
 };
+pub use collection_records::{CollectionRecords, MapRecord};
 pub(crate) use collections::CollectionIteratorCurrentIndices;
-pub use collections::{MapRecord, WeakCollectionKey, WeakCollectionRecords};
+pub use collections::{WeakCollectionKey, WeakCollectionRecords};
 mod private_validation;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::atom::Atom;
@@ -78,7 +81,7 @@ use crate::engine::value::JsString;
 use crate::engine::value::bigint::JsBigInt;
 use crate::regexp::CompiledRegExp;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::hash::Hash;
@@ -388,6 +391,7 @@ pub(crate) mod profiling;
 
 mod realm_storage;
 
+mod dictionary_storage;
 mod object_storage;
 
 mod binding_storage;

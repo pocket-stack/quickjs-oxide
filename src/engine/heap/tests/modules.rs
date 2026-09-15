@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn module_lookup_indexes_follow_table_replacement_without_changing_snapshots() {
+    let mut heap = Heap::new();
+    let realm = bytecode_test_realm(&mut heap);
+    let mut record = parsing_module_record(
+        realm,
+        "lookup.js",
+        &[],
+        RawModuleResolutionState::Unresolved,
+    );
+    record.exports = Rc::from([
+        RawPublishedModuleExport {
+            export_name: JsString::from_static("first"),
+            target: RawPublishedModuleExportTarget::SyntheticLocal { cell_index: 0 },
+        },
+        RawPublishedModuleExport {
+            export_name: JsString::from_static("last"),
+            target: RawPublishedModuleExportTarget::SyntheticLocal { cell_index: 1 },
+        },
+    ]);
+    record.rebuild_lookup_indexes();
+    assert_eq!(
+        record
+            .export_named(&JsString::from_static("last"))
+            .map(|(index, _)| index),
+        Some(1)
+    );
+    let snapshot = record.clone();
+    record.exports = Rc::from([]);
+    record.rebuild_lookup_indexes();
+    assert!(
+        record
+            .export_named(&JsString::from_static("last"))
+            .is_none()
+    );
+    assert!(
+        snapshot
+            .export_named(&JsString::from_static("last"))
+            .is_some()
+    );
+}
+
 fn parsing_module_record(
     realm: ContextId,
     name: &'static str,
@@ -23,6 +65,7 @@ fn parsing_module_record(
             .into(),
         imports: Rc::from([]),
         exports: Rc::from([]),
+        lookup_indexes: Rc::default(),
         star_exports: Rc::from([]),
         resolution,
         instance: None,

@@ -28,6 +28,9 @@ impl Runtime {
         } else {
             value
         };
+        if let Some(key) = self.immediate_numeric_property_key(&value) {
+            return Ok(NativeConversion::Value(key));
+        }
         if let Value::Symbol(symbol) = value {
             if !symbol.belongs_to(self) {
                 return Err(RuntimeError::WrongRuntime("property-key symbol"));

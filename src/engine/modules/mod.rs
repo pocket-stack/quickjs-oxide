@@ -941,6 +941,7 @@ impl Runtime {
                 requested_modules: Rc::new(Vec::new()),
                 imports: Rc::from([]),
                 exports: Rc::from([]),
+                lookup_indexes: Rc::default(),
                 star_exports: Rc::from([]),
                 resolution: ModuleResolutionState::Unresolved,
                 instance: None,
@@ -1941,6 +1942,7 @@ impl Runtime {
             requested_modules: Rc::new(parts.requested_modules.into_vec()),
             imports: Rc::from(parts.imports),
             exports: Rc::from(exports),
+            lookup_indexes: Rc::default(),
             star_exports: Rc::from(parts.star_exports),
             // A checker may re-enter the resolver while the parser exposes
             // only its source-order request prefix. QuickJS latches that
@@ -1985,6 +1987,7 @@ impl Runtime {
             import_collisions: Rc::from([]),
             requested_modules: Rc::new(Vec::new()),
             imports: Rc::from([]),
+            lookup_indexes: Rc::default(),
             exports: Rc::from([PublishedModuleExport {
                 export_name: JsString::from_static("default"),
                 target: PublishedModuleExportTarget::SyntheticLocal { cell_index: 0 },
@@ -2287,7 +2290,7 @@ impl Runtime {
         let raw_slots = slots
             .iter()
             .map(|slot| slot.as_ref().map(VarRefRoot::id))
-            .collect();
+            .collect::<Rc<[_]>>();
         self.mutate_module_record(module, |record| {
             record.link_realm = Some(if link_realm == module.cache {
                 RawModuleLinkRealm::Cache
@@ -2417,10 +2420,7 @@ impl Runtime {
                         if !resolve_set.insert((frame.module.module, frame.export_name.clone())) {
                             Action::Complete(ModuleExportResolveResult::Circular)
                         } else if let Some((export_index, target)) = record
-                            .exports
-                            .iter()
-                            .enumerate()
-                            .find(|(_, export)| export.export_name == frame.export_name)
+                            .export_named(&frame.export_name)
                             .map(|(index, export)| (index, export.target.clone()))
                         {
                             match target {
@@ -2818,14 +2818,11 @@ impl Runtime {
                                     "resolved module import export has invalid metadata",
                                 ));
                             }
-                            let import = record
-                                .imports
-                                .iter()
-                                .find(|import| import.closure_index == closure_index)
-                                .cloned()
-                                .ok_or(RuntimeError::Invariant(
+                            let import = record.import_for_closure(closure_index).cloned().ok_or(
+                                RuntimeError::Invariant(
                                     "exported module import has no import table entry",
-                                ))?;
+                                ),
+                            )?;
                             let dependency =
                                 self.module_dependency(binding.module, import.request)?;
                             match import.import_name {
@@ -2879,9 +2876,7 @@ impl Runtime {
                                 return Ok(VarRefRoot::from_borrowed_handle(self.clone(), slot)?);
                             }
                             ClosureVariableKind::ModuleImportView => {
-                                let import = record.imports
-                                    .iter()
-                                    .find(|import| import.closure_index == closure_index)
+                                let import = record.import_for_closure(closure_index)
                                     .cloned()
                                     .ok_or(RuntimeError::Invariant(
                                         "exported module import collision has no import table entry",
@@ -3032,7 +3027,9 @@ impl Runtime {
                 let target = record
                     .instance
                     .as_mut()
-                    .and_then(|instance| instance.slots.get_mut(usize::from(import.closure_index)))
+                    .and_then(|instance| {
+                        Rc::make_mut(&mut instance.slots).get_mut(usize::from(import.closure_index))
+                    })
                     .ok_or(RuntimeError::Invariant(
                         "module import closure is outside the instance",
                     ))?;

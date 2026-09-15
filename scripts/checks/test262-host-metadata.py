@@ -54,7 +54,7 @@ for package in packages.values():
             fail("unreviewed path dependency is outside engine fingerprint coverage")
 for name, expected in {
     "quickjs-oxide": {"checked_string_construction", "rust_only", "unsupported_diagnostics"},
-    "quickjs-oxide-cli": {"cli", "oracle"},
+    "quickjs-oxide-cli": {"cli", "oracle", "profiling"},
 }.items():
     targets = [t for t in packages[name]["targets"] if t.get("kind") == ["test"]]
     if {t["name"] for t in targets} != expected or any(t.get("required-features") for t in targets):

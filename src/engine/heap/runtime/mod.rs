@@ -4,6 +4,7 @@
 //! each context is a separate realm and execution surface. The heap and
 //! intrinsics extend this boundary; they are not hidden in the compiler or VM.
 
+mod layout;
 use self::error::RuntimeError;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 use self::module::ModuleLoader;
@@ -259,18 +260,7 @@ impl RuntimeState {
             self.shape_fingerprints.remove(&shape);
         }
 
-        let mut retained_atoms = Vec::with_capacity(entries.len());
-        for entry in entries {
-            if let Err(error) = self.atoms.resolve(entry.atom) {
-                self.release_atoms(retained_atoms)?;
-                return Err(error.into());
-            }
-            if let Err(error) = self.atoms.retain(entry.atom) {
-                self.release_atoms(retained_atoms)?;
-                return Err(error.into());
-            }
-            retained_atoms.push(entry.atom);
-        }
+        let retained_atoms = self.retain_shape_atoms(entries)?;
 
         let shape = match Shape::new(prototype, entries.iter().copied()) {
             Ok(shape) => shape,
@@ -289,6 +279,26 @@ impl RuntimeState {
         self.shape_cache.insert(fingerprint.clone(), shape);
         self.shape_fingerprints.insert(shape, fingerprint);
         Ok(shape)
+    }
+
+    pub(crate) fn retain_shape_atoms(
+        &mut self,
+        entries: &[ShapeEntry],
+    ) -> Result<Vec<Atom>, RuntimeError> {
+        let mut retained_atoms = Vec::with_capacity(entries.len());
+        for entry in entries {
+            if let Err(error) = self.atoms.resolve(entry.atom) {
+                self.release_atoms(retained_atoms)?;
+                return Err(error.into());
+            }
+            if let Err(error) = self.atoms.retain(entry.atom) {
+                self.release_atoms(retained_atoms)?;
+                return Err(error.into());
+            }
+            retained_atoms.push(entry.atom);
+        }
+
+        Ok(retained_atoms)
     }
 
     pub(crate) fn retain_slot_atoms(
@@ -342,7 +352,24 @@ impl RuntimeState {
         entries: &[ShapeEntry],
         slots: Vec<PropertySlot>,
     ) -> Result<(), RuntimeError> {
+        if self
+            .heap
+            .shape(self.heap.object(object)?.shape)?
+            .is_dictionary()
+        {
+            return self.replace_dictionary_layout(object, prototype, entries, slots);
+        }
         let shape = self.get_or_create_shape(prototype, entries)?;
+        self.replace_layout_with_owned_shape(object, shape, slots)
+    }
+
+    /// Consume the caller's shape reference on both success and rollback.
+    pub(crate) fn replace_layout_with_owned_shape(
+        &mut self,
+        object: ObjectId,
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+    ) -> Result<(), RuntimeError> {
         let retained_atoms = match self.retain_slot_atoms(&slots) {
             Ok(atoms) => atoms,
             Err(error) => {
@@ -383,7 +410,10 @@ impl RuntimeState {
         };
         let shape_cleanup = self.heap.release_shape(shape)?;
         self.apply_cleanup(layout_cleanup)?;
-        self.apply_cleanup(shape_cleanup)
+        self.apply_cleanup(shape_cleanup)?;
+        // Preserve QuickJS's slow-form flag, but do not keep rebuilding every
+        // property after a middle deletion or a non-default descriptor.
+        self.ensure_dictionary_layout(object)
     }
 
     pub(crate) fn apply_cleanup(&mut self, cleanup: HeapCleanup) -> Result<(), RuntimeError> {

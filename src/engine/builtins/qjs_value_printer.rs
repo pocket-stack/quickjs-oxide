@@ -709,7 +709,9 @@ impl QjsValuePrinter<'_, '_> {
             ObjectPayload::Arguments { fast_len, .. } => *fast_len,
             _ => None,
         };
-        for (entry, slot) in shape.entries().iter().zip(&object_data.slots) {
+        for index in shape.ordered_indices() {
+            let entry = &shape.entries()[index];
+            let slot = &object_data.slots[index];
             if !entry.flags.enumerable {
                 continue;
             }
@@ -801,44 +803,26 @@ impl QjsValuePrinter<'_, '_> {
             ObjectPayload::RegExpStringIterator { .. } => {
                 ("RegExp String Iterator", PrintableBody::Ordinary)
             }
-            ObjectPayload::Map {
-                records: source,
-                live_indices,
-                size,
-            } => {
-                let records = self.snapshot_collection_records(
-                    &state,
-                    object,
-                    source,
-                    live_indices,
-                    CollectionKind::Map,
-                );
+            ObjectPayload::Map { records: source } => {
+                let records =
+                    self.snapshot_collection_records(&state, object, source, CollectionKind::Map);
                 (
                     "Map",
                     PrintableBody::Map {
                         records,
-                        size: *size,
+                        size: source.len(),
                     },
                 )
             }
             ObjectPayload::MapIterator { .. } => ("Map Iterator", PrintableBody::Ordinary),
-            ObjectPayload::Set {
-                records: source,
-                live_indices,
-                size,
-            } => {
-                let records = self.snapshot_collection_records(
-                    &state,
-                    object,
-                    source,
-                    live_indices,
-                    CollectionKind::Set,
-                );
+            ObjectPayload::Set { records: source } => {
+                let records =
+                    self.snapshot_collection_records(&state, object, source, CollectionKind::Set);
                 (
                     "Set",
                     PrintableBody::Set {
                         records,
-                        size: *size,
+                        size: source.len(),
                     },
                 )
             }
@@ -907,19 +891,12 @@ impl QjsValuePrinter<'_, '_> {
         &self,
         state: &RuntimeState,
         object: ObjectId,
-        source: &[crate::engine::heap::MapRecord],
-        live_indices: &BTreeSet<usize>,
+        source: &crate::engine::heap::CollectionRecords,
         kind: CollectionKind,
     ) -> Vec<CollectionEntry> {
-        // QuickJS unlinks ordinary deleted records. Oxide keeps stable slots
-        // for iterator mutation semantics, so use the live index plus the
-        // small set of genuinely retained zombies instead of walking all
-        // historical tombstones.
-        let mut visible_indices = live_indices
-            .iter()
-            .copied()
-            .take(MAX_ITEM_COUNT)
-            .collect::<BTreeSet<_>>();
+        // A retained current ID denotes a printer-visible empty record after
+        // deletion. IDs are never reused, so no physical tombstone is needed.
+        let mut visible_indices = source.ids().take(MAX_ITEM_COUNT).collect::<BTreeSet<_>>();
         let iterator_indices = self
             .collection_iterator_current_indices
             .get_or_init(|| state.heap.collection_iterator_current_indices());
@@ -958,14 +935,15 @@ impl QjsValuePrinter<'_, '_> {
         let mut records = Vec::new();
         let mut live = 0;
         for index in visible_indices {
-            let Some(record) = source.get(index) else {
+            let record = source.get(index);
+            if record.is_none() && index >= source.next_id() {
                 continue;
-            };
+            }
             records.push(CollectionEntry {
-                key: record.key.clone(),
-                value: record.value.clone(),
+                key: record.map(|record| record.key.clone()),
+                value: record.map_or(RawValue::Undefined, |record| record.value.clone()),
             });
-            if record.key.is_some() {
+            if record.is_some() {
                 live += 1;
                 if live >= MAX_ITEM_COUNT {
                     break;

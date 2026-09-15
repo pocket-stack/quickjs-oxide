@@ -64,7 +64,9 @@ pub(crate) enum RawModuleResolutionState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RawModuleInstance {
-    pub(crate) slots: Vec<Option<VarRefId>>,
+    /// Borrowed module snapshots share the slot vector. Copy only when a binding
+    /// is installed, never for each export lookup during namespace construction.
+    pub(crate) slots: Rc<[Option<VarRefId>]>,
     pub(crate) callable: Option<ObjectId>,
 }
 
@@ -156,6 +158,9 @@ pub(crate) struct RawModuleRecord {
     pub(crate) requested_modules: Rc<Vec<ModuleRequest>>,
     pub(crate) imports: Rc<[ModuleImport]>,
     pub(crate) exports: Rc<[RawPublishedModuleExport]>,
+    /// Derived from immutable import/export tables at heap publication. Snapshots
+    /// share these indexes; metadata-only replacements reuse the current indexes.
+    pub(crate) lookup_indexes: Rc<ModuleLookupIndexes>,
     pub(crate) star_exports: Rc<[ModuleStarExport]>,
     pub(crate) resolution: RawModuleResolutionState,
     pub(crate) instance: Option<RawModuleInstance>,
@@ -190,6 +195,46 @@ pub(crate) struct RawModuleRecord {
     pub(crate) async_evaluation_order: Option<u64>,
     pub(crate) link_realm: Option<RawModuleLinkRealm>,
     pub(crate) compile_realm: ContextId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ModuleLookupIndexes {
+    exports_by_name: HashMap<JsString, usize>,
+    imports_by_closure: HashMap<u16, usize>,
+}
+
+impl RawModuleRecord {
+    pub(in crate::engine::heap) fn rebuild_lookup_indexes(&mut self) {
+        let mut indexes = ModuleLookupIndexes::default();
+        for (index, export) in self.exports.iter().enumerate() {
+            indexes
+                .exports_by_name
+                .entry(export.export_name.clone())
+                .or_insert(index);
+        }
+        for (index, import) in self.imports.iter().enumerate() {
+            indexes
+                .imports_by_closure
+                .entry(import.closure_index)
+                .or_insert(index);
+        }
+        self.lookup_indexes = Rc::new(indexes);
+    }
+
+    /// Direct export lookup only; star exports, cycles and ambiguity are resolved
+    /// by the module language layer, not cached here.
+    pub(crate) fn export_named(
+        &self,
+        name: &JsString,
+    ) -> Option<(usize, &RawPublishedModuleExport)> {
+        let index = *self.lookup_indexes.exports_by_name.get(name)?;
+        Some((index, &self.exports[index]))
+    }
+
+    pub(crate) fn import_for_closure(&self, closure_index: u16) -> Option<&ModuleImport> {
+        let index = *self.lookup_indexes.imports_by_closure.get(&closure_index)?;
+        Some(&self.imports[index])
+    }
 }
 
 pub(in crate::engine::heap) fn module_record_has_pristine_construction_metadata(
@@ -294,6 +339,7 @@ pub(in crate::engine::heap) fn aborted_module_record(record: &RawModuleRecord) -
         requested_modules: Rc::new(Vec::new()),
         imports: Rc::from([]),
         exports: Rc::from([]),
+        lookup_indexes: Rc::default(),
         star_exports: Rc::from([]),
         resolution: RawModuleResolutionState::Unresolved,
         instance: None,

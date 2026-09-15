@@ -667,6 +667,61 @@ fn swap_exchanges_only_the_top_two_values() {
 }
 
 #[test]
+fn borrowed_call_window_keeps_lower_operands_and_cleans_up_all_exit_kinds() {
+    let function = DetachedBytecode::<Value> {
+        code: vec![],
+        constants: vec![],
+        local_count: 0,
+        max_stack: 5,
+    };
+    for method in [false, true] {
+        for outcome in [
+            Ok(Completion::Return(Value::Int(42))),
+            Ok(Completion::Throw(Value::Int(43))),
+            Err(Error::internal("test host failure")),
+        ] {
+            let mut host = DetachedHost::new(&function);
+            let summarize = |result: &Result<Completion, Error>| match result {
+                Ok(Completion::Return(value)) => Ok(("return", value.clone())),
+                Ok(Completion::Throw(value)) => Ok(("throw", value.clone())),
+                Err(error) => Err(error.to_string()),
+            };
+            let expected = summarize(&outcome);
+            host.call_results.push_back(outcome);
+            let mut activation = VmActivation::new(5);
+            activation.stack.push(Value::Int(99));
+            if method {
+                activation.stack.push(Value::Int(10));
+            }
+            activation
+                .stack
+                .extend([Value::Int(11), Value::Int(12), Value::Int(13)]);
+            let result = activation.call_from_stack(2, method, &mut host);
+            assert_eq!(summarize(&result), expected);
+            assert_eq!(activation.stack, [Value::Int(99)]);
+            assert_eq!(
+                host.call_inputs,
+                [(
+                    Value::Int(11),
+                    if method {
+                        Value::Int(10)
+                    } else {
+                        Value::Undefined
+                    },
+                    vec![Value::Int(12), Value::Int(13)]
+                )]
+            );
+        }
+    }
+    let mut host = DetachedHost::new(&function);
+    let mut activation = VmActivation::new(1);
+    activation.stack.push(Value::Int(99));
+    assert!(activation.call_from_stack(1, false, &mut host).is_err());
+    assert_eq!(activation.stack, [Value::Int(99)]);
+    assert!(host.call_inputs.is_empty());
+}
+
+#[test]
 fn tail_invocations_complete_the_frame_with_exact_call_operands() {
     let plain = DetachedBytecode::<Value> {
         code: vec![

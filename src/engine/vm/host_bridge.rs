@@ -1693,6 +1693,9 @@ impl RuntimeVmHost {
             };
         }
 
+        if let Some(key) = self.runtime.immediate_numeric_property_key(&value) {
+            return Ok(VmPropertyKeyConversion::Key(key));
+        }
         let key = match value {
             Value::Symbol(symbol) => {
                 if !symbol.belongs_to(&self.runtime) {
@@ -1720,6 +1723,9 @@ impl RuntimeVmHost {
     /// Convert the authenticated output of `ToPropKey` without invoking any
     /// user-observable coercion a second time.
     fn canonical_property_key_from_value(&self, value: &Value) -> Result<PropertyKey, Error> {
+        if let Some(key) = self.runtime.immediate_numeric_property_key(value) {
+            return Ok(key);
+        }
         match value {
             Value::Symbol(symbol) => {
                 if !symbol.belongs_to(&self.runtime) {
@@ -4117,8 +4123,17 @@ impl VmHost for RuntimeVmHost {
         this_value: Value,
         arguments: Vec<Value>,
     ) -> Result<Completion, Error> {
+        self.call_with_borrowed_arguments(function, this_value, &arguments)
+    }
+
+    fn call_with_borrowed_arguments(
+        &mut self,
+        function: Value,
+        this_value: Value,
+        arguments: &[Value],
+    ) -> Result<Completion, Error> {
         self.runtime
-            .call_value_internal(self.current_realm, function, this_value, &arguments)
+            .call_value_internal(self.current_realm, function, this_value, arguments)
             .map_err(runtime_error_to_vm_error)
     }
 

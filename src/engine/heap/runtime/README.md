@@ -10,3 +10,5 @@
 - [tests/](tests/README.md)：子模块职责与文件说明。
 - [tests.rs](tests.rs)：模块回归测试。
 - [builtin_batch_tests.rs](builtin_batch_tests.rs)：内建方法批量发布、惰性属性和失败回滚测试。
+
+- [layout.rs](layout.rs)：准备完毕的对象布局发布；集中处理 shape/slot 原子引用与失败回滚，不拥有 Arguments/RegExp 的语言语义。

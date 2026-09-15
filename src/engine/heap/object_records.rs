@@ -264,20 +264,13 @@ pub enum ObjectPayload {
         full_unicode: bool,
         done: bool,
     },
-    /// `JS_CLASS_MAP`: stable insertion-order records plus the live-entry
-    /// count used by the `size` getter. Tombstones are never compacted while
-    /// the Map is live, preserving mutation-sensitive iterator semantics.
+    /// `JS_CLASS_MAP`: live records with monotonic insertion IDs. Deletion
+    /// releases physical storage; IDs survive only in iterator/callback cursors.
     Map {
-        records: Vec<MapRecord>,
-        /// Ordered stable indices of live records. Historical tombstones stay
-        /// in `records` for iterators, but bounded diagnostic traversal does
-        /// not need to rescan them.
-        live_indices: BTreeSet<usize>,
-        size: usize,
+        records: CollectionRecords,
     },
     /// `JS_CLASS_MAP_ITERATOR`: the source Map remains an owned edge until
-    /// exhaustion, while `next_index` walks stable record indices and skips
-    /// tombstones in the runtime layer.
+    /// exhaustion, while `next_index` seeks the next live insertion ID.
     MapIterator {
         object: Option<ObjectId>,
         next_index: usize,
@@ -291,10 +284,7 @@ pub enum ObjectPayload {
     /// live record stores its element in `key` and keeps `value` exactly
     /// `undefined`. A distinct payload preserves the unforgeable Set brand.
     Set {
-        records: Vec<MapRecord>,
-        /// Ordered stable indices of live elements; see the Map counterpart.
-        live_indices: BTreeSet<usize>,
-        size: usize,
+        records: CollectionRecords,
     },
     /// `JS_CLASS_SET_ITERATOR`: the source Set remains an owned edge until
     /// exhaustion. `kind` distinguishes value iteration from entry-pair
@@ -490,6 +480,17 @@ pub struct ObjectData {
 }
 
 impl ObjectData {
+    /// Classes whose ordinary property slots may use a mutable dictionary.
+    /// Slow Arrays retain their separate ArraySetLength/index semantics; only
+    /// their shape/slot storage is shared with ordinary dynamic objects.
+    pub(crate) fn supports_dictionary_layout(&self) -> bool {
+        matches!(
+            (self.kind, &self.payload),
+            (ObjectKind::Ordinary, ObjectPayload::Ordinary)
+                | (ObjectKind::Array, ObjectPayload::Array { dense: None })
+        )
+    }
+
     /// Construct an ordinary extensible object with a mutable prototype.
     #[must_use]
     pub const fn ordinary(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
@@ -764,7 +765,7 @@ impl ObjectData {
     /// [`Heap::map_insert_record`] after key equality has been resolved by the
     /// runtime's SameValueZero logic.
     #[must_use]
-    pub const fn map(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+    pub fn map(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
         Self {
             shape,
             slots,
@@ -775,9 +776,7 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::Map,
             payload: ObjectPayload::Map {
-                records: Vec::new(),
-                live_indices: BTreeSet::new(),
-                size: 0,
+                records: CollectionRecords::default(),
             },
         }
     }
@@ -812,7 +811,7 @@ impl ObjectData {
     /// [`Heap::set_insert_record`] after the runtime resolves SameValueZero
     /// equality. The shared record value slot remains `undefined`.
     #[must_use]
-    pub const fn set(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+    pub fn set(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
         Self {
             shape,
             slots,
@@ -823,9 +822,7 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::Set,
             payload: ObjectPayload::Set {
-                records: Vec::new(),
-                live_indices: BTreeSet::new(),
-                size: 0,
+                records: CollectionRecords::default(),
             },
         }
     }

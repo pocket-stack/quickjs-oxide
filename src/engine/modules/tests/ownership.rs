@@ -151,7 +151,7 @@ fn loaded_module_validator_rejects_internal_sentinels_and_cache_self_edges_atomi
     assert!(matches!(
         runtime.mutate_module_record(raw, |record| {
             record.instance = Some(ModuleInstance {
-                slots: Vec::new(),
+                slots: Rc::from([]),
                 callable: None,
             });
             record.link_realm = Some(RawModuleLinkRealm::Other(raw.cache));

@@ -1,5 +1,29 @@
 use super::*;
 
+/// Number-tag updates cannot call JavaScript and preserve an existing Float
+/// tag, including signed zero. Int32 overflow promotes exactly once to Float64.
+fn updated_number(value: &Value, increment: bool) -> Option<Value> {
+    match value {
+        Value::Int(old) => {
+            let next = if increment {
+                old.checked_add(1)
+            } else {
+                old.checked_sub(1)
+            };
+            Some(next.map_or_else(
+                || Value::Float(f64::from(*old) + if increment { 1.0 } else { -1.0 }),
+                Value::Int,
+            ))
+        }
+        Value::Float(old) => Some(Value::Float(if increment {
+            *old + 1.0
+        } else {
+            *old - 1.0
+        })),
+        _ => None,
+    }
+}
+
 impl VmActivation {
     pub(in crate::engine::vm) fn neg(
         &mut self,
@@ -50,38 +74,28 @@ impl VmActivation {
         increment: bool,
         postfix: bool,
     ) -> Result<OperationOutcome<()>, Error> {
+        if let Some(top) = self.stack.last_mut()
+            && let Some(next) = updated_number(top, increment)
+        {
+            if postfix {
+                self.stack.push(next);
+            } else {
+                *top = next;
+            }
+            return Ok(OperationOutcome::Value(()));
+        }
         let operand = match to_primitive(host, self.pop()?, ToPrimitiveHint::Number)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
+        if let Some(next) = updated_number(&operand, increment) {
+            if postfix {
+                self.stack.push(operand);
+            }
+            self.stack.push(next);
+            return Ok(OperationOutcome::Value(()));
+        }
         match operand {
-            Value::Int(old) => {
-                let new = if increment {
-                    old.checked_add(1)
-                } else {
-                    old.checked_sub(1)
-                };
-                if postfix {
-                    self.stack.push(Value::Int(old));
-                }
-                self.stack.push(new.map_or_else(
-                    || {
-                        Value::Float(if increment {
-                            f64::from(old) + 1.0
-                        } else {
-                            f64::from(old) - 1.0
-                        })
-                    },
-                    Value::Int,
-                ));
-            }
-            Value::Float(old) => {
-                let new = if increment { old + 1.0 } else { old - 1.0 };
-                if postfix {
-                    self.stack.push(Value::Float(old));
-                }
-                self.stack.push(Value::Float(new));
-            }
             Value::BigInt(old) => {
                 let one = JsBigInt::from(1_i32);
                 let new = if increment {

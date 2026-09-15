@@ -360,49 +360,77 @@ impl Runtime {
     ) -> Result<(), RuntimeError> {
         let mut state = self.0.state.borrow_mut();
         let object_id = object.object_id();
-        let (shape_id, shape_len, existing) = {
+        let (shape_id, shape_len, dictionary, existing) = {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
+            let existing = if let Some(index) = shape.find(key.atom()) {
+                let index = index as usize;
+                let entry = shape.entries().get(index).ok_or(RuntimeError::Invariant(
+                    "shape lookup index was out of bounds",
+                ))?;
+                Some((index, entry.flags))
+            } else {
+                None
+            };
             (
                 object_data.shape,
                 shape.entries().len(),
-                shape.find(key.atom()).map(|index| index as usize),
+                shape.is_dictionary(),
+                existing,
             )
         };
+
+        // Replacing a value does not change the layout. Resolve that case while
+        // borrowing the shape, before cloning entries or unrelated value slots.
+        if let Some((index, existing_flags)) = existing {
+            if existing_flags == flags {
+                let retained_atoms = state.retain_slot_atoms(std::slice::from_ref(&replacement))?;
+                return match state
+                    .heap
+                    .replace_object_slot(object_id, index, replacement)
+                {
+                    Ok(cleanup) => state.apply_cleanup(cleanup),
+                    Err(error) => {
+                        state.release_atoms(retained_atoms)?;
+                        Err(error.into())
+                    }
+                };
+            }
+        }
+        if let Some((index, _)) = existing {
+            if dictionary && state.heap.shape_strong_count(shape_id)? == 1 {
+                let atoms = state.retain_slot_atoms(std::slice::from_ref(&replacement))?;
+                return match state.heap.replace_dictionary_property(
+                    object_id,
+                    index,
+                    flags,
+                    replacement,
+                ) {
+                    Ok(cleanup) => state.apply_cleanup(cleanup),
+                    Err(error) => {
+                        state.release_atoms(atoms)?;
+                        Err(error.into())
+                    }
+                };
+            }
+        }
         if existing.is_none()
-            && shape_len >= properties::MIN_UNIQUE_SHAPE_APPEND_ENTRIES
+            && (dictionary || shape_len >= properties::MIN_UNIQUE_SHAPE_APPEND_ENTRIES)
             && state.heap.shape_strong_count(shape_id)? == 1
         {
             return state.append_unique_layout(object_id, key.atom(), flags, replacement);
         }
-        let (prototype, mut entries, mut slots, existing) = {
+        let (prototype, mut entries, mut slots) = {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
             (
                 shape.prototype(),
                 shape.entries().to_vec(),
                 object_data.slots.clone(),
-                shape.find(key.atom()).map(|index| index as usize),
             )
         };
 
-        if let Some(index) = existing {
-            let entry = entries.get(index).ok_or(RuntimeError::Invariant(
-                "shape lookup index was out of bounds",
-            ))?;
-            if entry.flags == flags {
-                let retained_atoms = state.retain_slot_atoms(std::slice::from_ref(&replacement))?;
-                match state
-                    .heap
-                    .replace_object_slot(object_id, index, replacement)
-                {
-                    Ok(cleanup) => return state.apply_cleanup(cleanup),
-                    Err(error) => {
-                        state.release_atoms(retained_atoms)?;
-                        return Err(error.into());
-                    }
-                }
-            }
+        if let Some((index, _)) = existing {
             entries[index].flags = flags;
             slots[index] = replacement;
         } else {

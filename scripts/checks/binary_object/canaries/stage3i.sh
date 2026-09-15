@@ -322,8 +322,8 @@ expect_full_rewrite_rejected stage3d-call-internal-cleanup-throw-return \
     $'        frame_error.map_or(result, Err).map(|completion| match completion {\n            Completion::Throw(value) => Completion::Return(value),\n            completion => completion,\n        })'
 expect_full_rewrite_rejected stage3d-vm-host-call-throw-return \
     stage3d-throw-critical-route src/engine/vm/host_bridge.rs \
-    $'        self.runtime\n            .call_value_internal(self.current_realm, function, this_value, &arguments)\n            .map_err(runtime_error_to_vm_error)' \
-    $'        self.runtime\n            .call_value_internal(self.current_realm, function, this_value, &arguments)\n            .map(|completion| match completion {\n                Completion::Throw(value) => Completion::Return(value),\n                completion => completion,\n            })\n            .map_err(runtime_error_to_vm_error)'
+    $'        self.runtime\n            .call_value_internal(self.current_realm, function, this_value, arguments)\n            .map_err(runtime_error_to_vm_error)' \
+    $'        self.runtime\n            .call_value_internal(self.current_realm, function, this_value, arguments)\n            .map(|completion| match completion {\n                Completion::Throw(value) => Completion::Return(value),\n                completion => completion,\n            })\n            .map_err(runtime_error_to_vm_error)'
 expect_full_rewrite_rejected stage3d-call-value-throw-return \
     stage3d-throw-critical-route src/engine/object/internal_methods.rs \
     $'            DirectCallTarget::Callable(callable) => {\n                self.call_internal(caller_realm, &callable, this_value, arguments)\n            }' \

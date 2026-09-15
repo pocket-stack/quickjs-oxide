@@ -124,7 +124,7 @@ impl Runtime {
                         let selected = selected.as_ref().ok_or(RuntimeError::Invariant(
                             "TypedArray filter temporary Array was not allocated",
                         ))?;
-                        let key = self.intern_property_key(&selected_length.to_string())?;
+                        let key = self.property_key_for_index(selected_length)?;
                         if !self.define_own_property(
                             selected,
                             &key,

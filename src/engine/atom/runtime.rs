@@ -2,9 +2,9 @@ use crate::engine::api::error::{Error, ErrorKind, NativeErrorMessage};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
-use crate::engine::atom::{AtomError, AtomKind, AtomSpelling};
+use crate::engine::atom::{Atom, AtomError, AtomKind, AtomSpelling};
 use crate::engine::object::{PropertyKey, SymbolRef, WellKnownSymbol};
-use crate::engine::value::JsString;
+use crate::engine::value::{JsString, Value};
 
 impl Runtime {
     /// Intern an exact ECMAScript string as a runtime-owned property key.
@@ -23,6 +23,34 @@ impl Runtime {
     /// used by language-level keys.
     pub fn intern_property_key(&self, text: &str) -> Result<PropertyKey, AtomError> {
         self.intern_property_key_js_string(&JsString::try_from_utf8(text)?)
+    }
+
+    /// Construct an already-normalized nonnegative integer index. This is not
+    /// general Number-to-key conversion: large JS numbers use scientific spelling.
+    pub(crate) fn property_key_for_index(&self, index: u64) -> Result<PropertyKey, AtomError> {
+        if let Some(atom) = u32::try_from(index)
+            .ok()
+            .and_then(Atom::from_immediate_integer)
+        {
+            return Ok(PropertyKey::from_owned_atom(self.clone(), atom));
+        }
+        self.intern_property_key(&index.to_string())
+    }
+
+    /// Allocation-free numeric subset of ToPropertyKey, including numeric -0.
+    /// Larger, negative and fractional numbers retain the full conversion path.
+    pub(crate) fn immediate_numeric_property_key(&self, value: &Value) -> Option<PropertyKey> {
+        let index = match value {
+            Value::Int(value) => u32::try_from(*value).ok()?,
+            Value::Float(value)
+                if *value >= 0.0 && *value <= u32::MAX as f64 && value.fract() == 0.0 =>
+            {
+                *value as u32
+            }
+            _ => return None,
+        };
+        Atom::from_immediate_integer(index)
+            .map(|atom| PropertyKey::from_owned_atom(self.clone(), atom))
     }
 
     /// Create a unique ECMAScript Symbol primitive.
@@ -126,5 +154,43 @@ impl Runtime {
             .push_atom_get_str(key.atom(), &mut message)?;
         message.push_utf8(suffix);
         Ok(Error::from_native_message(kind, message))
+    }
+}
+
+#[cfg(test)]
+mod integer_key_tests {
+    use super::*;
+
+    #[test]
+    fn integer_keys_preserve_immediate_boundary_and_exact_large_spelling() {
+        let runtime = Runtime::new();
+        for index in [
+            0,
+            1,
+            2_147_483_647,
+            2_147_483_648,
+            u32::MAX as u64,
+            9_007_199_254_740_991,
+            u64::MAX,
+        ] {
+            let key = runtime.property_key_for_index(index).unwrap();
+            assert_eq!(key.atom().is_immediate_integer(), index <= 2_147_483_647);
+            assert_eq!(
+                runtime.property_key_to_js_string(&key).unwrap(),
+                JsString::try_from_utf8(&index.to_string()).unwrap()
+            );
+        }
+        let zero = runtime
+            .immediate_numeric_property_key(&Value::Float(-0.0))
+            .unwrap();
+        assert_eq!(zero, runtime.intern_property_key("0").unwrap());
+        assert_ne!(zero, runtime.intern_property_key("-0").unwrap());
+        for number in [f64::NAN, f64::INFINITY, -1.0, 0.5, 2_147_483_648.0, 1e21] {
+            assert!(
+                runtime
+                    .immediate_numeric_property_key(&Value::Float(number))
+                    .is_none()
+            );
+        }
     }
 }

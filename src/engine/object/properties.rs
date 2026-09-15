@@ -831,24 +831,21 @@ impl Runtime {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<ArrayOwnKey, RuntimeError> {
-        {
-            let state = self.0.state.borrow();
-            let object_data = state.heap.object(object.object_id())?;
-            if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
-                return Ok(ArrayOwnKey::Other);
-            }
+        let state = self.0.state.borrow();
+        let object_data = state.heap.object(object.object_id())?;
+        if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
+            return Ok(ArrayOwnKey::Other);
         }
-        let length = self.intern_property_key("length")?;
-        if key == &length {
+        if let Some(index) = state.atoms.array_index(key.atom())? {
+            return Ok(ArrayOwnKey::Index(index));
+        }
+        let info = state.atoms.resolve(key.atom())?;
+        if info.kind == crate::engine::atom::AtomKind::String
+            && matches!(info.spelling, crate::engine::atom::AtomSpelling::Text(text) if text.utf16_units().eq("length".encode_utf16()))
+        {
             return Ok(ArrayOwnKey::Length);
         }
-        Ok(self
-            .0
-            .state
-            .borrow()
-            .atoms
-            .array_index(key.atom())?
-            .map_or(ArrayOwnKey::Other, ArrayOwnKey::Index))
+        Ok(ArrayOwnKey::Other)
     }
 
     /// Return QuickJS's representation state for a genuine Array. `Some(n)`
@@ -900,7 +897,7 @@ impl Runtime {
         for index in 0..dense_len {
             let index = u32::try_from(index)
                 .map_err(|_| RuntimeError::Invariant("fast Array count exceeded Uint32"))?;
-            let key = self.intern_property_key(&index.to_string())?;
+            let key = self.property_key_for_index(index as u64)?;
             entries.push(ShapeEntry {
                 atom: key.atom(),
                 flags: PropertyFlags::data(true, true, true),
@@ -1224,12 +1221,7 @@ impl Runtime {
             state.apply_cleanup(cleanup)?;
         }
 
-        for index in self.array_indices_at_or_above(object, new_length)? {
-            let index_key = self.intern_property_key(&index.to_string())?;
-            if self.delete_property(object, &index_key)? {
-                continue;
-            }
-
+        if let Some(index) = self.truncate_sparse_array_indices(object, new_length)? {
             // ArraySetLength keeps already deleted higher indices, restores
             // length to the first undeletable index plus one, and still
             // applies a requested writable:false transition.
@@ -1269,31 +1261,6 @@ impl Runtime {
             }
         }
         Ok(PropertyDefineOutcome::Defined(true))
-    }
-
-    fn array_indices_at_or_above(
-        &self,
-        object: &ObjectRef,
-        minimum: u32,
-    ) -> Result<Vec<u32>, RuntimeError> {
-        let state = self.0.state.borrow();
-        let object_data = state.heap.object(object.object_id())?;
-        if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
-            return Err(RuntimeError::Invariant(
-                "Array index scan reached a non-Array object",
-            ));
-        }
-        let shape = state.heap.shape(object_data.shape)?;
-        let mut indices = shape
-            .entries()
-            .iter()
-            .filter_map(|entry| state.atoms.array_index(entry.atom).transpose())
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter(|index| *index >= minimum)
-            .collect::<Vec<_>>();
-        indices.sort_unstable_by(|left, right| right.cmp(left));
-        Ok(indices)
     }
 
     pub(crate) fn to_array_length(
@@ -1609,6 +1576,28 @@ impl Runtime {
         }
         let mut state = self.0.state.borrow_mut();
         let object_id = object.object_id();
+        let dictionary_eligible = {
+            let data = state.heap.object(object_id)?;
+            let shape = state.heap.shape(data.shape)?;
+            data.supports_dictionary_layout()
+                && (shape.is_dictionary()
+                    || shape.entries().len() >= MIN_UNIQUE_SHAPE_APPEND_ENTRIES)
+        };
+        if dictionary_eligible {
+            let shape = state.heap.shape(state.heap.object(object_id)?.shape)?;
+            let Some(index) = shape.find(key.atom()) else {
+                return Ok(true);
+            };
+            if !shape.entries()[index as usize].flags.configurable {
+                return Ok(false);
+            }
+            state.ensure_dictionary_layout(object_id)?;
+            let cleanup = state
+                .heap
+                .delete_dictionary_property(object_id, key.atom())?;
+            state.apply_cleanup(cleanup)?;
+            return Ok(true);
+        }
         let (prototype, entries, mut slots, index, configurable) = {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
@@ -1715,17 +1704,17 @@ impl Runtime {
                 RuntimeError::Invariant("String wrapper length exceeded QuickJS index space")
             })?;
             for index in 0..length {
-                keys.push(self.intern_property_key(&index.to_string())?);
+                keys.push(self.property_key_for_index(index as u64)?);
             }
         }
         if let Some(length) = typed_array_length {
             for index in 0..length {
-                keys.push(self.intern_property_key(&index.to_string())?);
+                keys.push(self.property_key_for_index(index as u64)?);
             }
         }
         if let Some(length) = dense_array_len {
             for index in 0..length {
-                keys.push(self.intern_property_key(&index.to_string())?);
+                keys.push(self.property_key_for_index(index as u64)?);
             }
         }
         for atom in atoms {

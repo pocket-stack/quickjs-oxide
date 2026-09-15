@@ -30,6 +30,35 @@ fn empty_shape(heap: &mut Heap) -> ShapeId {
     heap.allocate_shape(Shape::new(None, []).unwrap()).unwrap()
 }
 
+#[test]
+fn small_edge_transactions_preflight_duplicates_and_late_failure() {
+    let mut heap = Heap::new();
+    let first = empty_shape(&mut heap);
+    let second = empty_shape(&mut heap);
+    let first = RawId::Shape(first);
+    let second = RawId::Shape(second);
+    heap.retain_edges_transactionally(&[]).unwrap();
+    heap.retain_edges_transactionally(&[first]).unwrap();
+    assert_eq!(heap.live_node(first).unwrap().strong, 2);
+    heap.retain_edges_transactionally(&[first, first]).unwrap();
+    assert_eq!(heap.live_node(first).unwrap().strong, 4);
+    heap.live_node_mut(second).unwrap().strong = u32::MAX;
+    assert!(heap.retain_edges_transactionally(&[first, second]).is_err());
+    assert_eq!(
+        heap.live_node(first).unwrap().strong,
+        4,
+        "later edge failure must not retain the first"
+    );
+    heap.live_node_mut(first).unwrap().strong = u32::MAX - 1;
+    assert!(heap.retain_edges_transactionally(&[first, first]).is_err());
+    assert_eq!(heap.live_node(first).unwrap().strong, u32::MAX - 1);
+    heap.live_node_mut(first).unwrap().strong = 1;
+    heap.live_node_mut(second).unwrap().strong = 1;
+    heap.retain_edges_transactionally(&[first, second]).unwrap();
+    assert_eq!(heap.live_node(first).unwrap().strong, 2);
+    assert_eq!(heap.live_node(second).unwrap().strong, 2);
+}
+
 #[derive(Default)]
 struct RecordingFinalizationJobSink {
     jobs: VecDeque<PreparedFinalizationJob>,

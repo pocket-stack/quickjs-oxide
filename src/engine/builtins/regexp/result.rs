@@ -2,12 +2,37 @@
 
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::heap::ContextId;
+use crate::engine::atom::Atom;
+use crate::engine::heap::{ContextId, ObjectData, ObjectPayload, PropertySlot};
+use crate::engine::object::shape::{PropertyFlags, ShapeEntry};
+use std::collections::HashMap;
 
-use crate::engine::object::{DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey};
+use crate::engine::object::{ObjectRef, PropertyKey};
 use crate::engine::value::{JsString, Value};
 use crate::regexp::{CompiledRegExp, RegExpFlags, RegExpMatch};
 use std::rc::Rc;
+
+/// First-occurrence order and the participating value are separate rules for
+/// duplicate group names. Keep their resolution here, before heap publication.
+#[derive(Default)]
+struct NamedCaptures {
+    positions: HashMap<Atom, usize>,
+    values: Vec<(PropertyKey, Value, Value)>,
+}
+
+impl NamedCaptures {
+    fn record(&mut self, key: PropertyKey, capture: Value, indices: Value) {
+        if let Some(&position) = self.positions.get(&key.atom()) {
+            if !matches!(capture, Value::Undefined) {
+                self.values[position].1 = capture;
+                self.values[position].2 = indices;
+            }
+        } else {
+            self.positions.insert(key.atom(), self.values.len());
+            self.values.push((key, capture, indices));
+        }
+    }
+}
 
 impl Runtime {
     pub(crate) fn build_regexp_result(
@@ -32,13 +57,8 @@ impl Runtime {
             ));
         }
 
-        let groups = group_names.map(|_| self.new_object(None)).transpose()?;
         let has_indices = program.flags().contains(RegExpFlags::HAS_INDICES);
-        let indices_groups = if has_indices && group_names.is_some() {
-            Some(self.new_object(None)?)
-        } else {
-            None
-        };
+        let mut named = NamedCaptures::default();
         let mut captures = Vec::with_capacity(capture_count);
         let mut indices_values = has_indices.then(|| Vec::with_capacity(capture_count));
 
@@ -78,22 +98,11 @@ impl Runtime {
                     group_names.and_then(|names| names.get(capture_index - 1))
             {
                 let key = self.intern_property_key_js_string(group_name)?;
-                self.define_named_capture_result(
-                    groups.as_ref().ok_or(RuntimeError::Invariant(
-                        "compiled RegExp names had no groups result object",
-                    ))?,
-                    &key,
+                named.record(
+                    key,
                     capture,
-                )?;
-                if let Some(index_value) = &index_value {
-                    self.define_named_capture_result(
-                        indices_groups.as_ref().ok_or(RuntimeError::Invariant(
-                            "compiled RegExp names had no indices groups object",
-                        ))?,
-                        &key,
-                        index_value.clone(),
-                    )?;
-                }
+                    index_value.clone().unwrap_or(Value::Undefined),
+                );
             }
 
             if let (Some(values), Some(value)) = (&mut indices_values, index_value) {
@@ -101,84 +110,110 @@ impl Runtime {
             }
         }
 
+        let groups = if group_names.is_some() {
+            Value::Object(self.new_regexp_groups(&named, false)?)
+        } else {
+            Value::Undefined
+        };
+        let indices_groups = if has_indices && group_names.is_some() {
+            Value::Object(self.new_regexp_groups(&named, true)?)
+        } else {
+            Value::Undefined
+        };
         let result = self.new_array_from_values(realm, captures)?;
         let complete = matched.capture(0).ok_or(RuntimeError::Invariant(
             "successful RegExp result omitted capture zero",
         ))?;
-        self.define_regexp_result_property(
-            &result,
-            "index",
-            Value::Int(i32::try_from(complete.start).map_err(|_| {
-                RuntimeError::Invariant("RegExp match start exceeded signed String range")
-            })?),
-        )?;
-        self.define_regexp_result_property(&result, "input", Value::String(input))?;
-        self.define_regexp_result_property(
-            &result,
-            "groups",
-            groups.map_or(Value::Undefined, Value::Object),
-        )?;
-
+        let mut properties = vec![
+            (
+                "index",
+                Value::Int(i32::try_from(complete.start).map_err(|_| {
+                    RuntimeError::Invariant("RegExp match start exceeded signed String range")
+                })?),
+            ),
+            ("input", Value::String(input)),
+            ("groups", groups),
+        ];
         if let Some(values) = indices_values {
             let indices = self.new_array_from_values(realm, values)?;
-            self.define_regexp_result_property(
-                &indices,
-                "groups",
-                indices_groups.map_or(Value::Undefined, Value::Object),
-            )?;
-            self.define_regexp_result_property(&result, "indices", Value::Object(indices))?;
+            self.initialize_regexp_array_properties(&indices, &[("groups", indices_groups)])?;
+            properties.push(("indices", Value::Object(indices)));
         }
+        self.initialize_regexp_array_properties(&result, &properties)?;
         Ok(Value::Object(result))
     }
 
-    /// QuickJS lets a participating duplicate-named capture replace an
-    /// earlier `undefined`, while an unmatched duplicate never erases an
-    /// already-defined value. Defining an existing property also preserves
-    /// the first capture's insertion order.
-    fn define_named_capture_result(
+    fn new_regexp_groups(
         &self,
-        object: &ObjectRef,
-        key: &PropertyKey,
-        value: Value,
-    ) -> Result<(), RuntimeError> {
-        if matches!(value, Value::Undefined) && self.has_own_property(object, key)? {
-            return Ok(());
-        }
-        self.define_regexp_result_property_with_key(object, key, value)
+        named: &NamedCaptures,
+        indices: bool,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let entries = named
+            .values
+            .iter()
+            .map(|(key, _, _)| ShapeEntry {
+                atom: key.atom(),
+                flags: PropertyFlags::data(true, true, true),
+            })
+            .collect::<Vec<_>>();
+        let slots = named
+            .values
+            .iter()
+            .map(|(_, capture, range)| {
+                self.raw_property_value(if indices { range } else { capture })
+                    .map(PropertySlot::Data)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let id = self.0.state.borrow_mut().allocate_object_with_layout(
+            None,
+            &entries,
+            slots,
+            ObjectData::ordinary,
+        )?;
+        Ok(ObjectRef::from_owned_handle(self.clone(), id))
     }
 
-    fn define_regexp_result_property(
+    /// Only called for privately held result Arrays. All keys are new named
+    /// C/W/E properties, so no Array index/length rule or JS callback is skipped.
+    fn initialize_regexp_array_properties(
         &self,
         object: &ObjectRef,
-        name: &str,
-        value: Value,
+        properties: &[(&str, Value)],
     ) -> Result<(), RuntimeError> {
-        let key = self.intern_property_key(name)?;
-        self.define_regexp_result_property_with_key(object, &key, value)
-    }
-
-    fn define_regexp_result_property_with_key(
-        &self,
-        object: &ObjectRef,
-        key: &PropertyKey,
-        value: Value,
-    ) -> Result<(), RuntimeError> {
-        if !self.define_own_property(
-            object,
-            key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        )? {
+        let keys = properties
+            .iter()
+            .map(|(name, _)| self.intern_property_key(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        let values = properties
+            .iter()
+            .map(|(_, value)| self.raw_property_value(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut state = self.0.state.borrow_mut();
+        let data = state.heap.object(object.object_id())?;
+        if !matches!(data.payload, ObjectPayload::Array { .. }) || !data.extensible {
             return Err(RuntimeError::Invariant(
-                "fresh RegExp result property definition was rejected",
+                "RegExp result initialization requires a fresh Array",
             ));
         }
-        Ok(())
+        let shape = state.heap.shape(data.shape)?;
+        let prototype = shape.prototype();
+        let mut entries = shape.entries().to_vec();
+        let mut slots = data.slots.clone();
+        for (key, value) in keys.iter().zip(values) {
+            if state.atoms.array_index(key.atom())?.is_some()
+                || entries.iter().any(|entry| entry.atom == key.atom())
+            {
+                return Err(RuntimeError::Invariant(
+                    "RegExp result initialization requires new named keys",
+                ));
+            }
+            entries.push(ShapeEntry {
+                atom: key.atom(),
+                flags: PropertyFlags::data(true, true, true),
+            });
+            slots.push(PropertySlot::Data(value));
+        }
+        state.replace_layout(object.object_id(), prototype, &entries, slots)
     }
 }
 

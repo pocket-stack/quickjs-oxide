@@ -25,6 +25,12 @@ pub struct JsString(Rc<StringRepr>);
 pub struct WeakJsString(Weak<StringRepr>);
 
 impl WeakJsString {
+    /// Weak ownership keeps the allocation identity reserved after payload
+    /// destruction, so address reuse cannot create a false cache hit.
+    pub(crate) fn same_representation(&self, string: &JsString) -> bool {
+        self.0.as_ptr() == Rc::as_ptr(&string.0)
+    }
+
     #[must_use]
     pub fn upgrade(&self) -> Option<JsString> {
         self.0.upgrade().map(JsString)
@@ -1003,6 +1009,28 @@ impl JsString {
         Utf16Units::new(self)
     }
 
+    /// Feed exact code units to a caller-owned hasher. Every representation
+    /// uses the same write sequence, including mixed-width equal strings.
+    pub(crate) fn hash_code_units<H: Hasher>(&self, state: &mut H) {
+        match self.0.as_ref() {
+            StringRepr::Latin1(units) => {
+                for &unit in units.iter() {
+                    state.write_u16(u16::from(unit));
+                }
+            }
+            StringRepr::Utf16(units) => {
+                for &unit in units.iter() {
+                    state.write_u16(unit);
+                }
+            }
+            StringRepr::Rope(_) => {
+                for unit in self.utf16_units() {
+                    state.write_u16(unit);
+                }
+            }
+        }
+    }
+
     /// Return one UTF-16 code unit without decoding or normalizing surrogate
     /// pairs. This is the equivalent of QuickJS's `string_get` fast path.
     #[must_use]
@@ -1165,9 +1193,12 @@ impl JsString {
     }
 
     fn quickjs_hash(&self, seed: u32) -> u32 {
-        self.utf16_units().fold(seed, |hash, unit| {
-            hash.wrapping_mul(263).wrapping_add(u32::from(unit))
-        })
+        let step = |hash: u32, unit: u16| hash.wrapping_mul(263).wrapping_add(u32::from(unit));
+        match self.0.as_ref() {
+            StringRepr::Latin1(units) => units.iter().copied().map(u16::from).fold(seed, step),
+            StringRepr::Utf16(units) => units.iter().copied().fold(seed, step),
+            StringRepr::Rope(_) => self.utf16_units().fold(seed, step),
+        }
     }
 
     fn rope_children(rope: &RopeRepr) -> (Self, Self) {
@@ -1880,8 +1911,26 @@ fn encode_quickjs_utf8(output: &mut [u8; 4], code_point: u32) -> usize {
 
 impl PartialEq for JsString {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-            || (self.len() == other.len() && self.utf16_units().eq(other.utf16_units()))
+        if Rc::ptr_eq(&self.0, &other.0) {
+            return true;
+        }
+        if self.len() != other.len() {
+            return false;
+        }
+        // Flat strings need neither owned traversal handles nor a rope stack.
+        // Width is a representation choice, so mixed-width equality compares
+        // exact code units rather than treating Latin-1 as UTF-8.
+        match (self.0.as_ref(), other.0.as_ref()) {
+            (StringRepr::Latin1(left), StringRepr::Latin1(right)) => left == right,
+            (StringRepr::Utf16(left), StringRepr::Utf16(right)) => left == right,
+            (StringRepr::Latin1(narrow), StringRepr::Utf16(wide))
+            | (StringRepr::Utf16(wide), StringRepr::Latin1(narrow)) => narrow
+                .iter()
+                .copied()
+                .map(u16::from)
+                .eq(wide.iter().copied()),
+            _ => self.utf16_units().eq(other.utf16_units()),
+        }
     }
 }
 
@@ -2237,6 +2286,33 @@ mod tests {
         let mut state = DefaultHasher::new();
         value.hash(&mut state);
         state.finish()
+    }
+
+    #[test]
+    fn flat_and_rope_key_hashing_agree_across_storage_widths() {
+        let narrow = JsString::try_from_utf8(&"é".repeat(9000)).unwrap();
+        let wide = JsString(Rc::new(StringRepr::Utf16(
+            vec![0xe9; 9000].into_boxed_slice(),
+        )));
+        let left = JsString::try_from_utf8(&"é".repeat(8500)).unwrap();
+        let right = JsString::try_from_utf8(&"é".repeat(500)).unwrap();
+        let rope = left.try_concat(&right).unwrap();
+        assert!(!rope.is_flat());
+        let hash_units = |value: &JsString| {
+            let mut hasher = DefaultHasher::new();
+            value.hash_code_units(&mut hasher);
+            hasher.finish()
+        };
+        for value in [&wide, &rope] {
+            assert_eq!(narrow, *value);
+            assert_eq!(*value, narrow);
+            assert_eq!(narrow.content_hash(), value.content_hash());
+            assert_eq!(hash_units(&narrow), hash_units(value));
+        }
+        let lone_surrogate = JsString::try_from_utf16([0xd800]).unwrap();
+        assert_ne!(lone_surrogate, JsString::from_static("é"));
+        let _ = rope.linearize();
+        assert_eq!(hash_units(&rope), hash_units(&narrow));
     }
 
     #[test]

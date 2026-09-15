@@ -16,6 +16,7 @@
 //! atom reference counts; a public API which lets the snapshot outlive the
 //! shape must retain those atoms at the runtime boundary.
 
+use super::dictionary_order::DictionaryOrder;
 use crate::engine::atom::{Atom, AtomError, AtomTable, PropertyKeyKind};
 use crate::engine::heap::ObjectId;
 use std::collections::HashMap;
@@ -109,13 +110,17 @@ impl Error for ShapeError {}
 
 /// Prototype and property-layout metadata shared copy-on-write by objects.
 ///
-/// `entries` is insertion ordered.  `lookup` is derived exclusively by the
-/// validated constructor and maps each key to its parallel payload-slot index.
+/// `entries` follows physical payload-slot order. Shared layouts use insertion
+/// order; dictionaries maintain separate links so removal can move the last
+/// slot in constant time. `lookup` always maps a key to its current slot.
+/// Slot positions are internal and must be looked up again after mutations.
 #[derive(Clone, Debug)]
 pub struct Shape {
     prototype: Option<ObjectId>,
     entries: Vec<ShapeEntry>,
     lookup: HashMap<Atom, u32>,
+    /// Present only for dynamic layouts; shared shapes pay one optional pointer.
+    dictionary_order: Option<Box<DictionaryOrder>>,
 }
 
 impl Shape {
@@ -149,6 +154,7 @@ impl Shape {
             prototype,
             entries: ordered,
             lookup,
+            dictionary_order: None,
         })
     }
 
@@ -158,10 +164,79 @@ impl Shape {
         self.prototype
     }
 
-    /// Return property metadata in insertion order.
+    /// Return property metadata in physical payload-slot order.
+    /// Use `ordered_indices` when insertion order is observable.
     #[must_use]
     pub fn entries(&self) -> &[ShapeEntry] {
         &self.entries
+    }
+
+    /// Physical slot order can differ from insertion order in a dictionary.
+    pub(crate) fn ordered_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        let first = self.dictionary_order.as_ref().map_or_else(
+            || (!self.entries.is_empty()).then_some(0),
+            |order| order.first(),
+        );
+        std::iter::successors(first, |&index| {
+            self.dictionary_order.as_ref().map_or_else(
+                || (index + 1 < self.entries.len()).then_some(index + 1),
+                |order| order.next(index),
+            )
+        })
+    }
+
+    pub(crate) fn is_dictionary(&self) -> bool {
+        self.dictionary_order.is_some()
+    }
+
+    /// Caller owns this metadata exclusively or is preparing an unpublished copy.
+    pub(crate) fn enable_dictionary(&mut self) {
+        if self.dictionary_order.is_none() {
+            self.dictionary_order = Some(Box::new(DictionaryOrder::new(self.entries.len())));
+        }
+    }
+
+    pub(crate) fn dictionary_layout_is_valid(&self) -> bool {
+        self.dictionary_order.as_ref().is_none_or(|order| {
+            order.is_valid(self.entries.len())
+                && self.lookup.len() == self.entries.len()
+                && self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .all(|(index, entry)| self.find(entry.atom) == u32::try_from(index).ok())
+        })
+    }
+
+    pub(crate) fn remove_dictionary_property(
+        &mut self,
+        atom: Atom,
+    ) -> Result<ShapeEntry, ShapeError> {
+        let index = self.find(atom).ok_or(ShapeError::MissingAtom(atom))? as usize;
+        self.dictionary_order
+            .as_mut()
+            .expect("dictionary removal requires dictionary metadata")
+            .swap_remove(index);
+        let removed = self.entries.swap_remove(index);
+        self.lookup.remove(&atom);
+        if let Some(moved) = self.entries.get(index) {
+            self.lookup.insert(moved.atom, index as u32);
+        }
+        let len = self.entries.len();
+        if self.entries.capacity() > len.saturating_mul(4).saturating_add(16) {
+            self.entries
+                .shrink_to(len.saturating_mul(2).saturating_add(8));
+        }
+        if self.lookup.capacity() > len.saturating_mul(4).saturating_add(16) {
+            self.lookup
+                .shrink_to(len.saturating_mul(2).saturating_add(8));
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn replace_dictionary_flags(&mut self, index: usize, flags: PropertyFlags) {
+        debug_assert!(self.is_dictionary());
+        self.entries[index].flags = flags;
     }
 
     /// Find a property and return its parallel payload-slot index.
@@ -184,19 +259,10 @@ impl Shape {
             return Err(ShapeError::DuplicateAtom(atom));
         }
 
-        let index =
-            u32::try_from(self.entries.len()).map_err(|_| ShapeError::PropertyIndexOverflow)?;
-        let mut entries = Vec::with_capacity(self.entries.len().saturating_add(1));
-        entries.extend_from_slice(&self.entries);
-        entries.push(ShapeEntry { atom, flags });
-
-        let mut lookup = self.lookup.clone();
-        lookup.insert(atom, index);
-        Ok(Self {
-            prototype: self.prototype,
-            entries,
-            lookup,
-        })
+        let index = self.unique_append_index(atom)?;
+        let mut result = self.clone();
+        result.append_unique_property(atom, flags, index);
+        Ok(result)
     }
 
     /// Append one property to a shape which is exclusively owned by a single
@@ -221,6 +287,9 @@ impl Shape {
         debug_assert!(!atom.is_null() && !self.lookup.contains_key(&atom));
         self.entries.push(ShapeEntry { atom, flags });
         self.lookup.insert(atom, index);
+        if let Some(order) = &mut self.dictionary_order {
+            order.append();
+        }
     }
 
     /// Derive a shape with updated flags for an existing property.
@@ -239,6 +308,7 @@ impl Shape {
             prototype: self.prototype,
             entries,
             lookup: self.lookup.clone(),
+            dictionary_order: self.dictionary_order.clone(),
         })
     }
 
@@ -253,6 +323,11 @@ impl Shape {
         }
         let index = usize::try_from(self.find(atom).ok_or(ShapeError::MissingAtom(atom))?)
             .map_err(|_| ShapeError::PropertyIndexOverflow)?;
+        if self.is_dictionary() {
+            let mut result = self.clone();
+            result.remove_dictionary_property(atom)?;
+            return Ok(result);
+        }
         let mut entries = Vec::with_capacity(self.entries.len().saturating_sub(1));
         entries.extend_from_slice(&self.entries[..index]);
         entries.extend_from_slice(&self.entries[index + 1..]);
@@ -275,7 +350,8 @@ impl Shape {
         let mut strings = Vec::new();
         let mut symbols = Vec::new();
 
-        for (insertion_index, entry) in self.entries.iter().enumerate() {
+        for (insertion_index, slot) in self.ordered_indices().enumerate() {
+            let entry = &self.entries[slot];
             match atoms.property_key_kind(entry.atom)? {
                 PropertyKeyKind::String => {
                     if let Some(array_index) = atoms.array_index(entry.atom)? {
