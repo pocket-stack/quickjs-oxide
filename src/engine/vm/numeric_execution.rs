@@ -5,7 +5,7 @@ impl VmActivation {
         &mut self,
         host: &mut impl VmHost,
     ) -> Result<OperationOutcome<()>, Error> {
-        let operand = match host.to_primitive(self.pop()?, ToPrimitiveHint::Number)? {
+        let operand = match to_primitive(host, self.pop()?, ToPrimitiveHint::Number)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
@@ -25,7 +25,7 @@ impl VmActivation {
         &mut self,
         host: &mut impl VmHost,
     ) -> Result<OperationOutcome<()>, Error> {
-        let operand = match host.to_primitive(self.pop()?, ToPrimitiveHint::Number)? {
+        let operand = match to_primitive(host, self.pop()?, ToPrimitiveHint::Number)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
@@ -50,7 +50,7 @@ impl VmActivation {
         increment: bool,
         postfix: bool,
     ) -> Result<OperationOutcome<()>, Error> {
-        let operand = match host.to_primitive(self.pop()?, ToPrimitiveHint::Number)? {
+        let operand = match to_primitive(host, self.pop()?, ToPrimitiveHint::Number)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
@@ -186,11 +186,11 @@ impl VmActivation {
         operation: impl FnOnce(std::cmp::Ordering) -> bool,
     ) -> Result<OperationOutcome<()>, Error> {
         let (left, right) = self.pop_pair()?;
-        let left = match host.to_primitive(left, ToPrimitiveHint::Number)? {
+        let left = match to_primitive(host, left, ToPrimitiveHint::Number)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
-        let right = match host.to_primitive(right, ToPrimitiveHint::Number)? {
+        let right = match to_primitive(host, right, ToPrimitiveHint::Number)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
@@ -234,11 +234,11 @@ impl VmActivation {
         host: &mut impl VmHost,
     ) -> Result<OperationOutcome<()>, Error> {
         let (left, right) = self.pop_pair()?;
-        let left = match host.to_primitive(left, ToPrimitiveHint::Default)? {
+        let left = match to_primitive(host, left, ToPrimitiveHint::Default)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
-        let right = match host.to_primitive(right, ToPrimitiveHint::Default)? {
+        let right = match to_primitive(host, right, ToPrimitiveHint::Default)? {
             Completion::Return(value) => value,
             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };

@@ -18,6 +18,8 @@ use num_traits::FromPrimitive;
 use std::collections::VecDeque;
 
 #[cfg(test)]
+mod numeric_coercion_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) mod async_from_sync_iterator;

@@ -23,7 +23,8 @@
 - [host_bridge.rs](host_bridge.rs)：Bytecode VM adapter and per-frame binding state.。
 - [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
 - [native_stack.rs](native_stack.rs)：Deterministic native-call stack budgeting.。
-- [numeric.rs](numeric.rs)：numeric 的类型和操作实现。
+- [numeric.rs](numeric.rs)：共享原始值/数值转换入口、数值类型及比较辅助函数。
+- [numeric_coercion_tests.rs](numeric_coercion_tests.rs)：原始值直通及对象转换顺序回归测试。
 - [numeric_execution.rs](numeric_execution.rs)：数值指令执行。
 - [protocol.rs](protocol.rs)：执行请求、宿主协议和 VM 入口。
 - [tests.rs](tests.rs)：模块回归测试。

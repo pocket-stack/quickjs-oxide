@@ -80,11 +80,25 @@ pub(in crate::engine::vm) fn abstract_equal(
     }
 }
 
+/// Apply ToPrimitive at the VM boundary. Primitive operands keep their exact
+/// representation and need no host services; only objects can execute user code.
+#[inline]
+pub(in crate::engine::vm) fn to_primitive(
+    host: &mut impl VmHost,
+    value: Value,
+    hint: ToPrimitiveHint,
+) -> Result<Completion, Error> {
+    match value {
+        Value::Object(_) => host.to_primitive(value, hint),
+        primitive => Ok(Completion::Return(primitive)),
+    }
+}
+
 pub(in crate::engine::vm) fn to_numeric(
     host: &mut impl VmHost,
     value: Value,
 ) -> Result<OperationOutcome<NumericValue>, Error> {
-    match host.to_primitive(value, ToPrimitiveHint::Number)? {
+    match to_primitive(host, value, ToPrimitiveHint::Number)? {
         Completion::Return(value) => Ok(OperationOutcome::Value(to_numeric_primitive(value)?)),
         Completion::Throw(value) => Ok(OperationOutcome::Throw(value)),
     }

@@ -115,6 +115,7 @@ pub(in crate::engine::vm) struct DetachedHost<'a, T> {
     pub(in crate::engine::vm) box_primitive_results: VecDeque<Result<Value, Error>>,
     #[cfg(test)]
     pub(in crate::engine::vm) box_primitive_inputs: Vec<Value>,
+    pub(in crate::engine::vm) to_primitive_inputs: Vec<(Value, ToPrimitiveHint)>,
     #[cfg(test)]
     pub(in crate::engine::vm) call_results: VecDeque<Result<Completion, Error>>,
     #[cfg(test)]
@@ -217,6 +218,7 @@ impl<'a, T> DetachedHost<'a, T> {
             box_primitive_results: VecDeque::new(),
             #[cfg(test)]
             box_primitive_inputs: Vec::new(),
+            to_primitive_inputs: Vec::new(),
             #[cfg(test)]
             call_results: VecDeque::new(),
             #[cfg(test)]
@@ -419,7 +421,8 @@ impl<T: TestConstant + Clone + Into<Value>> VmHost for DetachedHost<'_, T> {
         ))
     }
 
-    fn to_primitive(&mut self, value: Value, _hint: ToPrimitiveHint) -> Result<Completion, Error> {
+    fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error> {
+        self.to_primitive_inputs.push((value.clone(), hint));
         if matches!(value, Value::Object(_)) {
             Err(Error::internal(
                 "detached VM cannot execute object ToPrimitive",
