@@ -10,6 +10,7 @@ use crate::engine::builtins::native::{
     NativeFunctionId,
 };
 use crate::engine::heap::{AutoInitProperty, ContextId, HeapError, ObjectData, PropertySlot};
+use crate::engine::object::builtin_properties::NativeBuiltinProperty;
 use crate::engine::object::operations::{
     ArrayLengthConversion, ArrayOwnKey, InternalDefineResult, PropertyDefineOutcome,
 };
@@ -357,30 +358,11 @@ impl Runtime {
         array_iterator_prototype: &ObjectRef,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
-            NativeFunctionId::ArrayPrototypeAt,
-            "at",
-            1,
-            1,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
-            NativeFunctionId::ArrayPrototypeWith,
-            "with",
-            2,
-            2,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
-            NativeFunctionId::ArrayPrototypeConcat,
-            "concat",
-            1,
-            0,
-        )?;
+        let mut methods = vec![
+            NativeBuiltinProperty::new(NativeFunctionId::ArrayPrototypeAt, "at", 1, 1),
+            NativeBuiltinProperty::new(NativeFunctionId::ArrayPrototypeWith, "with", 2, 2),
+            NativeBuiltinProperty::new(NativeFunctionId::ArrayPrototypeConcat, "concat", 1, 0),
+        ];
         for (kind, name) in [
             (ArrayIterationKind::Every, "every"),
             (ArrayIterationKind::Some, "some"),
@@ -388,89 +370,73 @@ impl Runtime {
             (ArrayIterationKind::Map, "map"),
             (ArrayIterationKind::Filter, "filter"),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeIteration(kind),
                 name,
                 1,
                 1,
-            )?;
+            ));
         }
         for (kind, name) in [
             (ArrayReduceKind::Reduce, "reduce"),
             (ArrayReduceKind::ReduceRight, "reduceRight"),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeReduce(kind),
                 name,
                 1,
                 1,
-            )?;
+            ));
         }
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeFill,
             "fill",
             1,
             1,
-        )?;
+        ));
         for (kind, name) in [
             (ArrayFindKind::Find, "find"),
             (ArrayFindKind::FindIndex, "findIndex"),
             (ArrayFindKind::FindLast, "findLast"),
             (ArrayFindKind::FindLastIndex, "findLastIndex"),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeFind(kind),
                 name,
                 1,
                 1,
-            )?;
+            ));
         }
         for (kind, name) in [
             (ArraySearchKind::IndexOf, "indexOf"),
             (ArraySearchKind::LastIndexOf, "lastIndexOf"),
             (ArraySearchKind::Includes, "includes"),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeSearch(kind),
                 name,
                 1,
                 1,
-            )?;
+            ));
         }
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeJoin(ArrayJoinKind::Join),
             "join",
             1,
             1,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        ));
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeToString,
             "toString",
             0,
             0,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        ));
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeJoin(ArrayJoinKind::ToLocaleString),
             "toLocaleString",
             0,
             0,
-        )?;
+        ));
         for (target, name, length) in [
             (
                 NativeFunctionId::ArrayPrototypePop(ArrayPopKind::Pop),
@@ -493,96 +459,80 @@ impl Runtime {
                 1,
             ),
         ] {
-            self.define_native_builtin_auto_init(array_prototype, realm, target, name, length, 0)?;
+            methods.push(NativeBuiltinProperty::new(target, name, length, 0));
         }
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeReverse,
             "reverse",
             0,
             0,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        ));
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeToReversed,
             "toReversed",
             0,
             0,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        ));
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeSort,
             "sort",
             1,
             1,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        ));
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeToSorted,
             "toSorted",
             1,
             1,
-        )?;
+        ));
         for (kind, name) in [
             (ArraySliceKind::Slice, "slice"),
             (ArraySliceKind::Splice, "splice"),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeSlice(kind),
                 name,
                 2,
                 2,
-            )?;
+            ));
         }
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeToSpliced,
             "toSpliced",
             2,
             2,
-        )?;
-        self.define_native_builtin_auto_init(
-            array_prototype,
-            realm,
+        ));
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::ArrayPrototypeCopyWithin,
             "copyWithin",
             2,
             2,
-        )?;
+        ));
         for (kind, name, length, min_readable_args) in [
             (ArrayFlattenKind::FlatMap, "flatMap", 1, 1),
             (ArrayFlattenKind::Flat, "flat", 0, 0),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeFlatten(kind),
                 name,
                 length,
                 min_readable_args,
-            )?;
+            ));
         }
         for (kind, name) in [
             (ArrayIteratorKind::Value, "values"),
             (ArrayIteratorKind::Key, "keys"),
             (ArrayIteratorKind::KeyAndValue, "entries"),
         ] {
-            self.define_native_builtin_auto_init(
-                array_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::ArrayPrototypeIterator(kind),
                 name,
                 0,
                 0,
-            )?;
+            ));
         }
+
+        self.define_native_builtin_auto_init_batch(array_prototype, realm, methods)?;
 
         self.define_native_builtin_auto_init(
             array_iterator_prototype,
@@ -619,30 +569,13 @@ impl Runtime {
             "Array",
             1,
         )?;
-        self.define_native_builtin_auto_init(
-            constructor.as_object(),
-            realm,
-            NativeFunctionId::ArrayIsArray,
-            "isArray",
-            1,
-            1,
-        )?;
-        self.define_native_builtin_auto_init(
-            constructor.as_object(),
-            realm,
-            NativeFunctionId::ArrayFrom,
-            "from",
-            1,
-            3,
-        )?;
-        self.define_native_builtin_auto_init(
-            constructor.as_object(),
-            realm,
-            NativeFunctionId::ArrayOf,
-            "of",
-            0,
-            0,
-        )?;
+        let methods = [
+            NativeBuiltinProperty::new(NativeFunctionId::ArrayIsArray, "isArray", 1, 1),
+            NativeBuiltinProperty::new(NativeFunctionId::ArrayFrom, "from", 1, 3),
+            NativeBuiltinProperty::new(NativeFunctionId::ArrayOf, "of", 0, 0),
+        ];
+        self.define_native_builtin_auto_init_batch(constructor.as_object(), realm, methods)?;
+
         self.define_constructor_relationship(&constructor, array_prototype)?;
 
         let getter = self.new_native_builtin(

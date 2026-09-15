@@ -10,6 +10,7 @@ mod parse;
 mod prototype;
 
 use super::*;
+use crate::engine::object::builtin_properties::NativeBuiltinProperty;
 
 /// Side-effect-free ISO rendering used by the qjs diagnostic value printer.
 /// Invalid dates deliberately return `None`: pinned `JS_PrintValue` then falls
@@ -87,6 +88,10 @@ impl Runtime {
         };
         self.define_function_data_property(date_prototype, "toGMTString", utc_string, true, true)?;
 
+        // The UTC/GMT alias has already been materialized. The following
+        // table has no intermediate reads and can publish one final layout.
+        // The toUTCString read and toGMTString alias above are a publication boundary.
+        let mut methods = Vec::new();
         for (kind, name) in [
             (
                 DateNativeKind::String(DateStringMethod::IsoString),
@@ -115,76 +120,64 @@ impl Runtime {
             (DateNativeKind::TimezoneOffset, "getTimezoneOffset"),
             (DateNativeKind::TimeValue, "getTime"),
         ] {
-            self.define_native_builtin_auto_init(
-                date_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::Date(kind),
                 name,
                 kind.length(),
                 kind.length(),
-            )?;
+            ));
         }
         for kind in DateGetFieldKind::ALL {
             let target = DateNativeKind::GetField(kind);
-            self.define_native_builtin_auto_init(
-                date_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::Date(target),
                 kind.name(),
                 target.length(),
                 target.length(),
-            )?;
+            ));
         }
 
         let set_time = DateNativeKind::SetTime;
-        self.define_native_builtin_auto_init(
-            date_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::Date(set_time),
             "setTime",
             set_time.length(),
             set_time.length(),
-        )?;
+        ));
         for kind in DateSetFieldKind::ALL.into_iter().take(12) {
             let target = DateNativeKind::SetField(kind);
-            self.define_native_builtin_auto_init(
-                date_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::Date(target),
                 kind.name(),
                 target.length(),
                 target.length(),
-            )?;
+            ));
         }
         let set_year = DateNativeKind::SetYear;
-        self.define_native_builtin_auto_init(
-            date_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::Date(set_year),
             "setYear",
             set_year.length(),
             set_year.length(),
-        )?;
+        ));
         for kind in [DateSetFieldKind::FullYear, DateSetFieldKind::UtcFullYear] {
             let target = DateNativeKind::SetField(kind);
-            self.define_native_builtin_auto_init(
-                date_prototype,
-                realm,
+            methods.push(NativeBuiltinProperty::new(
                 NativeFunctionId::Date(target),
                 kind.name(),
                 target.length(),
                 target.length(),
-            )?;
+            ));
         }
         let to_json = DateNativeKind::ToJson;
-        self.define_native_builtin_auto_init(
-            date_prototype,
-            realm,
+        methods.push(NativeBuiltinProperty::new(
             NativeFunctionId::Date(to_json),
             "toJSON",
             to_json.length(),
             to_json.length(),
-        )?;
+        ));
+
+        self.define_native_builtin_auto_init_batch(date_prototype, realm, methods)?;
 
         let constructor_kind = DateNativeKind::Constructor;
         let constructor = self.new_native_builtin(

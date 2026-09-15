@@ -11,6 +11,7 @@
 - [arguments.rs](arguments.rs)：QuickJS-compatible mapped and unmapped Arguments exotic objects.。
 - [class.rs](class.rs)：Class constructor/prototype publication.。
 - [class_fields.rs](class_fields.rs)：Public class-field property definition primitives.。
+- [builtin_properties.rs](builtin_properties.rs)：在明确的初始化边界批量安装内建懒方法属性。
 - [function_initialization.rs](function_initialization.rs)：function_initialization 的类型和操作实现。
 - [home_object.rs](home_object.rs)：Bytecode-function HomeObject installation.。
 - [internal_methods.rs](internal_methods.rs)：Completion-aware ECMAScript internal-method dispatch.。

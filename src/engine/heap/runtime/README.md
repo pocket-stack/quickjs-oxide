@@ -9,3 +9,4 @@
 - [mod.rs](mod.rs)：模块入口、共享接口与子模块声明。
 - [tests/](tests/README.md)：子模块职责与文件说明。
 - [tests.rs](tests.rs)：模块回归测试。
+- [builtin_batch_tests.rs](builtin_batch_tests.rs)：内建方法批量发布、惰性属性和失败回滚测试。

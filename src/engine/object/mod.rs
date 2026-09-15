@@ -737,6 +737,7 @@ pub mod shape;
 
 pub(crate) mod allocation;
 
+pub(crate) mod builtin_properties;
 pub(crate) mod function_initialization;
 
 pub(crate) mod access;

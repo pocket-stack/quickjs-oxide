@@ -458,6 +458,9 @@ mod tests;
 #[cfg(test)]
 mod static_property_key_tests;
 
+#[cfg(test)]
+mod builtin_batch_tests;
+
 use crate::engine::vm::frames::*;
 
 use crate::engine::object::operations::*;
