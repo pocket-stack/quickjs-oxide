@@ -341,6 +341,11 @@ pub(crate) mod runtime_gc;
 
 pub(crate) mod ownership;
 
+mod deferred;
+
+#[cfg(test)]
+mod release_cleanup_tests;
+
 mod identity;
 pub use identity::*;
 

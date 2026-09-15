@@ -29,7 +29,7 @@ pub(crate) static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct RuntimeInner {
     pub(crate) state: RefCell<RuntimeState>,
-    pub(crate) deferred_references: RefCell<VecDeque<DeferredRefOp>>,
+    pub(crate) deferred_references: super::deferred::DeferredOperations,
     pub(crate) host_services: Rc<dyn HostServices>,
     /// Embedder policy sampled by synchronous Atomics waits. QuickJS leaves
     /// this disabled until a host explicitly opts in.
@@ -78,6 +78,7 @@ pub(crate) enum DeferredRefOp {
 pub(crate) struct RuntimeOperation<'a>(pub(super) &'a Runtime);
 
 impl Drop for RuntimeOperation<'_> {
+    #[inline]
     fn drop(&mut self) {
         let result = self.0.drain_deferred_references();
         debug_assert!(result.is_ok(), "deferred root release failed: {result:?}");
@@ -415,59 +416,9 @@ impl RuntimeState {
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
         let state = self.state.get_mut();
-        let deferred = self.deferred_references.get_mut();
+        let deferred = &self.deferred_references;
         while let Some(operation) = deferred.pop_front() {
-            let result = match operation {
-                DeferredRefOp::Object(object) => state
-                    .heap
-                    .release_object(object)
-                    .map_err(RuntimeError::Heap)
-                    .and_then(|cleanup| state.apply_cleanup(cleanup)),
-                DeferredRefOp::Context(context) => state
-                    .heap
-                    .release_context(context)
-                    .map_err(RuntimeError::Heap)
-                    .and_then(|cleanup| state.apply_cleanup(cleanup)),
-                DeferredRefOp::FunctionBytecode(bytecode) => state
-                    .heap
-                    .release_function_bytecode(bytecode)
-                    .map_err(RuntimeError::Heap)
-                    .and_then(|cleanup| state.apply_cleanup(cleanup)),
-                DeferredRefOp::VarRef(var_ref) => state
-                    .heap
-                    .release_var_ref(var_ref)
-                    .map_err(RuntimeError::Heap)
-                    .and_then(|cleanup| state.apply_cleanup(cleanup)),
-                DeferredRefOp::Atom(atom) => {
-                    state.atoms.release(atom).map(drop).map_err(Into::into)
-                }
-                DeferredRefOp::ActiveFramePop { token, depth } => {
-                    if let Some(position) = state
-                        .active_frames
-                        .iter()
-                        .rposition(|frame| frame.token == token)
-                    {
-                        state.active_frames.truncate(position);
-                    } else if state.active_frames.len() > depth {
-                        state.active_frames.truncate(depth);
-                    }
-                    Ok(())
-                }
-                DeferredRefOp::ActiveCollectionRecordsTruncate { depth } => {
-                    state.active_collection_records.truncate(depth);
-                    Ok(())
-                }
-                DeferredRefOp::BacktraceBarrierRestore { token, previous } => {
-                    if let Some(frame) = state
-                        .active_frames
-                        .iter_mut()
-                        .find(|frame| frame.token == token)
-                    {
-                        frame.flags.backtrace_barrier = previous;
-                    }
-                    Ok(())
-                }
-            };
+            let result = state.apply_deferred_operation(operation);
             debug_assert!(
                 result.is_ok(),
                 "runtime deferred teardown failed: {result:?}"

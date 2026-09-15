@@ -321,7 +321,6 @@ impl Runtime {
         } else {
             self.0
                 .deferred_references
-                .borrow_mut()
                 .push_front(DeferredRefOp::BacktraceBarrierRestore { token, previous });
         }
     }
@@ -351,7 +350,6 @@ impl Runtime {
         } else {
             self.0
                 .deferred_references
-                .borrow_mut()
                 .push_front(DeferredRefOp::ActiveCollectionRecordsTruncate { depth });
         }
     }
@@ -397,7 +395,6 @@ impl Runtime {
         } else {
             self.0
                 .deferred_references
-                .borrow_mut()
                 .push_front(DeferredRefOp::ActiveFramePop { token, depth });
         }
     }

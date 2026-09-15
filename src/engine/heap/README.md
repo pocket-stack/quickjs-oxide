@@ -14,6 +14,7 @@
 - [buffers.rs](buffers.rs)：Borrow-contained ArrayBuffer storage operations and SharedArrayBuffer backing handles.。
 - [code_records.rs](code_records.rs)：code 的原始堆记录、载荷与校验。
 - [collections.rs](collections.rs)：Insertion-ordered Map/Set storage, weak collection records, and collection iterator state.。
+- [deferred.rs](deferred.rs)：延迟操作队列、待处理状态和清理重入守卫。
 - [gc.rs](gc.rs)：Heap reference ownership, ordered weak-reference processing, and cycle collection.。
 - [identity.rs](identity.rs)：identity 的类型和操作实现。
 - [iteration_records.rs](iteration_records.rs)：iteration 的原始堆记录、载荷与校验。
@@ -30,6 +31,7 @@
 - [promise_storage.rs](promise_storage.rs)：promise 的存储变更和引用边维护。
 - [realm_records.rs](realm_records.rs)：realm 的原始堆记录、载荷与校验。
 - [realm_storage.rs](realm_storage.rs)：realm 的存储变更和引用边维护。
+- [release_cleanup_tests.rs](release_cleanup_tests.rs)：延迟清理优先级、重入、失败恢复和销毁生命周期测试。
 - [roots.rs](roots.rs)：变量引用及原始值的 roots。
 - [runtime/](runtime/README.md)：子模块职责与文件说明。
 - [runtime_gc.rs](runtime_gc.rs)：运行时 GC 入口与统计。

@@ -79,7 +79,7 @@ impl Runtime {
                 #[cfg(test)]
                 iterator_result_allocations: 0,
             }),
-            deferred_references: RefCell::new(VecDeque::new()),
+            deferred_references: Default::default(),
             host_services,
             can_block: Cell::new(false),
             promise_rejection_tracker: RefCell::new(None),
