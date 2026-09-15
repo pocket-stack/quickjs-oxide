@@ -416,6 +416,29 @@ impl RuntimeState {
         self.ensure_dictionary_layout(object)
     }
 
+    /// One slot transaction, including Atom ownership. Once published, a
+    /// cleanup failure cannot roll back the new slot's Atom references.
+    pub(crate) fn replace_property_slot(
+        &mut self,
+        object: ObjectId,
+        index: usize,
+        replacement: PropertySlot,
+    ) -> Result<(), RuntimeError> {
+        let atoms = self.retain_slot_atoms(std::slice::from_ref(&replacement))?;
+        match self
+            .heap
+            .replace_object_slot_with_status(object, index, replacement)
+        {
+            Ok(cleanup) => self.apply_cleanup(cleanup),
+            Err(failure) => {
+                if !failure.published {
+                    self.release_atoms(atoms)?;
+                }
+                Err(failure.error.into())
+            }
+        }
+    }
+
     pub(crate) fn apply_cleanup(&mut self, cleanup: HeapCleanup) -> Result<(), RuntimeError> {
         self.unlink_finalized_shapes(cleanup.finalized_shape_ids);
         self.release_atoms(cleanup.atoms)

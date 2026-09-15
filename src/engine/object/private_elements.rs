@@ -181,18 +181,7 @@ impl Runtime {
 
         let replacement = PropertySlot::Data(raw);
         let mut state = self.0.state.borrow_mut();
-        let retained_atoms = state.retain_slot_atoms(std::slice::from_ref(&replacement))?;
-        let cleanup = match state
-            .heap
-            .replace_object_slot(object_id, index, replacement)
-        {
-            Ok(cleanup) => cleanup,
-            Err(error) => {
-                state.release_atoms(retained_atoms)?;
-                return Err(error.into());
-            }
-        };
-        state.apply_cleanup(cleanup)?;
+        state.replace_property_slot(object_id, index, replacement)?;
         drop(state);
         // `replace_object_slot` retained the heap occurrence before this
         // incoming public root is released.

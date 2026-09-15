@@ -192,6 +192,23 @@ impl Runtime {
     ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        self.get_own_property_in_operation(object, key)
+    }
+
+    /// The caller has validated object/key domains and holds an operation
+    /// guard. Keep the descriptor algorithm shared without nesting public
+    /// validation/cleanup boundaries on completion-aware Get fallback.
+    pub(super) fn get_own_property_in_operation(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
+        if let Some(snapshot) = self.ordinary_property_snapshot(object, key)? {
+            return match snapshot {
+                Some(snapshot) => self.materialize_property_snapshot(object, key, snapshot),
+                None => Ok(None),
+            };
+        }
         if self.typed_array_is_object(object)?
             && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
         {
@@ -247,6 +264,15 @@ impl Runtime {
             }
         };
 
+        self.materialize_property_snapshot(object, key, snapshot)
+    }
+
+    pub(super) fn materialize_property_snapshot(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+        snapshot: PropertySnapshot,
+    ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
         match snapshot {
             PropertySnapshot::Data { value, flags } => {
                 Ok(Some(CompleteOrdinaryPropertyDescriptor::Data {
@@ -428,19 +454,7 @@ impl Runtime {
         };
         let raw = self.raw_property_value(&initialized)?;
         let mut state = self.0.state.borrow_mut();
-        let retained_atoms = state.retain_slot_atoms(&[PropertySlot::Data(raw.clone())])?;
-        let cleanup =
-            match state
-                .heap
-                .replace_object_slot(object_id, slot_index, PropertySlot::Data(raw))
-            {
-                Ok(cleanup) => cleanup,
-                Err(error) => {
-                    state.release_atoms(retained_atoms)?;
-                    return Err(error.into());
-                }
-            };
-        state.apply_cleanup(cleanup)?;
+        state.replace_property_slot(object_id, slot_index, PropertySlot::Data(raw))?;
         drop(state);
         drop(initialized);
         Ok(())
@@ -497,149 +511,10 @@ impl Runtime {
         Ok(None)
     }
 
-    #[cfg(test)]
-    pub(crate) fn prepare_set_property(
-        &self,
-        object: &ObjectRef,
-        key: &PropertyKey,
-        value: Value,
-    ) -> Result<PropertySetAction, RuntimeError> {
-        let _operation = self.operation();
-        self.prepare_set_property_with_receiver_in_realm(
-            None,
-            object,
-            key,
-            value,
-            Value::Object(object.clone()),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn prepare_set_property_with_receiver(
-        &self,
-        object: &ObjectRef,
-        key: &PropertyKey,
-        value: Value,
-        receiver: Value,
-    ) -> Result<PropertySetAction, RuntimeError> {
-        self.prepare_set_property_with_receiver_in_realm(None, object, key, value, receiver)
-    }
-
-    pub(crate) fn prepare_set_property_with_receiver_in_realm(
-        &self,
-        realm: Option<ContextId>,
-        object: &ObjectRef,
-        key: &PropertyKey,
-        value: Value,
-        receiver: Value,
-    ) -> Result<PropertySetAction, RuntimeError> {
-        let _operation = self.operation();
-        self.validate_object_and_key(object, key)?;
-        self.validate_value_domain(&value, "property value")?;
-        self.validate_value_domain(&receiver, "property receiver")?;
-        let mut cursor = Some(object.clone());
-        let mut inherited_allows_write = true;
-        let mut direct_array_length = false;
-        while let Some(current) = cursor {
-            if let Some(property) = self.get_own_property(&current, key)? {
-                match property {
-                    CompleteOrdinaryPropertyDescriptor::Data { writable, .. } => {
-                        direct_array_length = matches!(&receiver, Value::Object(receiver)
-                            if receiver == &current
-                                && self.array_own_key(&current, key)? == ArrayOwnKey::Length);
-                        inherited_allows_write = writable;
-                        break;
-                    }
-                    CompleteOrdinaryPropertyDescriptor::Accessor { set: None, .. } => {
-                        return Ok(PropertySetAction::Rejected(PropertySetRejection::NoSetter));
-                    }
-                    CompleteOrdinaryPropertyDescriptor::Accessor {
-                        set: Some(setter), ..
-                    } => {
-                        return Ok(PropertySetAction::Call {
-                            setter,
-                            receiver,
-                            argument: value,
-                        });
-                    }
-                }
-            }
-            cursor = self.get_prototype_of(&current)?;
-        }
-        if direct_array_length {
-            let Value::Object(receiver) = receiver else {
-                return Err(RuntimeError::Invariant(
-                    "direct Array length write lost its object receiver",
-                ));
-            };
-            return self.prepare_set_array_length(realm, &receiver, key, value);
-        }
-        if !inherited_allows_write {
-            return Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly));
-        }
-
-        let Value::Object(receiver) = receiver else {
-            return Ok(PropertySetAction::Rejected(PropertySetRejection::NotObject));
-        };
-        let descriptor = match self.get_own_property(&receiver, key)? {
-            Some(CompleteOrdinaryPropertyDescriptor::Data {
-                writable: false, ..
-            }) => {
-                return Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly));
-            }
-            Some(CompleteOrdinaryPropertyDescriptor::Accessor { set: None, .. }) => {
-                return Ok(PropertySetAction::Rejected(PropertySetRejection::NoSetter));
-            }
-            Some(CompleteOrdinaryPropertyDescriptor::Accessor { set: Some(_), .. }) => {
-                return Ok(PropertySetAction::Rejected(PropertySetRejection::ReadOnly));
-            }
-            Some(CompleteOrdinaryPropertyDescriptor::Data { .. }) => {
-                if self.set_arguments_index_value(&receiver, key, &value)? {
-                    return Ok(PropertySetAction::Complete);
-                }
-                OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(value),
-                    ..OrdinaryPropertyDescriptor::new()
-                }
-            }
-            None => {
-                if !self.is_extensible(&receiver)? {
-                    return Ok(PropertySetAction::Rejected(
-                        PropertySetRejection::NotExtensible,
-                    ));
-                }
-                OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(value),
-                    writable: DescriptorField::Present(true),
-                    enumerable: DescriptorField::Present(true),
-                    configurable: DescriptorField::Present(true),
-                    ..OrdinaryPropertyDescriptor::new()
-                }
-            }
-        };
-        Ok(
-            match self.define_own_property_in_realm(realm, &receiver, key, &descriptor)? {
-                PropertyDefineOutcome::Defined(true) => PropertySetAction::Complete,
-                PropertyDefineOutcome::Defined(false) => {
-                    let rejection =
-                        if matches!(self.array_own_key(&receiver, key)?, ArrayOwnKey::Index(_))
-                            && !self.array_length_state(&receiver)?.1
-                        {
-                            PropertySetRejection::ArrayLengthReadOnly
-                        } else {
-                            PropertySetRejection::ReadOnly
-                        };
-                    PropertySetAction::Rejected(rejection)
-                }
-                PropertyDefineOutcome::Throw(value) => PropertySetAction::Throw(value),
-            },
-        )
-    }
-
     /// Array `length` assignment has the same conversion and deletion kernel
     /// as DefineOwnProperty, but Set must reject every write once length is
     /// read-only, including a SameValue write that DefineOwnProperty accepts.
-    fn prepare_set_array_length(
+    pub(super) fn prepare_set_array_length(
         &self,
         realm: Option<ContextId>,
         object: &ObjectRef,
@@ -700,6 +575,9 @@ impl Runtime {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
         self.validate_descriptor_domains(descriptor)?;
+        if let Some(defined) = self.try_define_ordinary_value(object, key, descriptor)? {
+            return Ok(PropertyDefineOutcome::Defined(defined));
+        }
         if descriptor.is_mixed_descriptor() {
             return Err(PropertyDefinitionError::InvalidDescriptor.into());
         }
@@ -1391,6 +1269,9 @@ impl Runtime {
     ) -> Result<bool, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if let Some(flags) = self.ordinary_property_flags(object, key)? {
+            return Ok(flags.is_some());
+        }
         if self.typed_array_is_object(object)?
             && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
         {
@@ -1421,6 +1302,9 @@ impl Runtime {
         key: &PropertyKey,
     ) -> Result<bool, RuntimeError> {
         self.validate_object_and_key(object, key)?;
+        if let Some(flags) = self.ordinary_property_flags(object, key)? {
+            return Ok(flags.is_some_and(|own| own.flags.enumerable));
+        }
         if self.typed_array_is_object(object)?
             && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
         {

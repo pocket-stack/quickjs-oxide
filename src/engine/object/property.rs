@@ -123,6 +123,18 @@ impl<V> CompletePropertyDescriptor<V> {
     }
 }
 
+/// Shared Data [[Value]] update permission. Set does not use this rule:
+/// assignment to a non-writable property is rejected even for SameValue.
+pub(crate) fn data_value_update_allowed<V>(
+    configurable: bool,
+    writable: bool,
+    old: &V,
+    new: &V,
+    same_value: impl FnOnce(&V, &V) -> bool,
+) -> bool {
+    configurable || writable || same_value(new, old)
+}
+
 /// Why an ordinary property definition was rejected.
 ///
 /// ECMAScript exposes these rejections as `false` or a `TypeError`, depending
@@ -269,11 +281,15 @@ where
             if descriptor.writable == Some(true) {
                 return Err(PropertyDefinitionError::WritableOnNonWritable);
             }
-            if descriptor
-                .value
-                .as_ref()
-                .is_some_and(|new_value| !same_value(new_value, value))
-            {
+            if descriptor.value.as_ref().is_some_and(|new_value| {
+                !data_value_update_allowed(
+                    current_configurable,
+                    *writable,
+                    value,
+                    new_value,
+                    &same_value,
+                )
+            }) {
                 return Err(PropertyDefinitionError::ValueOnNonWritable);
             }
         }

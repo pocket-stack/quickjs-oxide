@@ -492,7 +492,7 @@ fn set_property(
 ) -> Result<bool, RuntimeError> {
     match runtime.prepare_set_property(object, key, value)? {
         PropertySetAction::Complete => Ok(true),
-        PropertySetAction::Rejected(_) => Ok(false),
+        PropertySetAction::Rejected(_) | PropertySetAction::RejectedProxyTrap => Ok(false),
         PropertySetAction::Throw(_) => Err(RuntimeError::Invariant(
             "context-free property test produced a JavaScript throw",
         )),
@@ -511,7 +511,7 @@ fn set_property_with_receiver(
 ) -> Result<bool, RuntimeError> {
     match runtime.prepare_set_property_with_receiver(object, key, value, receiver)? {
         PropertySetAction::Complete => Ok(true),
-        PropertySetAction::Rejected(_) => Ok(false),
+        PropertySetAction::Rejected(_) | PropertySetAction::RejectedProxyTrap => Ok(false),
         PropertySetAction::Throw(_) => Err(RuntimeError::Invariant(
             "context-free property test produced a JavaScript throw",
         )),

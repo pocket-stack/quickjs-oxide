@@ -46,6 +46,7 @@ pub(crate) enum PropertyGetAction {
 }
 
 pub(crate) enum PropertySetAction {
+    RejectedProxyTrap,
     Complete,
     Rejected(PropertySetRejection),
     Throw(Value),

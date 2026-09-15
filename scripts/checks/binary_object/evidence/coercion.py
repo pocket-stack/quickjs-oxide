@@ -5,7 +5,7 @@ STAGE3J_RUST_FILE_HASHES = {'src/engine/code/binary_object/function_translate/ca
  'src/engine/code/binary_object/function_translate/mod.rs': 'ee4d423731977d088c45a0ee2f0fcf642b119f2c2dd4c6f9243d724a761545d7',
  'src/engine/code/binary_object/ordinary_leaf.rs': 'b7553332908929126730993a655bbd55acbe34df3ae7acf7415486f0c3fd81a4',
  'src/engine/code/binary_object_publish.rs': 'd7dd67291f5a8e7535ff7e7fb6802aa8348f5186c32235a8411ec79d6c5a0ae7',
- 'src/engine/heap/runtime/tests.rs': '36ce3fafb354a8c6049bc098069437ea653eed726cd3748f6e00cf30ccacad96',
+ 'src/engine/heap/runtime/tests.rs': '3b7f56cc12f5b2a7cb068274abeb02e1543356a45cccef109eb7b7c0de1a9d0d',
  'src/engine/code/binary_object/ordinary_leaf/tests.rs': '8a659586b5dfd17d5b3f1863913ddc952fd46fbb080bbf422133939fedb86630',
  'src/engine/heap/runtime/tests/accessors.rs': '7e7aadee6f2248192a6c1438029e26e1153f9412e148cf8c672f7e7d97ddc1d4',
  'src/engine/heap/runtime/tests/active_frames.rs': '609cbd20f1c0499710c9494e365fabfa94f3e8c19be359d4a721aff39bfde0bd',

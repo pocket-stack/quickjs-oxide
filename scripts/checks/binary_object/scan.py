@@ -1,6 +1,6 @@
 """Ordered rule pipeline. Later rules consume earlier authenticated observations."""
 from .context import ScanContext
-from .rules import source_setup, surface, native_plan, translation, ordinary_leaf, scalar, publication, runtime_protocols, runtime_contracts, wire_evidence, exception_evidence, coercion, coercion_evidence, reference_oracle, receipts, source_ownership, shared_transport
+from .rules import source_setup, surface, native_plan, translation, ordinary_leaf, scalar, publication, runtime_protocols, runtime_contracts, wire_evidence, exception_evidence, coercion, coercion_evidence, reference_oracle, receipts, source_ownership, shared_transport, ordinary_properties
 
 RULES = (
     ("source_setup", source_setup.check),
@@ -20,6 +20,7 @@ RULES = (
     ("receipts", receipts.check),
     ("source_ownership", source_ownership.check),
     ("shared_transport", shared_transport.check),
+    ("ordinary_properties", ordinary_properties.check),
 )
 
 

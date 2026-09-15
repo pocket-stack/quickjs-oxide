@@ -384,17 +384,7 @@ impl Runtime {
         // borrowing the shape, before cloning entries or unrelated value slots.
         if let Some((index, existing_flags)) = existing {
             if existing_flags == flags {
-                let retained_atoms = state.retain_slot_atoms(std::slice::from_ref(&replacement))?;
-                return match state
-                    .heap
-                    .replace_object_slot(object_id, index, replacement)
-                {
-                    Ok(cleanup) => state.apply_cleanup(cleanup),
-                    Err(error) => {
-                        state.release_atoms(retained_atoms)?;
-                        Err(error.into())
-                    }
-                };
+                return state.replace_property_slot(object_id, index, replacement);
             }
         }
         if let Some((index, _)) = existing {

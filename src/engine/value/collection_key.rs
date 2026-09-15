@@ -29,6 +29,17 @@ pub(crate) fn same_value_zero(left: &RawValue, right: &RawValue) -> bool {
     }
 }
 
+/// SameValue shares the non-coercing key equality rules, but distinguishes
+/// the two zero signs. Inputs have already passed runtime-domain validation.
+pub(crate) fn same_value(left: &RawValue, right: &RawValue) -> bool {
+    if let (Some(left), Some(right)) = (number(left), number(right)) {
+        if left == 0.0 && right == 0.0 {
+            return left.is_sign_negative() == right.is_sign_negative();
+        }
+    }
+    same_value_zero(left, right)
+}
+
 pub(crate) fn hash<H: Hasher>(key: &RawValue, state: &mut H) {
     match key {
         RawValue::Undefined => state.write_u8(0),

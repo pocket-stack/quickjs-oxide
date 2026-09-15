@@ -1614,6 +1614,15 @@ impl Runtime {
         snapshot: TypedArraySnapshot,
     ) -> Result<TypedArrayState, RuntimeError> {
         let buffer = self.snapshot_buffer_access(snapshot.buffer)?.state;
+        Ok(Self::typed_array_state_with_buffer(snapshot, buffer))
+    }
+
+    // Pure bounds calculation, shared with element access. A caller holding
+    // an access token must not perform observable work before consuming it.
+    fn typed_array_state_with_buffer(
+        snapshot: TypedArraySnapshot,
+        buffer: crate::engine::heap::ArrayBufferState,
+    ) -> TypedArrayState {
         let width = u32::from(snapshot.element.byte_length());
         let byte_length = if buffer.detached || snapshot.byte_offset > buffer.byte_length {
             None
@@ -1637,13 +1646,13 @@ impl Runtime {
         // RAB grows to a byte length not divisible by the element width.
         let length = byte_length / width;
         let byte_length = length * width;
-        Ok(TypedArrayState {
+        TypedArrayState {
             snapshot,
             length,
             byte_length,
             out_of_bounds,
             resizable: buffer.max_byte_length.is_some(),
-        })
+        }
     }
 
     pub(crate) fn typed_array_current_length(
@@ -1786,13 +1795,14 @@ impl Runtime {
         object: &ObjectRef,
         index: u64,
     ) -> Result<Option<Value>, RuntimeError> {
-        let state = self.typed_array_state(object)?;
+        let snapshot = self.typed_array_snapshot(object)?;
+        let access = self.snapshot_buffer_access(snapshot.buffer)?;
+        let state = Self::typed_array_state_with_buffer(snapshot, access.state);
         if state.out_of_bounds || index >= u64::from(state.length) {
             return Ok(None);
         }
         let absolute = typed_array_absolute_byte_offset(state.snapshot, index)?;
         let width = usize::from(state.snapshot.element.byte_length());
-        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
         let bytes = self.read_buffer_word(&access, absolute, width)?;
         Ok(Some(typed_array_decode(state.snapshot.element, bytes)))
     }
@@ -1898,13 +1908,14 @@ impl Runtime {
         index: u64,
         bytes: &[u8; 8],
     ) -> Result<bool, RuntimeError> {
-        let state = self.typed_array_state(object)?;
+        let snapshot = self.typed_array_snapshot(object)?;
+        let access = self.snapshot_buffer_access(snapshot.buffer)?;
+        let state = Self::typed_array_state_with_buffer(snapshot, access.state);
         if state.out_of_bounds || index >= u64::from(state.length) {
             return Ok(false);
         }
         let absolute = typed_array_absolute_byte_offset(state.snapshot, index)?;
         let width = usize::from(state.snapshot.element.byte_length());
-        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
         self.write_buffer_word(&access, absolute, &bytes[..width])?;
         Ok(true)
     }

@@ -1296,3 +1296,102 @@ fn shape_prototype_edge_participates_in_cycle_collection() {
     assert_eq!(stats.cleanup.finalized_shapes, 1);
     assert_eq!(heap.counts().live, 0);
 }
+
+#[test]
+fn property_slot_transaction_retains_before_publish_and_marks_cleanup_failures() {
+    let mut heap = Heap::new();
+    let shape = one_slot_shape(&mut heap);
+    let object = heap
+        .allocate_object(ObjectData::ordinary(
+            shape,
+            vec![PropertySlot::Data(RawValue::Int(7))],
+        ))
+        .unwrap();
+    let target = heap
+        .allocate_object(ObjectData::ordinary(
+            shape,
+            vec![PropertySlot::Data(RawValue::Undefined)],
+        ))
+        .unwrap();
+    heap.live_node_mut(RawId::Object(target)).unwrap().strong = u32::MAX;
+    let failure = heap
+        .replace_object_slot_with_status(object, 0, PropertySlot::Data(RawValue::Object(target)))
+        .err()
+        .unwrap();
+    assert!(!failure.published);
+    assert!(matches!(
+        heap.object(object).unwrap().slots[0],
+        PropertySlot::Data(RawValue::Int(7))
+    ));
+    assert_eq!(heap.object_strong_count(target), Ok(u32::MAX));
+    heap.live_node_mut(RawId::Object(target)).unwrap().strong = 1;
+    heap.replace_object_slot(object, 0, PropertySlot::Data(RawValue::Object(target)))
+        .unwrap();
+    heap.live_node_mut(RawId::Object(target)).unwrap().strong = 0;
+    let failure = heap
+        .replace_object_slot_with_status(object, 0, PropertySlot::Data(RawValue::Int(42)))
+        .err()
+        .unwrap();
+    assert!(failure.published);
+    assert!(matches!(
+        heap.object(object).unwrap().slots[0],
+        PropertySlot::Data(RawValue::Int(42))
+    ));
+    heap.live_node_mut(RawId::Object(target)).unwrap().strong = 1;
+    heap.release_object(target).unwrap();
+    heap.release_object(object).unwrap();
+    heap.release_shape(shape).unwrap();
+    assert_eq!(heap.counts().live, 0);
+}
+
+#[test]
+fn property_slot_transaction_keeps_new_symbol_owned_after_post_publish_failure() {
+    use crate::engine::api::runtime::Runtime;
+    use crate::engine::object::{DescriptorField, OrdinaryPropertyDescriptor};
+    use crate::engine::value::Value;
+    let runtime = Runtime::new();
+    let object = runtime.new_object(None).unwrap();
+    let old = runtime.new_object(None).unwrap();
+    let key = runtime.intern_property_key("x").unwrap();
+    runtime
+        .define_own_property(
+            &object,
+            &key,
+            &OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(Value::Object(old.clone())),
+                writable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            },
+        )
+        .unwrap();
+    {
+        let mut state = runtime.0.state.borrow_mut();
+        let symbol = state.atoms.new_symbol(Some("replacement")).unwrap();
+        state
+            .heap
+            .live_node_mut(RawId::Object(old.object_id()))
+            .unwrap()
+            .strong = 0;
+        assert!(
+            state
+                .replace_property_slot(
+                    object.object_id(),
+                    0,
+                    PropertySlot::Data(RawValue::Symbol(symbol))
+                )
+                .is_err()
+        );
+        assert_eq!(state.atoms.resolve(symbol).unwrap().ref_count, Some(2));
+        assert!(
+            matches!(state.heap.object(object.object_id()).unwrap().slots[0], PropertySlot::Data(RawValue::Symbol(atom)) if atom == symbol)
+        );
+        state
+            .heap
+            .live_node_mut(RawId::Object(old.object_id()))
+            .unwrap()
+            .strong = 1;
+        state.atoms.release(symbol).unwrap();
+    }
+    drop(object);
+    drop(old);
+}

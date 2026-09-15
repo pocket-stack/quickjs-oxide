@@ -1,5 +1,11 @@
 use super::*;
 
+/// The runtime may undo retained Atoms only before slot publication.
+pub(crate) struct SlotReplacementError {
+    pub(crate) error: HeapError,
+    pub(crate) published: bool,
+}
+
 impl Heap {
     /// Read one live object record.
     pub fn object(&self, id: ObjectId) -> Result<&ObjectData, HeapError> {
@@ -602,11 +608,34 @@ impl Heap {
         slot_index: usize,
         replacement: PropertySlot,
     ) -> Result<HeapCleanup, HeapError> {
-        self.validate_replacement_slot(id, slot_index, &replacement)?;
-        let new_edges = property_slot_edges(&replacement);
-        self.retain_edges_transactionally(&new_edges)?;
+        self.replace_object_slot_with_status(id, slot_index, replacement)
+            .map_err(|failure| failure.error)
+    }
 
+    pub(crate) fn replace_object_slot_with_status(
+        &mut self,
+        id: ObjectId,
+        slot_index: usize,
+        replacement: PropertySlot,
+    ) -> Result<HeapCleanup, SlotReplacementError> {
+        self.validate_replacement_slot(id, slot_index, &replacement)
+            .map_err(|error| SlotReplacementError {
+                error,
+                published: false,
+            })?;
+        let new_edges = property_slot_edges(&replacement);
+        self.retain_edges_transactionally(&new_edges)
+            .map_err(|error| SlotReplacementError {
+                error,
+                published: false,
+            })?;
+        // Validation and commit are adjacent under &mut Heap. There is no
+        // mutation/callback between them, so the validated slot cannot vanish.
         self.replace_retained_object_slot(id, slot_index, replacement)
+            .map_err(|error| SlotReplacementError {
+                error,
+                published: true,
+            })
     }
 
     /// Commit a validated replacement after its edges have been retained.
