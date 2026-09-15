@@ -176,3 +176,23 @@ benchmarking. Never revise conformance baselines to turn a performance change
 into an apparent pass.
 
 Scaling workloads also cover Array/TypedArray integer reads and writes, repeated interior Array deletion/reinsertion, strict and mapped Arguments construction, and RegExp named groups/indices. Use sizes below 255 for regexp-groups. Mapped arguments use a non-strict Function body explicitly because workload files are modules.
+
+## Replay the fixed-work matrix
+
+`fixed.py` replays the workload manifest in the final data-structure report.
+It checks every source hash before measuring, rotates engine order, retains raw
+outputs and rejects nonempty stderr. `--workload-dir` relocates existing files;
+it never regenerates or silently changes third-party workloads. Reconstruct
+missing files using the recipe in the fixed-work report, then verify the hashes.
+
+```sh
+python3 scripts/benchmark/fixed.py \
+  --manifest docs/reports/data-structure-fixed-final.json \
+  --engine before=/absolute/baseline/qjs --engine after=/absolute/changed/qjs \
+  --repeat 5 --cpu 2 --output target/published-fixed
+```
+
+Omitting `--case` covers all 58 manifest entries. Repeated `--case` options are
+for step-level experiments only. All times include the whole process; these are
+not adaptive harness scores. Preserve build receipts separately and do not run
+benchmarks alongside builds, tests or architecture canaries.

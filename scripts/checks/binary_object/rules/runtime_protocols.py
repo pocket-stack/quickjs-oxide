@@ -38,6 +38,17 @@ def check(ctx):
         return stage3b_items[key]
     ctx.stage3b_function = stage3b_function
 
+    for relative, expected in (
+        ("src/engine/vm/protocol.rs", "0a19ef66059453bfa14d9d92a9b617f5d94e8dc1f40044a582dcbfc4db8a8026"),
+        ("src/engine/vm/host_bridge.rs", "1552130a60bd6192571af5b09a7b9a4b1387acc1dffd2bb9e946546205e11c28"),
+    ):
+        ctx.require_normalized_code_sha256(
+            "published-static-target",
+            "Static target reuse must retain the general and synthetic host checks",
+            ctx.stage3b_function(relative, "static_branch_target", "published-static-target"),
+            expected,
+        )
+
     def stage3j_source_function(relative: str, name: str, diagnostic: str) -> str:
         source = ctx.read_source(relative)
         code = ctx.rust_code_only(source)
@@ -346,7 +357,7 @@ def check(ctx):
             "stage3c-tail-vm",
             "the execute_inner prefix through call-family routing must not intercept, alias, or remove tail completion",
             normalized_execute_inner[:call_route_end],
-            "e425f4d42ef9a3a7b6552994a6f7da31009e70451f5b48e3312581929a54e54c",
+            "35d38d833ed12acd0dfd6de284398e2df696ba0abb7f0046ebe47fdfa6c39210",
         )
 
     capability_relative = "src/engine/code/binary_object/function_translate/capability.rs"
@@ -554,7 +565,7 @@ def check(ctx):
             "read_trusted_ordinary_function_in_realm",
             "stage3e-read-only-publication",
         ),
-        "7bce6b697724b3bf4e6cd3b4747887d7e3a4a3376bf940907650d44ad7261f4e",
+        "6528a8aefe09efba3d732e33a6de6a6d8daae0de67cb62fe3d5f68b97fe9d745",
     )
 
     if normalized_stack_effect.count("| Self::Throw => (1, 0),") != 1:
@@ -756,14 +767,14 @@ def check(ctx):
         "stage3d-throw-critical-route",
         "execute_inner must carry raw48 from fetch through the hot dispatcher without a guarded completion alias",
         execute_inner_item,
-        "fa323bad632c685546d3efadbe860a77f540b1066559744ea23c333958036358",
+        "cc82cb84b962afef73b2141002623e6802c0c047a008eea157c178cfbeb9da3a",
     )
 
     ctx.require_normalized_code_sha256(
         "stage3d-throw-critical-route",
         "execute_hot_instruction must enter its unique match before handling Throw and retain the exact dispatch body",
         execute_hot_item,
-        "2fab69bd24de64e6ab0149f4c267b8312e1cebecb6064c4f8c81a44a74156304",
+        "2b6f0378a1ab5e2a7fec880e88ee7ad700f6cdb9872828d0ed86ab164ec6dde0",
     )
 
     execute_published_item = ctx.stage3b_function(
@@ -774,10 +785,17 @@ def check(ctx):
         "stage3d-throw-critical-route",
         "execute_published must return the activation's Completion directly without post-processing Throw",
         execute_published_item,
-        "b2743fde8341d22bb2592d3810e10030ecce6f812befe9be150a80ccd982a0a7",
+        "6704a2e5ab9c5cdd3086ab43544dd900ffa22497bc2d5da9ab2c7842eee6bb01",
     )
 
     runtime_vm_host_relative = "src/engine/vm/host_bridge.rs"
+    ctx.require_normalized_code_sha256(
+        "published-frame-owner",
+        "Activation code and metadata must come from the same sealed host snapshot",
+        ctx.stage3b_function(runtime_vm_host_relative, "new_activation", "published-frame-owner"),
+        "88806b84077ca2ffc8bb4691e5dc30e344f95241ae30a1ead4ed3092df0e7022",
+    )
+
 
     execute_bytecode_callable_item = ctx.stage3b_function(
         runtime_vm_host_relative,

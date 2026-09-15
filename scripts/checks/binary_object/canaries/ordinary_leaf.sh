@@ -8,8 +8,8 @@ expect_rewrite_rejected ordinary-consumer-op-remap ordinary-leaf-consumer-loweri
     'OrdinaryLeafBinaryOp::Add => Instruction::Sub,'
 expect_rewrite_rejected ordinary-consumer-verifier-dead-branch ordinary-leaf-consumer-publication \
     src/engine/code/binary_object_publish.rs \
-    $'        super::bytecode_publish::verify_unlinked_ordinary_leaf(&function)\n            .map_err(map_ordinary_leaf_verification_error)?;' \
-    $'        if false {\n            super::bytecode_publish::verify_unlinked_ordinary_leaf(&function)\n                .map_err(map_ordinary_leaf_verification_error)?;\n        }'
+    $'        let function = super::bytecode_publish::VerifiedFunction::ordinary_leaf(function)\n            .map_err(map_ordinary_leaf_verification_error)?;' \
+    $'        if false {\n            let function = super::bytecode_publish::VerifiedFunction::ordinary_leaf(function)\n                .map_err(map_ordinary_leaf_verification_error)?;\n        }'
 expect_rewrite_rejected ordinary-consumer-generic-publisher ordinary-leaf-consumer-publication \
     src/engine/code/binary_object_publish.rs \
     'self.publish_verified_unlinked_function(realm, function)?' \
@@ -107,3 +107,35 @@ expect_rewrite_rejected scalar-unary-name-widening scalar-unary-operation-shape 
     src/engine/code/binary_object/scalar_script.rs \
     '            FunctionUnaryOp::TypeOf => Self::TypeOf,' \
     $'            FunctionUnaryOp::TypeOf => Self::TypeOf,\n            FunctionUnaryOp::Neg => Self::TypeOf,'
+
+expect_full_rewrite_rejected published-function-skip-verifier published-function-verification \
+    src/engine/code/bytecode_publish/verified.rs \
+    '        verify_unlinked_ordinary_leaf(&function)?;' \
+    '        // skipped by mutation'
+expect_full_rewrite_rejected published-function-public-draft published-function-verification \
+    src/engine/code/bytecode_publish/verified.rs \
+    'pub(crate) struct VerifiedFunction(UnlinkedFunction);' \
+    'pub(crate) struct VerifiedFunction(pub(crate) UnlinkedFunction);'
+
+expect_full_rewrite_rejected published-executable-wrong-runtime published-executable-owner \
+    src/engine/code/executable.rs \
+    '        if !function.belongs_to(self) {' \
+    '        if false {'
+expect_full_rewrite_rejected published-executable-mutable-layout published-executable-owner \
+    src/engine/code/executable.rs \
+    '    data: PublishedFunctionData,' \
+    '    pub(crate) data: PublishedFunctionData,'
+
+expect_full_rewrite_rejected published-frame-code-substitution published-frame-owner \
+    src/engine/vm/host_bridge.rs \
+    '        Ok((self.executable.code.clone(), activation))' \
+    '        Ok((Rc::from([]), activation))'
+
+expect_full_rewrite_rejected published-branch-general-check published-static-target \
+    src/engine/vm/protocol.rs \
+    '        super::activation::checked_target(target, code_len)' \
+    '        Ok(target as usize)'
+expect_full_rewrite_rejected published-branch-fixture-check published-static-target \
+    src/engine/vm/host_bridge.rs \
+    '            return super::activation::checked_target(target, _code_len);' \
+    '            return Ok(target as usize);'

@@ -28,18 +28,21 @@ pub(crate) struct DirectEvalInvocation {
     pub caller_strict: bool,
 }
 
-pub(crate) struct CallInput<'a> {
-    pub code: &'a [Instruction],
-    pub metadata: FunctionMetadata,
-    pub caller_realm: ContextId,
-    pub callee_realm: ContextId,
-    pub current_function: ObjectRef,
+pub(crate) struct CallInput {
     pub this_value: Value,
     pub new_target: Value,
     pub callee_global: ObjectRef,
 }
 
 pub(crate) trait VmHost {
+    /// Resolve an immediate IfTrue/IfFalse/Goto operand. General hosts
+    /// validate targets here; a host paired with published code may reuse its
+    /// verifier's bound. Dynamic return/unwind/resume PCs never use this hook.
+    #[inline]
+    fn static_branch_target(&self, target: u32, code_len: usize) -> Result<usize, Error> {
+        super::activation::checked_target(target, code_len)
+    }
+
     fn update_active_bytecode_pc(&mut self, pc: BytecodePc) -> Result<(), Error>;
     /// Attach a QuickJS-style backtrace before the active frame can unwind.
     /// Detached execution has no realm heap and therefore implements this as
@@ -617,68 +620,22 @@ impl Vm {
     /// frame, regressing the proven two-MiB recursion boundary.
     pub(crate) fn execute_published(
         &mut self,
-        input: CallInput<'_>,
-        host: &mut impl VmHost,
+        input: CallInput,
+        host: &mut host_bridge::RuntimeVmHost,
     ) -> Result<Completion, Error> {
-        let CallInput {
-            code,
-            metadata,
-            caller_realm,
-            callee_realm,
-            current_function,
-            this_value,
-            new_target,
-            callee_global,
-        } = input;
-        if host.closure_count() != usize::from(metadata.closure_count) {
-            return Err(Error::internal(
-                "function object closure slot count does not match bytecode metadata",
-            ));
-        }
-        VmActivation::new_in_realm(
-            metadata,
-            caller_realm,
-            callee_realm,
-            current_function,
-            this_value,
-            new_target,
-            callee_global,
-        )
-        .execute(code, host)
+        let (code, activation) = host.new_activation(input)?;
+        activation.execute(&code, host)
     }
 
     /// Start an immutable published bytecode activation and allow it to
     /// transfer ownership at a generator or async-function suspension point.
     pub(crate) fn start_published(
         &mut self,
-        input: CallInput<'_>,
-        host: &mut impl VmHost,
+        input: CallInput,
+        host: &mut host_bridge::RuntimeVmHost,
     ) -> Result<VmExit, Error> {
-        let CallInput {
-            code,
-            metadata,
-            caller_realm,
-            callee_realm,
-            current_function,
-            this_value,
-            new_target,
-            callee_global,
-        } = input;
-        if host.closure_count() != usize::from(metadata.closure_count) {
-            return Err(Error::internal(
-                "function object closure slot count does not match bytecode metadata",
-            ));
-        }
-        VmActivation::new_in_realm(
-            metadata,
-            caller_realm,
-            callee_realm,
-            current_function,
-            this_value,
-            new_target,
-            callee_global,
-        )
-        .run(code, host)
+        let (code, activation) = host.new_activation(input)?;
+        activation.run(&code, host)
     }
 
     /// Continue past a generator's hidden initial-yield barrier. No resume

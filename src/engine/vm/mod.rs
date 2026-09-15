@@ -63,3 +63,6 @@ mod dispatch;
 mod frame_execution;
 mod numeric_execution;
 mod unwind;
+
+#[cfg(test)]
+mod published_execution_tests;

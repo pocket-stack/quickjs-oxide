@@ -17,3 +17,5 @@ pub(crate) mod dynamic_import_policy;
 pub(crate) mod runtime;
 
 pub(crate) mod dynamic_source;
+
+mod executable;

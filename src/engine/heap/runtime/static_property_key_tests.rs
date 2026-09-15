@@ -125,11 +125,13 @@ fn static_property_keys_are_runtime_local_and_failed_publication_rolls_back() {
         .snapshot_function_bytecode(&a)
         .unwrap()
         .property_key_atoms
+        .as_ref()
         .unwrap()[0];
     let b_atom = second
         .snapshot_function_bytecode(&b)
         .unwrap()
         .property_key_atoms
+        .as_ref()
         .unwrap()[0];
     assert_ne!(a_atom, b_atom);
     assert!(first_context.execute(&b).is_err());
@@ -171,6 +173,7 @@ fn static_property_keys_preserve_numeric_spellings_and_exact_utf16() {
             .snapshot_function_bytecode(&bytecode)
             .unwrap()
             .property_key_atoms
+            .as_ref()
             .unwrap()[0];
         assert_eq!(
             runtime.0.state.borrow().atoms.to_js_string(atom).unwrap(),
@@ -184,6 +187,7 @@ fn static_property_keys_preserve_numeric_spellings_and_exact_utf16() {
             .snapshot_function_bytecode(&plain)
             .unwrap()
             .property_key_atoms
+            .as_ref()
             .is_none()
     );
 }

@@ -1896,7 +1896,7 @@ impl Runtime {
         module: UnlinkedModule,
         import_meta: Option<&ObjectRef>,
     ) -> Result<RawModuleRef, RuntimeError> {
-        bytecode_publish::verify_unlinked_module_tree(&module)?;
+        let parts = bytecode_publish::VerifiedFunction::module(module)?;
 
         let parsing_record = self.module_record(parsing_module)?;
         if parsing_module.cache != realm
@@ -1907,7 +1907,6 @@ impl Runtime {
             ));
         }
 
-        let parts = module.into_parts();
         let function = self.publish_verified_unlinked_function(realm, parts.function)?;
         let exports = parts
             .exports

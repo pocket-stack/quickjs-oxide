@@ -58,6 +58,7 @@ impl RuntimeVmHost {
             }
             WithObjectSource::Closure(index) => {
                 let descriptor = self
+                    .executable
                     .closure_variables
                     .get(usize::from(index))
                     .copied()
@@ -227,6 +228,7 @@ impl RuntimeVmHost {
     /// bytecode was published, and that live lexical VarRef must win.
     pub(crate) fn global_reference_impl(&mut self, index: u16) -> Result<Completion, Error> {
         let descriptor = self
+            .executable
             .closure_variables
             .get(usize::from(index))
             .copied()
@@ -434,12 +436,12 @@ mod tests {
         names: &[&'static str],
     ) -> RuntimeVmHost {
         let mut host = RuntimeVmHost::empty_for_test(runtime, realm);
-        host.constants = names
+        host.executable.constants = names
             .iter()
             .map(|name| BytecodeConstant::Value(RawValue::String(JsString::from_static(name))))
             .collect::<Vec<_>>()
             .into();
-        host.local_definitions = Rc::from([VariableDefinition {
+        host.executable.local_definitions = Rc::from([VariableDefinition {
             name: Some(Atom::from_raw(71)),
             is_lexical: false,
             is_const: false,
@@ -459,10 +461,10 @@ mod tests {
         let key = runtime.intern_property_key(name).unwrap();
         let root = runtime.resolve_global_var(realm, key.atom()).unwrap();
         let mut host = RuntimeVmHost::empty_for_test(runtime.clone(), realm);
-        host.constants = Rc::from([BytecodeConstant::Value(RawValue::String(
+        host.executable.constants = Rc::from([BytecodeConstant::Value(RawValue::String(
             JsString::from_static(name),
         ))]);
-        host.closure_variables = Rc::from([ClosureVariable {
+        host.executable.closure_variables = Rc::from([ClosureVariable {
             source: ClosureSource::Global,
             name: ClosureVariableName::Atom(key.atom()),
             is_lexical: false,
@@ -555,7 +557,7 @@ mod tests {
             ClosureVariableKind::EvalVariableObject,
             &names,
         );
-        eval_host.eval_variable_object_local = Some(0);
+        eval_host.executable.metadata.eval_variable_object_local = Some(0);
         let source = DynamicEnvironmentSource::Eval(EvalVariableSource::Local(0));
         assert_eq!(
             eval_host.has_dynamic_binding_impl(source, 3).unwrap(),

@@ -8,6 +8,21 @@ from ..evidence import publication as evidence
 
 
 def check(ctx):
+    ctx.require_normalized_code_sha256(
+        "published-executable-owner",
+        "Execution snapshots must pair immutable metadata with their owning Runtime root",
+        ctx.rust_code_only(ctx.read_source("src/engine/code/executable.rs")),
+        "d1a410c0ca1911d654a48ba91c15a4130e179e8823fe41024b02a5e5078bea07",
+    )
+    # The owning wrapper is the only path from a draft to verified publication.
+    # Authenticate constructors too: checking a consumer call alone would allow
+    # the wrapper to stop invoking its role-specific verifier.
+    ctx.require_normalized_code_sha256(
+        "published-function-verification",
+        "VerifiedFunction must own its exact draft and authenticate each publication role",
+        ctx.rust_code_only(ctx.read_source("src/engine/code/bytecode_publish/verified.rs")),
+        "c1058806ecf500e426b76862985341a2e1e50d0d9a1127b4724e64fd3946197c",
+    )
     if ctx.consumer_exists:
         consumer_production_code = ctx.consumer_code.split("#[cfg(test)]", 1)[0]
         consumer_top_level_item_pattern = re.compile(
@@ -217,7 +232,7 @@ def check(ctx):
             re.compile(r"\bdraft[ \t\n]*\.[ \t\n]*into_parts[ \t\n]*\("),
             re.compile(r"\bUnlinkedFunction[ \t\n]*::[ \t\n]*new[ \t\n]*\("),
             re.compile(
-                r"\bbytecode_publish[ \t\n]*::[ \t\n]*verify_unlinked_ordinary_leaf"
+                r"\bbytecode_publish[ \t\n]*::[ \t\n]*VerifiedFunction[ \t\n]*::[ \t\n]*ordinary_leaf"
                 r"[ \t\n]*\("
             ),
             re.compile(

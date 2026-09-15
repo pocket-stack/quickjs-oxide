@@ -161,7 +161,7 @@ impl Runtime {
             Vec::new(),
         );
 
-        super::bytecode_publish::verify_unlinked_ordinary_leaf(&function)
+        let function = super::bytecode_publish::VerifiedFunction::ordinary_leaf(function)
             .map_err(map_ordinary_leaf_verification_error)?;
         let bytecode = self.publish_verified_unlinked_function(realm, function)?;
         self.new_bytecode_closure(realm, &bytecode)

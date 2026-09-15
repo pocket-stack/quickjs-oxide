@@ -13,7 +13,7 @@ use crate::engine::code::function::metadata::{
     ClosureSource, ClosureVariableKind, ClosureVariableName,
 };
 use crate::engine::code::rooted::FunctionBytecodeRef;
-use crate::engine::code::runtime::{Compilation, PublishedFunctionSnapshot};
+use crate::engine::code::runtime::Compilation;
 use crate::engine::compiler::DEFAULT_EVAL_FILENAME;
 use crate::engine::heap::roots::VarRefRoot;
 

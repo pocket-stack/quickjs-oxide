@@ -4,6 +4,8 @@ use crate::engine::code::function::{UnlinkedVariableDefinition, metadata::EvalEn
 
 mod module_initializer_flow;
 mod private_elements;
+mod verified;
+pub(crate) use verified::VerifiedFunction;
 
 use crate::engine::api::error::Error;
 use crate::engine::api::runtime_error::RuntimeError;

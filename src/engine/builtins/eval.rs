@@ -15,18 +15,7 @@ impl Runtime {
         function: UnlinkedFunction,
         expected: &EvalCompileContext,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        bytecode_publish::verify_unlinked_eval_tree_with_profile_and_arguments(
-            &function,
-            expected.kind,
-            expected.caller_strict,
-            &expected.bindings,
-            &expected.caller_profile,
-            bytecode_publish::EvalPublicationCapabilities {
-                super_call_allowed: expected.super_call_allowed,
-                super_allowed: expected.super_allowed,
-                arguments_forbidden: expected.arguments_forbidden,
-            },
-        )?;
+        let function = bytecode_publish::VerifiedFunction::eval(function, expected)?;
         self.publish_verified_unlinked_function(realm, function)
     }
 
@@ -140,7 +129,7 @@ impl Runtime {
         })?;
         let (bindings, caller_profile) = self.direct_eval_root_bindings(realm, &environment)?;
         let arguments_forbidden = self
-            .snapshot_function_bytecode(&environment.caller_bytecode)?
+            .snapshot_function_bytecode(environment.descriptor.owner())?
             .metadata
             .arguments_forbidden;
         let function = match self.compile_eval_in_realm(
@@ -164,7 +153,11 @@ impl Runtime {
         // attaches it to caller VarRefs. Preserve that error/GC ordering by
         // invoking the host's capture step only after successful compilation.
         let environment = materialize(environment).map_err(RuntimeError::Engine)?;
-        if environment.index != environment_index || environment.descriptor != expected_descriptor {
+        if environment.index != environment_index
+            || !environment
+                .descriptor
+                .same_environment(&expected_descriptor)
+        {
             return Err(RuntimeError::Invariant(
                 "materialized eval environment disagrees with its prepared descriptor",
             ));
@@ -215,11 +208,11 @@ impl Runtime {
         realm: ContextId,
         environment: &crate::engine::vm::host_bridge::PreparedEvalEnvironment,
     ) -> Result<(Vec<EvalRootBinding<JsString>>, EvalCallerProfile), RuntimeError> {
-        if !environment.caller_bytecode.belongs_to(self) {
+        if !environment.descriptor.owner().belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("direct eval caller bytecode"));
         }
         let caller_realm = self
-            .snapshot_function_bytecode(&environment.caller_bytecode)?
+            .snapshot_function_bytecode(environment.descriptor.owner())?
             .realm;
         if caller_realm != realm {
             return Err(RuntimeError::Invariant(
@@ -501,13 +494,14 @@ impl Runtime {
         // A restricted host must reject newly compiled eval bytecode before
         // declaration preflight or binding creation can mutate the realm.
         self.ensure_dynamic_import_bytecode_tree_authorized(function)?;
-        let PublishedFunctionSnapshot {
+        let snapshot = self.snapshot_function_bytecode(function)?;
+        let crate::engine::code::runtime::PublishedFunctionData {
             closure_variables,
             metadata,
             realm: function_realm,
             ..
-        } = self.snapshot_function_bytecode(function)?;
-        if function_realm != realm || metadata.eval_kind != kind {
+        } = &*snapshot;
+        if *function_realm != realm || metadata.eval_kind != kind {
             return Err(RuntimeError::Invariant(
                 "published eval bytecode disagrees with its invocation realm or kind",
             ));

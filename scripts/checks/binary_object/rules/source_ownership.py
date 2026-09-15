@@ -93,11 +93,11 @@ def check(ctx):
                     + ctx.location(ctx.relative, ctx.source, ctx.match.start()),
                 )
 
-        if ctx.relative not in {ctx.bytecode_publish_relative, ctx.consumer_relative}:
+        if ctx.relative not in {ctx.bytecode_publish_relative, "src/engine/code/bytecode_publish/verified.rs"}:
             for ctx.match in re.finditer(r"\bverify_unlinked_ordinary_leaf\b", ctx.code):
                 ctx.fail(
                     "ordinary-leaf-verifier-consumer-set",
-                    "only binary_object_publish.rs may call the dedicated ordinary-leaf verifier; found "
+                    "only the owning VerifiedFunction constructor may call the dedicated ordinary-leaf verifier; found "
                     + ctx.location(ctx.relative, ctx.source, ctx.match.start()),
                 )
 

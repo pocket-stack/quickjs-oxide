@@ -188,9 +188,9 @@ pub struct UnlinkedModuleTables {
 }
 
 /// Owned pieces crossing the one-way module publication boundary.
-pub struct UnlinkedModuleParts {
+pub struct UnlinkedModuleParts<F = UnlinkedFunction> {
     pub name: JsString,
-    pub function: UnlinkedFunction,
+    pub function: F,
     pub has_top_level_await: bool,
     pub declaration_order: Box<[u16]>,
     pub link_initializers: Box<[ModuleLinkInitializer]>,

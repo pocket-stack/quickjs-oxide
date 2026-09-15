@@ -145,128 +145,250 @@ impl VmActivation {
                 .checked_add(1)
                 .ok_or_else(|| Error::internal("program counter overflow"))?;
 
-            let suspension = match instruction {
-                Instruction::InitialYield => Some(VmSuspendKind::Initial),
-                Instruction::Yield => Some(VmSuspendKind::Yield),
-                Instruction::YieldStar => Some(VmSuspendKind::YieldStar),
-                Instruction::AsyncYieldStar => Some(VmSuspendKind::AsyncYieldStar),
-                Instruction::Await => Some(VmSuspendKind::Await),
-                _ => None,
-            };
-            if let Some(kind) = suspension {
-                return Ok(InterpreterExit::Suspend(kind));
-            }
-
-            if matches!(
-                instruction,
+            // Frame-local operations finish here without a second opcode match.
+            // Larger semantic handlers remain separate to bound recursive
+            // native frames. Every route publishes PC before executing.
+            let completion = match instruction {
+                Instruction::PushI32(value) => {
+                    self.stack.push(Value::Int(*value));
+                    continue;
+                }
+                Instruction::Undefined => {
+                    self.stack.push(Value::Undefined);
+                    continue;
+                }
+                Instruction::Null => {
+                    self.stack.push(Value::Null);
+                    continue;
+                }
+                Instruction::PushFalse => {
+                    self.stack.push(Value::Bool(false));
+                    continue;
+                }
+                Instruction::PushTrue => {
+                    self.stack.push(Value::Bool(true));
+                    continue;
+                }
+                Instruction::GetLocal(index) => {
+                    self.stack.push(host.get_local(*index)?);
+                    continue;
+                }
+                Instruction::PutLocal(index) => {
+                    let value = self.pop()?;
+                    host.put_local(*index, value)?;
+                    continue;
+                }
+                Instruction::SetLocal(index) => {
+                    let value = self
+                        .stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| Error::internal("set local on an empty stack"))?;
+                    host.put_local(*index, value)?;
+                    continue;
+                }
+                Instruction::GetLocalCheck(index) => {
+                    self.stack.push(host.get_local_checked(*index)?);
+                    continue;
+                }
+                Instruction::PutLocalCheck(index) => {
+                    let value = self.pop()?;
+                    host.put_local_checked(*index, value)?;
+                    continue;
+                }
+                Instruction::SetLocalCheck(index) => {
+                    let value =
+                        self.stack.last().cloned().ok_or_else(|| {
+                            Error::internal("set lexical local on an empty stack")
+                        })?;
+                    host.put_local_checked(*index, value)?;
+                    continue;
+                }
+                Instruction::GetArg(index) => {
+                    self.stack.push(host.get_argument(*index)?);
+                    continue;
+                }
+                Instruction::PutArg(index) => {
+                    let value = self.pop()?;
+                    host.put_argument(*index, value)?;
+                    continue;
+                }
+                Instruction::SetArg(index) => {
+                    let value = self
+                        .stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| Error::internal("set argument on an empty stack"))?;
+                    host.put_argument(*index, value)?;
+                    continue;
+                }
+                Instruction::GetVarRef(index) => {
+                    self.stack.push(host.get_var_ref(*index)?);
+                    continue;
+                }
+                Instruction::PutVarRef(index) => {
+                    let value = self.pop()?;
+                    host.put_var_ref(*index, value)?;
+                    continue;
+                }
+                Instruction::SetVarRef(index) => {
+                    let value = self
+                        .stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| Error::internal("set VarRef on an empty stack"))?;
+                    host.put_var_ref(*index, value)?;
+                    continue;
+                }
+                Instruction::GetVarRefCheck(index) => {
+                    self.stack.push(host.get_var_ref_checked(*index)?);
+                    continue;
+                }
+                Instruction::PutVarRefCheck(index) => {
+                    let value = self.pop()?;
+                    host.put_var_ref_checked(*index, value)?;
+                    continue;
+                }
+                Instruction::Drop => {
+                    self.pop()?;
+                    continue;
+                }
+                Instruction::Dup => {
+                    let value = self
+                        .stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| Error::internal("dup on an empty stack"))?;
+                    self.stack.push(value);
+                    continue;
+                }
+                Instruction::Nip => {
+                    let (_, value) = self.pop_pair()?;
+                    self.stack.push(value);
+                    continue;
+                }
+                Instruction::Swap => {
+                    let (left, right) = self.pop_pair()?;
+                    self.stack.push(right);
+                    self.stack.push(left);
+                    continue;
+                }
+                Instruction::IfFalse(target) => {
+                    let value = self.pop()?;
+                    if !host.to_boolean(&value)? {
+                        self.pc = host.static_branch_target(*target, code.len())?;
+                    }
+                    continue;
+                }
+                Instruction::IfTrue(target) => {
+                    let value = self.pop()?;
+                    if host.to_boolean(&value)? {
+                        self.pc = host.static_branch_target(*target, code.len())?;
+                    }
+                    continue;
+                }
+                Instruction::Goto(target) => {
+                    self.pc = host.static_branch_target(*target, code.len())?;
+                    continue;
+                }
+                Instruction::InitialYield => {
+                    return Ok(InterpreterExit::Suspend(VmSuspendKind::Initial));
+                }
+                Instruction::Yield => return Ok(InterpreterExit::Suspend(VmSuspendKind::Yield)),
+                Instruction::YieldStar => {
+                    return Ok(InterpreterExit::Suspend(VmSuspendKind::YieldStar));
+                }
+                Instruction::AsyncYieldStar => {
+                    return Ok(InterpreterExit::Suspend(VmSuspendKind::AsyncYieldStar));
+                }
+                Instruction::Await => return Ok(InterpreterExit::Suspend(VmSuspendKind::Await)),
                 Instruction::Arguments(_)
-                    | Instruction::Rest(_)
-                    | Instruction::VariableEnvironment
-                    | Instruction::HasEvalVariable { .. }
-                    | Instruction::GetEvalVariable { .. }
-                    | Instruction::PutEvalVariable { .. }
-                    | Instruction::DeleteEvalVariable { .. }
-                    | Instruction::DefineEvalVariable { .. }
-                    | Instruction::ToObject
-                    | Instruction::HasDynamicBinding { .. }
-                    | Instruction::GetDynamicBinding { .. }
-                    | Instruction::PutDynamicBinding { .. }
-                    | Instruction::DeleteDynamicBinding { .. }
-                    | Instruction::DynamicEnvironmentObject(_)
-                    | Instruction::GlobalReference(_)
-                    | Instruction::GetRefValue(_)
-                    | Instruction::GetRefValueUndef(_)
-                    | Instruction::PutRefValue(_)
-                    | Instruction::Object
-                    | Instruction::RegExp(_)
-                    | Instruction::SetNameComputed
-                    | Instruction::DefineMethod { .. }
-                    | Instruction::DefineMethodComputed { .. }
-                    | Instruction::DefineClass { .. }
-                    | Instruction::SetProto
-                    | Instruction::CopyDataProperties
-                    | Instruction::CopyDataPropertiesExcluded { .. }
-                    | Instruction::IteratorStart
-                    | Instruction::AsyncIteratorStart
-                    | Instruction::IteratorNext
-                    | Instruction::IteratorCall(_)
-                    | Instruction::ForAwaitOfStart
-                    | Instruction::ForAwaitOfNext
-                    | Instruction::IteratorGetValueDone
-                    | Instruction::ForInStart
-                    | Instruction::ForInNext
-            ) {
-                if let Some(completion) = self.execute_cold_instruction(instruction, host)? {
-                    return Ok(InterpreterExit::Complete(completion));
-                }
-                continue;
-            }
-
-            if matches!(
-                instruction,
+                | Instruction::Rest(_)
+                | Instruction::VariableEnvironment
+                | Instruction::HasEvalVariable { .. }
+                | Instruction::GetEvalVariable { .. }
+                | Instruction::PutEvalVariable { .. }
+                | Instruction::DeleteEvalVariable { .. }
+                | Instruction::DefineEvalVariable { .. }
+                | Instruction::ToObject
+                | Instruction::HasDynamicBinding { .. }
+                | Instruction::GetDynamicBinding { .. }
+                | Instruction::PutDynamicBinding { .. }
+                | Instruction::DeleteDynamicBinding { .. }
+                | Instruction::DynamicEnvironmentObject(_)
+                | Instruction::GlobalReference(_)
+                | Instruction::GetRefValue(_)
+                | Instruction::GetRefValueUndef(_)
+                | Instruction::PutRefValue(_)
+                | Instruction::Object
+                | Instruction::RegExp(_)
+                | Instruction::SetNameComputed
+                | Instruction::DefineMethod { .. }
+                | Instruction::DefineMethodComputed { .. }
+                | Instruction::DefineClass { .. }
+                | Instruction::SetProto
+                | Instruction::CopyDataProperties
+                | Instruction::CopyDataPropertiesExcluded { .. }
+                | Instruction::IteratorStart
+                | Instruction::AsyncIteratorStart
+                | Instruction::IteratorNext
+                | Instruction::IteratorCall(_)
+                | Instruction::ForAwaitOfStart
+                | Instruction::ForAwaitOfNext
+                | Instruction::IteratorGetValueDone
+                | Instruction::ForInStart
+                | Instruction::ForInNext => self.execute_cold_instruction(instruction, host)?,
                 Instruction::Import
-                    | Instruction::Call(_)
-                    | Instruction::TailCall(_)
-                    | Instruction::Eval { .. }
-                    | Instruction::CallMethod(_)
-                    | Instruction::TailCallMethod(_)
-                    | Instruction::Construct(_)
-                    | Instruction::ConstructSuper(_)
-                    | Instruction::InitDerivedConstructor
-                    | Instruction::Apply(_)
-                    | Instruction::ApplySuper
-                    | Instruction::ApplyEval { .. }
-            ) {
-                if let Some(completion) = self.execute_call_instruction(instruction, host)? {
-                    return Ok(InterpreterExit::Complete(completion));
+                | Instruction::Call(_)
+                | Instruction::TailCall(_)
+                | Instruction::Eval { .. }
+                | Instruction::CallMethod(_)
+                | Instruction::TailCallMethod(_)
+                | Instruction::Construct(_)
+                | Instruction::ConstructSuper(_)
+                | Instruction::InitDerivedConstructor
+                | Instruction::Apply(_)
+                | Instruction::ApplySuper
+                | Instruction::ApplyEval { .. } => {
+                    self.execute_call_instruction(instruction, host)?
                 }
-                continue;
-            }
-
-            if matches!(
-                instruction,
                 Instruction::Neg
-                    | Instruction::Plus
-                    | Instruction::Inc
-                    | Instruction::Dec
-                    | Instruction::PostInc
-                    | Instruction::PostDec
-                    | Instruction::BitNot
-                    | Instruction::Not
-                    | Instruction::TypeOf
-                    | Instruction::IsUndefinedOrNull
-                    | Instruction::IsUndefined
-                    | Instruction::IsNull
-                    | Instruction::TypeOfIsUndefined
-                    | Instruction::TypeOfIsFunction
-                    | Instruction::Add
-                    | Instruction::Sub
-                    | Instruction::Mul
-                    | Instruction::Div
-                    | Instruction::Mod
-                    | Instruction::Pow
-                    | Instruction::Shl
-                    | Instruction::Sar
-                    | Instruction::Shr
-                    | Instruction::BitAnd
-                    | Instruction::BitXor
-                    | Instruction::BitOr
-                    | Instruction::Eq
-                    | Instruction::StrictEq
-                    | Instruction::Neq
-                    | Instruction::StrictNeq
-                    | Instruction::Lt
-                    | Instruction::Lte
-                    | Instruction::Gt
-                    | Instruction::Gte
-            ) {
-                if let Some(completion) = self.execute_numeric_instruction(instruction, host)? {
-                    return Ok(InterpreterExit::Complete(completion));
-                }
-                continue;
-            }
-
-            if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {
+                | Instruction::Plus
+                | Instruction::Inc
+                | Instruction::Dec
+                | Instruction::PostInc
+                | Instruction::PostDec
+                | Instruction::BitNot
+                | Instruction::Not
+                | Instruction::TypeOf
+                | Instruction::IsUndefinedOrNull
+                | Instruction::IsUndefined
+                | Instruction::IsNull
+                | Instruction::TypeOfIsUndefined
+                | Instruction::TypeOfIsFunction
+                | Instruction::Add
+                | Instruction::Sub
+                | Instruction::Mul
+                | Instruction::Div
+                | Instruction::Mod
+                | Instruction::Pow
+                | Instruction::Shl
+                | Instruction::Sar
+                | Instruction::Shr
+                | Instruction::BitAnd
+                | Instruction::BitXor
+                | Instruction::BitOr
+                | Instruction::Eq
+                | Instruction::StrictEq
+                | Instruction::Neq
+                | Instruction::StrictNeq
+                | Instruction::Lt
+                | Instruction::Lte
+                | Instruction::Gt
+                | Instruction::Gte => self.execute_numeric_instruction(instruction, host)?,
+                _ => self.execute_hot_instruction(code, instruction, host)?,
+            };
+            if let Some(completion) = completion {
                 return Ok(InterpreterExit::Complete(completion));
             }
         }
@@ -279,11 +401,9 @@ impl VmActivation {
     }
 
     pub(in crate::engine::vm) fn clone_at_depth(&self, depth: u8) -> Result<Value, Error> {
-        let index = self
-            .stack
-            .len()
-            .checked_sub(usize::from(depth) + 1)
-            .ok_or_else(|| Error::internal("bytecode stack depth operand is out of bounds"))?;
+        // A too-large depth wraps above len, so the single checked lookup
+        // rejects it. Valid depths select the original tail-relative slot.
+        let index = self.stack.len().wrapping_sub(usize::from(depth) + 1);
         self.stack
             .get(index)
             .cloned()
@@ -362,8 +482,18 @@ impl VmActivation {
     }
 
     pub(in crate::engine::vm) fn pop_pair(&mut self) -> Result<(Value, Value), Error> {
-        let right = self.pop()?;
-        let left = self.pop()?;
+        if self.stack.len() < 2 {
+            // Match sequential-pop failure: consume a lone right operand,
+            // construct the error, then release the operand.
+            let right = self.pop()?;
+            let error = Error::internal("bytecode stack underflow");
+            drop(right);
+            return Err(error);
+        }
+        // The shared bound proves both pops. Neither move can invoke user
+        // code or change the stack except by removing its own operand.
+        let right = self.stack.pop().expect("two operands were checked");
+        let left = self.stack.pop().expect("one checked operand remains");
         Ok((left, right))
     }
 }

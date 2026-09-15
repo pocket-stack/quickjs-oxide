@@ -62,6 +62,8 @@ Neither is a general untrusted-bytecode loader or Feature Parity claim.
 - [Current implementation status](docs/status.md)
 - [Profiling and external benchmarks](docs/profiling.md)
 - [Data structure improvement plan](docs/data-structure-plan.md)
+- [Published bytecode and VM execution plan](docs/published-execution-plan.md)
+- [Published execution contracts](docs/published-execution-contracts.md)
 - [Pinned Test262 baseline and metric definitions](docs/test262.md)
 - [Parity acceptance contract](docs/parity.md)
 - [Playground build and trust boundary](docs/playground.md)

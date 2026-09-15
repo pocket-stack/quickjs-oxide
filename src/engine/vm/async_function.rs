@@ -130,7 +130,7 @@ impl Runtime {
         &self,
         caller_realm: ContextId,
         mut host: RuntimeVmHost,
-        input: CallInput<'_>,
+        input: CallInput,
         active_frame: ActiveFrameGuard,
     ) -> Result<Completion, RuntimeError> {
         let capability = self.new_default_promise_capability(caller_realm)?;

@@ -823,6 +823,35 @@ impl VmActivation {
     ) -> Result<Option<Completion>, Error> {
         match instruction {
             Instruction::Nop => {}
+            Instruction::PushI32(_)
+            | Instruction::Undefined
+            | Instruction::Null
+            | Instruction::PushFalse
+            | Instruction::PushTrue
+            | Instruction::GetLocal(_)
+            | Instruction::PutLocal(_)
+            | Instruction::SetLocal(_)
+            | Instruction::GetLocalCheck(_)
+            | Instruction::PutLocalCheck(_)
+            | Instruction::SetLocalCheck(_)
+            | Instruction::GetArg(_)
+            | Instruction::PutArg(_)
+            | Instruction::SetArg(_)
+            | Instruction::GetVarRef(_)
+            | Instruction::PutVarRef(_)
+            | Instruction::SetVarRef(_)
+            | Instruction::GetVarRefCheck(_)
+            | Instruction::PutVarRefCheck(_)
+            | Instruction::Drop
+            | Instruction::Dup
+            | Instruction::Nip
+            | Instruction::Swap
+            | Instruction::IfFalse(_)
+            | Instruction::IfTrue(_)
+            | Instruction::Goto(_) => {
+                unreachable!("frame-local dispatch was bypassed")
+            }
+
             Instruction::InitialYield
             | Instruction::Yield
             | Instruction::YieldStar
@@ -839,7 +868,7 @@ impl VmActivation {
             | Instruction::IteratorGetValueDone => {
                 unreachable!("yield-star iterator dispatch was bypassed")
             }
-            Instruction::PushI32(value) => self.stack.push(Value::Int(*value)),
+
             Instruction::PushAtomValueIndex(value) => self.stack.push(Value::String(
                 crate::engine::value::JsString::from_fresh_decimal_u32(*value),
             )),
@@ -990,10 +1019,7 @@ impl VmActivation {
                     "unsupported reference to 'super'",
                 ));
             }
-            Instruction::Undefined => self.stack.push(Value::Undefined),
-            Instruction::Null => self.stack.push(Value::Null),
-            Instruction::PushFalse => self.stack.push(Value::Bool(false)),
-            Instruction::PushTrue => self.stack.push(Value::Bool(true)),
+
             Instruction::PushThis => {
                 let value = self.normalized_this(host)?;
                 self.stack.push(value);
@@ -1008,27 +1034,11 @@ impl VmActivation {
                 self.stack.push(host.home_object()?);
             }
             Instruction::PushNewTarget => self.stack.push(self.new_target.clone()),
-            Instruction::GetLocal(index) => {
-                self.stack.push(host.get_local(*index)?);
-            }
-            Instruction::PutLocal(index) => {
-                let value = self.pop()?;
-                host.put_local(*index, value)?;
-            }
-            Instruction::SetLocal(index) => {
-                let value = self
-                    .stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("set local on an empty stack"))?;
-                host.put_local(*index, value)?;
-            }
+
             Instruction::SetLocalUninitialized(index) => {
                 host.set_local_uninitialized(*index)?;
             }
-            Instruction::GetLocalCheck(index) => {
-                self.stack.push(host.get_local_checked(*index)?);
-            }
+
             Instruction::InitializeLocal(index) => {
                 let value = self.pop()?;
                 host.initialize_local(*index, value)?;
@@ -1037,55 +1047,7 @@ impl VmActivation {
                 let value = self.pop()?;
                 host.initialize_derived_local(*index, value)?;
             }
-            Instruction::PutLocalCheck(index) => {
-                let value = self.pop()?;
-                host.put_local_checked(*index, value)?;
-            }
-            Instruction::SetLocalCheck(index) => {
-                let value = self
-                    .stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("set lexical local on an empty stack"))?;
-                host.put_local_checked(*index, value)?;
-            }
-            Instruction::GetArg(index) => {
-                self.stack.push(host.get_argument(*index)?);
-            }
-            Instruction::PutArg(index) => {
-                let value = self.pop()?;
-                host.put_argument(*index, value)?;
-            }
-            Instruction::SetArg(index) => {
-                let value = self
-                    .stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("set argument on an empty stack"))?;
-                host.put_argument(*index, value)?;
-            }
-            Instruction::GetVarRef(index) => {
-                self.stack.push(host.get_var_ref(*index)?);
-            }
-            Instruction::PutVarRef(index) => {
-                let value = self.pop()?;
-                host.put_var_ref(*index, value)?;
-            }
-            Instruction::SetVarRef(index) => {
-                let value = self
-                    .stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("set VarRef on an empty stack"))?;
-                host.put_var_ref(*index, value)?;
-            }
-            Instruction::GetVarRefCheck(index) => {
-                self.stack.push(host.get_var_ref_checked(*index)?);
-            }
-            Instruction::PutVarRefCheck(index) => {
-                let value = self.pop()?;
-                host.put_var_ref_checked(*index, value)?;
-            }
+
             Instruction::InitializeVarRef(index) => {
                 let value = self.pop()?;
                 host.initialize_var_ref(*index, value)?;
@@ -1432,26 +1394,7 @@ impl VmActivation {
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
-            Instruction::Drop => {
-                self.pop()?;
-            }
-            Instruction::Nip => {
-                let (_, value) = self.pop_pair()?;
-                self.stack.push(value);
-            }
-            Instruction::Swap => {
-                let (left, right) = self.pop_pair()?;
-                self.stack.push(right);
-                self.stack.push(left);
-            }
-            Instruction::Dup => {
-                let value = self
-                    .stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("dup on an empty stack"))?;
-                self.stack.push(value);
-            }
+
             Instruction::Dup1 => {
                 let index = self
                     .stack
@@ -1518,21 +1461,7 @@ impl VmActivation {
                     Completion::Throw(value) => return Ok(Some(Completion::Throw(value))),
                 }
             }
-            Instruction::IfFalse(target) => {
-                let value = self.pop()?;
-                if !host.to_boolean(&value)? {
-                    self.pc = checked_target(*target, code.len())?;
-                }
-            }
-            Instruction::IfTrue(target) => {
-                let value = self.pop()?;
-                if host.to_boolean(&value)? {
-                    self.pc = checked_target(*target, code.len())?;
-                }
-            }
-            Instruction::Goto(target) => {
-                self.pc = checked_target(*target, code.len())?;
-            }
+
             Instruction::Catch(target) => {
                 self.regions.push(VmUnwindRegion::Catch {
                     target: checked_target(*target, code.len())?,

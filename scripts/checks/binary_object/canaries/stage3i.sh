@@ -298,16 +298,16 @@ expect_full_rewrite_rejected stage3d-raise-bypass \
     $'    ) -> Result<Option<Completion>, Error> {\n        if matches!(value, Value::Undefined) {\n            return Ok(Some(Completion::Throw(value)));\n        }\n        host.ensure_backtrace(&value)?;\n        loop {'
 expect_full_rewrite_rejected stage3d-execute-inner-post-route-throw-return \
     stage3d-throw-critical-route src/engine/vm/mod.rs \
-    '            if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {' \
-    $'            if matches!(instruction, Instruction::Throw) {\n                return Ok(InterpreterExit::Complete(Completion::Return(Value::Undefined)));\n            }\n            if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {'
+    '            let completion = match instruction {' \
+    $'            if matches!(instruction, Instruction::Throw) {\n                return Ok(InterpreterExit::Complete(Completion::Return(Value::Undefined)));\n            }\n            let completion = match instruction {'
 expect_full_rewrite_rejected stage3d-execute-hot-entry-throw-return \
     stage3d-throw-critical-route src/engine/vm/mod.rs \
     $'    ) -> Result<Option<Completion>, Error> {\n        match instruction {\n            Instruction::Nop => {}' \
     $'    ) -> Result<Option<Completion>, Error> {\n        if matches!(instruction, Instruction::Throw) {\n            return self.pop().map(|value| Some(Completion::Return(value)));\n        }\n        match instruction {\n            Instruction::Nop => {}'
 expect_full_rewrite_rejected stage3d-execute-published-throw-return \
     stage3d-throw-critical-route src/engine/vm/mod.rs \
-    $'        )\n        .execute(code, host)\n    }' \
-    $'        )\n        .execute(code, host)\n        .map(|completion| match completion {\n            Completion::Throw(value) => Completion::Return(value),\n            completion => completion,\n        })\n    }'
+    $'        activation.execute(&code, host)\n    }' \
+    $'        activation.execute(&code, host)\n        .map(|completion| match completion {\n            Completion::Throw(value) => Completion::Return(value),\n            completion => completion,\n        })\n    }'
 expect_full_rewrite_rejected stage3d-bytecode-normal-bridge-throw-return \
     stage3d-throw-critical-route src/engine/vm/host_bridge.rs \
     $'        let result = Vm::new().execute_published(input, &mut host);\n        active_frame.finish()?;\n        result.map_err(RuntimeError::Engine)\n    }\n}' \

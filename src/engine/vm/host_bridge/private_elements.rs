@@ -238,6 +238,7 @@ impl RuntimeVmHost {
             }
             PrivateNameSource::Closure(index) => {
                 let descriptor = self
+                    .executable
                     .closure_variables
                     .get(usize::from(index))
                     .copied()
@@ -279,6 +280,7 @@ impl RuntimeVmHost {
             }
             PrivateNameSource::Closure(index) => {
                 let descriptor = self
+                    .executable
                     .closure_variables
                     .get(usize::from(index))
                     .copied()
@@ -335,6 +337,7 @@ impl RuntimeVmHost {
             }
             PrivateNameSource::Closure(index) => {
                 let descriptor = self
+                    .executable
                     .closure_variables
                     .get(usize::from(index))
                     .copied()
@@ -367,12 +370,13 @@ impl RuntimeVmHost {
         Ok(match source {
             PrivateNameSource::Local(index) => self.local_definition(index)?.name,
             PrivateNameSource::Closure(index) => {
-                let descriptor =
-                    self.closure_variables
-                        .get(usize::from(index))
-                        .ok_or_else(|| {
-                            Error::internal("private-element closure index is out of bounds")
-                        })?;
+                let descriptor = self
+                    .executable
+                    .closure_variables
+                    .get(usize::from(index))
+                    .ok_or_else(|| {
+                        Error::internal("private-element closure index is out of bounds")
+                    })?;
                 match descriptor.name {
                     ClosureVariableName::Atom(name) => Some(name),
                     ClosureVariableName::None | ClosureVariableName::Constant(_) => None,

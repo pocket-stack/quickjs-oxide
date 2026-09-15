@@ -180,7 +180,7 @@ impl Runtime {
         caller_realm: ContextId,
         callable: &CallableRef,
         mut host: RuntimeVmHost,
-        input: CallInput<'_>,
+        input: CallInput,
         active_frame: ActiveFrameGuard,
     ) -> Result<Completion, RuntimeError> {
         let result = Vm::new().start_published(input, &mut host);
