@@ -831,16 +831,21 @@ impl Runtime {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<ArrayOwnKey, RuntimeError> {
-        let length = self.intern_property_key("length")?;
-        let state = self.0.state.borrow();
-        let object_data = state.heap.object(object.object_id())?;
-        if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
-            return Ok(ArrayOwnKey::Other);
+        {
+            let state = self.0.state.borrow();
+            let object_data = state.heap.object(object.object_id())?;
+            if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
+                return Ok(ArrayOwnKey::Other);
+            }
         }
+        let length = self.intern_property_key("length")?;
         if key == &length {
             return Ok(ArrayOwnKey::Length);
         }
-        Ok(state
+        Ok(self
+            .0
+            .state
+            .borrow()
             .atoms
             .array_index(key.atom())?
             .map_or(ArrayOwnKey::Other, ArrayOwnKey::Index))
