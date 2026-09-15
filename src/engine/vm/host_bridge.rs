@@ -429,6 +429,7 @@ pub(crate) struct RuntimeVmHost {
     /// width. `arguments.length` and its dense prefix use this exact count.
     actual_argument_count: usize,
     constants: Rc<[BytecodeConstant]>,
+    property_key_atoms: Option<Rc<[Atom]>>,
     argument_definitions: Rc<[VariableDefinition]>,
     local_definitions: Rc<[VariableDefinition]>,
     closure_variables: Rc<[ClosureVariable]>,
@@ -646,6 +647,7 @@ impl RuntimeVmHost {
             current_function: None,
             actual_argument_count: 0,
             constants: Rc::from([]),
+            property_key_atoms: None,
             argument_definitions: Rc::from([]),
             local_definitions: Rc::from([]),
             closure_variables: Rc::from([]),
@@ -672,6 +674,7 @@ impl RuntimeVmHost {
             root,
             code: _,
             constants,
+            property_key_atoms,
             argument_definitions,
             local_definitions,
             closure_variables,
@@ -704,6 +707,7 @@ impl RuntimeVmHost {
             current_function: None,
             actual_argument_count: arguments.len(),
             constants,
+            property_key_atoms,
             argument_definitions,
             local_definitions,
             closure_variables,
@@ -831,6 +835,7 @@ impl RuntimeVmHost {
             root,
             code,
             constants,
+            property_key_atoms,
             argument_definitions,
             local_definitions,
             closure_variables,
@@ -930,6 +935,7 @@ impl RuntimeVmHost {
             current_function: Some(current_function),
             actual_argument_count: data.actual_argument_count,
             constants,
+            property_key_atoms,
             argument_definitions,
             local_definitions,
             closure_variables,
@@ -1545,27 +1551,40 @@ impl RuntimeVmHost {
     }
 
     fn constant_property_key(&self, index: u32) -> Result<PropertyKey, Error> {
-        let name = match usize::try_from(index)
+        // Synthetic host-only unit tests have no published bytecode owner.
+        // Production and published-code tests always require the linked table.
+        #[cfg(test)]
+        if self.current_bytecode.is_none() {
+            let name = match usize::try_from(index)
+                .ok()
+                .and_then(|index| self.constants.get(index))
+            {
+                Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
+                Some(
+                    BytecodeConstant::Value(_)
+                    | BytecodeConstant::Function(_)
+                    | BytecodeConstant::RegExp { .. },
+                ) => {
+                    return Err(Error::internal(
+                        "field opcode referenced a non-string constant",
+                    ));
+                }
+                None => return Err(Error::internal("constant index is out of bounds")),
+            };
+            let key = self
+                .runtime
+                .intern_property_key_js_string(&name)
+                .map_err(|error| Error::internal(error.to_string()))?;
+            return Ok(key);
+        }
+        let atom = usize::try_from(index)
             .ok()
-            .and_then(|index| self.constants.get(index))
-        {
-            Some(BytecodeConstant::Value(RawValue::String(name))) => name.clone(),
-            Some(
-                BytecodeConstant::Value(_)
-                | BytecodeConstant::Function(_)
-                | BytecodeConstant::RegExp { .. },
-            ) => {
-                return Err(Error::internal(
-                    "field opcode referenced a non-string constant",
-                ));
-            }
-            None => return Err(Error::internal("constant index is out of bounds")),
-        };
-        let key = self
-            .runtime
-            .intern_property_key_js_string(&name)
-            .map_err(|error| Error::internal(error.to_string()))?;
-        Ok(key)
+            .and_then(|index| self.property_key_atoms.as_ref()?.get(index))
+            .copied()
+            .filter(|atom| !atom.is_null())
+            .ok_or_else(|| Error::internal("static name opcode has no linked property key"))?;
+        PropertyKey::from_borrowed_atom(self.runtime.clone(), atom)
+            .map_err(|error| Error::internal(error.to_string()))
     }
 
     fn eval_variable_object(&self, source: EvalVariableSource) -> Result<ObjectRef, Error> {
@@ -2133,6 +2152,7 @@ impl Runtime {
             root,
             code,
             constants,
+            property_key_atoms,
             argument_definitions,
             local_definitions,
             closure_variables,
@@ -2182,6 +2202,7 @@ impl Runtime {
             current_function: Some(callable.as_object().clone()),
             actual_argument_count: arguments.len(),
             constants,
+            property_key_atoms,
             argument_definitions,
             local_definitions,
             closure_variables,

@@ -36,6 +36,39 @@ use crate::engine::value::{JsString, Value};
 pub(crate) use private_elements::prepare_private_binding_publication;
 use std::collections::{HashMap, HashSet};
 
+/// Link each distinct static-name constant index once. The caller owns the
+/// atom transaction: any later failure releases `auxiliary_atoms`, while
+/// successful publication transfers those references to the bytecode node.
+pub(crate) fn link_constant_property_keys(
+    state: &mut RuntimeState,
+    code: &[Instruction],
+    constants: &[BytecodeConstant],
+    auxiliary_atoms: &mut Vec<Atom>,
+) -> Result<Vec<Atom>, RuntimeError> {
+    let mut keys = Vec::new();
+    for instruction in code {
+        let Some(index) = instruction.constant_property_key_index() else {
+            continue;
+        };
+        let index = usize::try_from(index)
+            .map_err(|_| RuntimeError::Invariant("static name index did not fit usize"))?;
+        let Some(BytecodeConstant::Value(RawValue::String(name))) = constants.get(index) else {
+            return Err(RuntimeError::Invariant(
+                "static name did not reference a string constant",
+            ));
+        };
+        if keys.len() <= index {
+            keys.resize(index + 1, Atom::NULL);
+        }
+        if keys[index].is_null() {
+            let atom = state.atoms.intern_property_key_js_string(name)?;
+            auxiliary_atoms.push(atom);
+            keys[index] = atom;
+        }
+    }
+    Ok(keys)
+}
+
 /// Intern every semantically retained direct-eval binding name while keeping
 /// the parent publication routine's atom transaction authoritative. The
 /// caller releases `auxiliary_atoms` on any later failure and transfers the

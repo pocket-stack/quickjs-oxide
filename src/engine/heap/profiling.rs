@@ -119,6 +119,10 @@ impl Heap {
         let mut code = storage("bytecode_instructions", 0, 0, 1);
         code.basis = "deduplicated-Rc-slice-inline-bytes; excludes Rc headers and nested operands";
         let mut seen_code = HashSet::new();
+        let mut property_keys = storage("bytecode_property_keys", 0, 0, 1);
+        property_keys.count = Some(0);
+        property_keys.basis = "linked-name-count; deduplicated map slice bytes including unused slots; excludes Rc headers and auxiliary atom references";
+        let mut seen_property_keys = HashSet::new();
         for slot in &self.slots {
             let node = match &slot.state {
                 SlotState::Live(node)
@@ -166,11 +170,31 @@ impl Heap {
                             size_of::<Instruction>(),
                         );
                     }
+                    if let Some(keys) = &data.property_key_atoms
+                        && seen_property_keys.insert(Rc::as_ptr(keys))
+                    {
+                        add_storage(
+                            &mut property_keys,
+                            keys.len(),
+                            keys.len(),
+                            size_of::<Atom>(),
+                        );
+                        *property_keys.count.as_mut().unwrap() -=
+                            keys.iter().filter(|atom| atom.is_null()).count();
+                    }
                 }
                 _ => {}
             }
         }
-        result.extend([properties, arrays, elements, buffers, shared_buffers, code]);
+        result.extend([
+            properties,
+            arrays,
+            elements,
+            buffers,
+            shared_buffers,
+            code,
+            property_keys,
+        ]);
         result
     }
 }

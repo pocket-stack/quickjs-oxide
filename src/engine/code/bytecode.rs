@@ -716,6 +716,36 @@ pub enum Instruction {
 }
 
 impl Instruction {
+    /// String constant used as a static name by the VM's property-key bridge.
+    /// Publication links these operands once, including unreachable code.
+    #[must_use]
+    pub(crate) const fn constant_property_key_index(&self) -> Option<u32> {
+        match self {
+            Self::SetName(index)
+            | Self::ThrowReadOnly(index)
+            | Self::ThrowRedeclaration(index)
+            | Self::GetField(index)
+            | Self::GetField2(index)
+            | Self::PutField(index)
+            | Self::DefineField(index)
+            | Self::DefineMethod { key: index, .. }
+            | Self::DefineClass { name: index, .. }
+            | Self::HasEvalVariable { name: index, .. }
+            | Self::GetEvalVariable { name: index, .. }
+            | Self::PutEvalVariable { name: index, .. }
+            | Self::DeleteEvalVariable { name: index, .. }
+            | Self::DefineEvalVariable { name: index, .. }
+            | Self::HasDynamicBinding { name: index, .. }
+            | Self::GetDynamicBinding { name: index, .. }
+            | Self::PutDynamicBinding { name: index, .. }
+            | Self::DeleteDynamicBinding { name: index, .. }
+            | Self::GetRefValue(index)
+            | Self::GetRefValueUndef(index)
+            | Self::PutRefValue(index) => Some(*index),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn stack_effect(&self) -> (usize, usize) {
         match self {
@@ -995,28 +1025,8 @@ impl<T: TestConstant> DetachedBytecode<T> {
                     "detached bytecode cannot encode authenticated private names",
                 ));
             }
-            if let Instruction::SetName(index)
-            | Instruction::ThrowReadOnly(index)
-            | Instruction::ThrowRedeclaration(index)
-            | Instruction::GetField(index)
-            | Instruction::GetField2(index)
-            | Instruction::PutField(index)
-            | Instruction::DefineField(index)
-            | Instruction::DefineMethod { key: index, .. }
-            | Instruction::DefineClass { name: index, .. }
-            | Instruction::HasEvalVariable { name: index, .. }
-            | Instruction::GetEvalVariable { name: index, .. }
-            | Instruction::PutEvalVariable { name: index, .. }
-            | Instruction::DeleteEvalVariable { name: index, .. }
-            | Instruction::DefineEvalVariable { name: index, .. }
-            | Instruction::HasDynamicBinding { name: index, .. }
-            | Instruction::GetDynamicBinding { name: index, .. }
-            | Instruction::PutDynamicBinding { name: index, .. }
-            | Instruction::DeleteDynamicBinding { name: index, .. }
-            | Instruction::GetRefValue(index)
-            | Instruction::GetRefValueUndef(index)
-            | Instruction::PutRefValue(index) = instruction
-                && !self.constant(*index).is_some_and(TestConstant::is_string)
+            if let Some(index) = instruction.constant_property_key_index()
+                && !self.constant(index).is_some_and(TestConstant::is_string)
             {
                 return Err(Error::internal(
                     "string-key opcode referenced a non-string constant",

@@ -134,6 +134,7 @@ fn bytecode(
     FunctionBytecodeData {
         code: code.clone(),
         constants: constants.into(),
+        property_key_atoms: None,
         realm,
         metadata: FunctionMetadata {
             max_stack: 1,

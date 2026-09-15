@@ -504,6 +504,9 @@ impl Drop for RuntimeInner {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod static_property_key_tests;
+
 use crate::engine::vm::frames::*;
 
 use crate::engine::object::operations::*;

@@ -646,6 +646,10 @@ fn bytecode_allocation_accepts_typed_class_heritage() {
         ))],
         Vec::new(),
     );
+    let mut atoms = crate::engine::atom::AtomTable::new();
+    let name = atoms.intern("Derived").unwrap();
+    candidate.property_key_atoms = Some(Rc::from([name]));
+    candidate.auxiliary_atoms = Box::new([name]);
     candidate.metadata.max_stack = 2;
     let function = heap.allocate_function_bytecode(candidate).unwrap();
     heap.release_function_bytecode(function).unwrap();
@@ -754,6 +758,66 @@ fn bytecode_allocation_rejects_pattern_access_to_body_lexical() {
     );
 
     heap.release_context(context).unwrap();
+    heap.release_shape(shape).unwrap();
+    assert_eq!(heap.counts().live, 0);
+}
+
+#[test]
+fn bytecode_static_names_require_complete_owned_string_mappings() {
+    let mut heap = Heap::new();
+    let shape = empty_shape(&mut heap);
+    let prototype = leaf(&mut heap, shape);
+    let realm = heap
+        .allocate_context(ContextData::new(
+            prototype, prototype, prototype, prototype, prototype, prototype, prototype, prototype,
+        ))
+        .unwrap();
+    let code: Rc<[Instruction]> = Rc::from([
+        Instruction::Object,
+        Instruction::GetField(0),
+        Instruction::Return,
+    ]);
+    let name = Atom::from_raw(29);
+    let candidate = |keys: Option<Rc<[Atom]>>, owned: Vec<Atom>, value: RawValue| {
+        let mut data = bytecode(&code, realm, vec![BytecodeConstant::Value(value)], owned);
+        data.metadata.max_stack = 1;
+        data.property_key_atoms = keys;
+        data
+    };
+    let spelling = || RawValue::String(JsString::from_static("mapped"));
+    for keys in [None, Some(Rc::from([Atom::NULL]))] {
+        assert_eq!(
+            heap.allocate_function_bytecode(candidate(keys, vec![], spelling())),
+            Err(HeapError::Invariant(
+                "static name opcode has no linked property key"
+            ))
+        );
+    }
+    assert_eq!(
+        heap.allocate_function_bytecode(candidate(Some(Rc::from([name])), vec![], spelling())),
+        Err(HeapError::Invariant(
+            "static name atom is not owned by bytecode metadata"
+        ))
+    );
+    assert_eq!(
+        heap.allocate_function_bytecode(candidate(
+            Some(Rc::from([name])),
+            vec![name],
+            RawValue::Int(1)
+        )),
+        Err(HeapError::Invariant(
+            "linked property key does not reference a string constant"
+        ))
+    );
+    let id = heap
+        .allocate_function_bytecode(candidate(Some(Rc::from([name])), vec![name], spelling()))
+        .unwrap();
+    assert_eq!(
+        heap.release_function_bytecode(id).unwrap().atoms,
+        vec![name]
+    );
+    heap.release_context(realm).unwrap();
+    heap.release_object(prototype).unwrap();
     heap.release_shape(shape).unwrap();
     assert_eq!(heap.counts().live, 0);
 }

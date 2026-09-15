@@ -117,6 +117,7 @@ impl Runtime {
             let mut unlinked_debug = function.debug;
             let mut linked_debug = None;
             let mut auxiliary_atoms = Vec::new();
+            let mut property_key_atoms = Vec::new();
             let id = {
                 let mut state = self.0.state.borrow_mut();
                 let linking = (|| -> Result<(), RuntimeError> {
@@ -143,6 +144,12 @@ impl Runtime {
                         linked_constants[index] =
                             BytecodeConstant::Value(RawValue::String(canonical));
                     }
+                    property_key_atoms = bytecode_publish::link_constant_property_keys(
+                        &mut state,
+                        &function.code,
+                        &linked_constants,
+                        &mut auxiliary_atoms,
+                    )?;
                     if let Some(debug) = unlinked_debug.take() {
                         let filename =
                             state.atoms.intern_property_key_js_string(&debug.filename)?;
@@ -221,6 +228,8 @@ impl Runtime {
                 let bytecode = FunctionBytecodeData {
                     code: function.code.into(),
                     constants: linked_constants.into(),
+                    property_key_atoms: (!property_key_atoms.is_empty())
+                        .then(|| property_key_atoms.into()),
                     realm,
                     metadata: function.metadata,
                     parameter_environment: function.parameter_environment,
@@ -361,6 +370,7 @@ impl Runtime {
             root,
             code: bytecode.code.clone(),
             constants: bytecode.constants.clone(),
+            property_key_atoms: bytecode.property_key_atoms.clone(),
             argument_definitions: bytecode.argument_definitions.clone(),
             local_definitions: bytecode.local_definitions.clone(),
             closure_variables: bytecode.closure_variables.clone(),
@@ -521,6 +531,7 @@ pub(crate) struct PublishedFunctionSnapshot {
     pub(crate) root: FunctionBytecodeRef,
     pub(crate) code: Rc<[crate::engine::code::bytecode::Instruction]>,
     pub(crate) constants: Rc<[BytecodeConstant]>,
+    pub(crate) property_key_atoms: Option<Rc<[Atom]>>,
     pub(crate) argument_definitions: Rc<[VariableDefinition]>,
     pub(crate) local_definitions: Rc<[VariableDefinition]>,
     pub(crate) closure_variables: Rc<[ClosureVariable]>,

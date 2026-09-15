@@ -114,6 +114,10 @@ impl Default for PublishedPrivateBindings {
 pub struct FunctionBytecodeData {
     pub code: Rc<[Instruction]>,
     pub constants: Rc<[BytecodeConstant]>,
+    /// Constant-indexed static names linked by the runtime publisher. Null
+    /// entries are unused; functions without static names have no table.
+    /// These identities borrow the references owned by `auxiliary_atoms`.
+    pub property_key_atoms: Option<Rc<[Atom]>>,
     pub realm: ContextId,
     pub metadata: FunctionMetadata,
     pub parameter_environment: Option<ParameterEnvironmentLayout>,

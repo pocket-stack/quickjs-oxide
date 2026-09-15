@@ -651,6 +651,51 @@ impl Heap {
         for atom in bytecode.auxiliary_atoms.iter().copied() {
             *owned_name_atoms.entry(atom).or_default() += 1;
         }
+        for instruction in bytecode.code.iter() {
+            let Some(index) = instruction.constant_property_key_index() else {
+                continue;
+            };
+            let atom = usize::try_from(index).ok().and_then(|index| {
+                bytecode
+                    .property_key_atoms
+                    .as_ref()
+                    .and_then(|keys| keys.get(index))
+            });
+            if atom.is_none_or(|atom| atom.is_null()) {
+                return Err(HeapError::Invariant(
+                    "static name opcode has no linked property key",
+                ));
+            }
+        }
+        if let Some(keys) = &bytecode.property_key_atoms {
+            if keys.len() > bytecode.constants.len() {
+                return Err(HeapError::Invariant(
+                    "static name table exceeds the constant pool",
+                ));
+            }
+            for (index, atom) in keys.iter().copied().enumerate() {
+                if atom.is_null() {
+                    continue;
+                }
+                if !matches!(
+                    bytecode.constants[index],
+                    BytecodeConstant::Value(RawValue::String(_))
+                ) {
+                    return Err(HeapError::Invariant(
+                        "linked property key does not reference a string constant",
+                    ));
+                }
+                let count = owned_name_atoms.get_mut(&atom).ok_or(HeapError::Invariant(
+                    "static name atom is not owned by bytecode metadata",
+                ))?;
+                if *count == 0 {
+                    return Err(HeapError::Invariant(
+                        "static name atom ownership multiplicity is too small",
+                    ));
+                }
+                *count -= 1;
+            }
+        }
         if let Some(debug) = &bytecode.debug {
             if debug.filename.is_null() {
                 return Err(HeapError::Invariant(
