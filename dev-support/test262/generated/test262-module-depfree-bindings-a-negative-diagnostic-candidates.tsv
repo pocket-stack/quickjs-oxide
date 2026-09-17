@@ -1,0 +1,13 @@
+path	variant	rule
+test/language/module-code/instn-iee-err-circular-as.js	sloppy	module.circular-export
+test/language/module-code/instn-iee-err-circular.js	sloppy	module.circular-export
+test/language/module-code/instn-iee-err-not-found-as.js	sloppy	module.missing-export
+test/language/module-code/instn-iee-err-not-found.js	sloppy	module.missing-export
+test/language/module-code/instn-named-err-not-found-as.js	sloppy	module.missing-export
+test/language/module-code/instn-named-err-not-found.js	sloppy	module.missing-export
+test/language/module-code/instn-resolve-empty-export.js	sloppy	module.dependency-parse-lvalue
+test/language/module-code/instn-resolve-err-syntax-1.js	sloppy	module.dependency-parse-break
+test/language/module-code/instn-resolve-err-syntax-2.js	sloppy	module.dependency-parse-lvalue
+test/language/module-code/instn-resolve-order-depth.js	sloppy	module.dependency-parse-lvalue
+test/language/module-code/instn-resolve-order-src.js	sloppy	module.dependency-parse-lvalue
+test/language/module-code/instn-star-err-not-found.js	sloppy	module.missing-export

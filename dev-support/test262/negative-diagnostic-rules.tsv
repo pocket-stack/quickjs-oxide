@@ -11,6 +11,8 @@ assignment-target.update-operand	get_lvalue	increment and decrement operands mus
 assignment-target.yield-keyword-context	js_parse_assign_expr2	yield is reserved outside generator expression contexts in strict code
 assignment-target.yield-parenthesized-boundary	js_parse_expr_paren	sloppy parenthesized yield identifier syntax must close before assignment-target validation
 assignment-target.yield-statement-boundary	js_parse_expect_semi	sloppy Script yield identifier parsing reaches a statement boundary before assignment-target validation
+async-context.await-reserved-identifier	js_parse_error_reserved_identifier	await cannot name a binding or reference in async function grammar
+binding.variable-name-expected	js_parse_var	variable declarations require an identifier binding name
 class-field.contains-arguments	js_parse_class	arguments is forbidden in class field initializers
 class-field.contains-super-call	js_parse_class	super calls are forbidden in class field initializers
 class-field.invalid-name	js_parse_class	class field name is not a valid property name
@@ -56,11 +58,19 @@ dynamic-import.missing-specifier	js_parse_postfix_expr	ImportCall requires a mod
 dynamic-import.second-argument-yield-context	js_parse_assign_expr2	ImportCall options expressions preserve the surrounding Yield grammar parameter
 dynamic-import.spread-argument	js_parse_postfix_expr	ImportCall does not accept spread arguments
 dynamic-import.typeof-keyword	js_parse_postfix_expr	the bare import keyword cannot be a unary typeof operand
+expression.unexpected-token	js_parse_postfix_expr	unexpected punctuators are rejected while parsing a primary expression
 function-parameter.rest-default	js_parse_function_decl2	rest parameters cannot have default initializers
 function-parameter.rest-not-final	js_parse_function_decl2	rest parameters must be final
 generator.yield-identifier-reference	js_parse_unary	yield cannot be used as an identifier reference in generators
+generator.yield-reserved-identifier	js_parse_error_reserved_identifier	yield cannot name a binding or reference in generator function grammar
 generator.yield-weak-binding	js_parse_unary	yield parsing preserves QuickJS weak-binding diagnostics
+label.break-continue-not-found	emit_break	named break or continue must resolve a labeled statement
+lexical-binding.duplicate-declaration	define_var	lexical declarations cannot duplicate an existing lexical binding in the same scope
+lexical-binding.let-identifier	js_parse_var	let cannot be used as a lexical binding name followed by let or const
 logical-assignment.non-simple-target	get_lvalue	logical assignment requires a simple assignment target
+module.circular-export	js_resolve_export_throw_error	module resolution reports a cycle while looking up an indirectly exported binding
+module.dependency-parse-break	emit_break	module resolution surfaces a dependency parse error for a break outside a loop or switch
+module.dependency-parse-lvalue	get_lvalue	module resolution surfaces a dependency parse error for an invalid assignment target
 module.import-attributes.duplicate-key	js_parse_with_clause	static import attributes reject decoded duplicate keys
 module.invalid-import-binding	js_parse_import	import bindings cannot use restricted identifiers
 module.json-parse	json_parse_value	JSON module resolution reports strict JSON grammar errors from the authenticated fixture
@@ -71,8 +81,13 @@ module.top-level-await.function-context	js_parse_unary	the Await grammar paramet
 object-literal.private-name	js_parse_object_literal	private names are invalid object literal properties
 optional-chaining.invalid-assignment-target	get_lvalue	optional chains are not assignment targets
 regexp.flags.unicode-mode-conflict	lre_compile	the u and v Unicode modes are mutually exclusive
+regexp.line-terminator	js_parse_regexp	regular expression literals cannot contain an unescaped line terminator
 regexp.unicode-set.negated-string-class	re_parse_nested_class	negated Unicode Sets classes cannot retain string members
 regexp.unicode-set.reserved-punctuator	get_class_atom	Unicode Sets syntax rejects unescaped reserved punctuators
 regexp.unicode-set.string-property-complement	parse_unicode_property	properties of strings cannot be complemented with uppercase P
 regexp.unicode-set.string-property-requires-v	parse_unicode_property	properties of strings require Unicode Sets mode
+statement.missing-semicolon	js_parse_expect_semi	statements must end with a semicolon or a valid automatic semicolon insertion point
 strict-mode.with-statement	js_parse_statement_or_decl	with statements are forbidden in strict code
+super-call.derived-constructor-only	js_parse_postfix_expr	super calls are restricted to a derived class constructor
+syntax.expecting-close-paren	js_parse_expect	the parser requires a closing parenthesis at the marked token
+syntax.expecting-open-paren	js_parse_expect	the parser requires an opening parenthesis at the marked token

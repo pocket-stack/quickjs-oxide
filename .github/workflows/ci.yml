@@ -81,6 +81,8 @@ jobs:
           node --check scripts/test262/generate-test262-module-local-binding-a.mjs
           node --check scripts/test262/generate-test262-module-import-attributes-a.mjs
           node --check scripts/test262/test-generate-test262-module-import-attributes-a.mjs
+          node --check scripts/test262/generate-test262-module-depfree-bindings-a.mjs
+          node --check scripts/test262/test-generate-test262-module-depfree-bindings-a.mjs
           node --check scripts/test262/generate-test262-module-json-a.mjs
           node --check scripts/test262/test-generate-test262-module-json-a.mjs
           ./scripts/checks/check-oracle-registry.sh
@@ -196,6 +198,15 @@ jobs:
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf"
           node scripts/test262/generate-test262-module-import-attributes-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf" \
+            --check-current
+          node scripts/test262/test-generate-test262-module-depfree-bindings-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf"
+          node scripts/test262/generate-test262-module-depfree-bindings-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf" \

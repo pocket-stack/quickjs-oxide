@@ -1,0 +1,7 @@
+surface	canary_path
+root-throw-runtime	test/language/module-code/eval-export-dflt-expr-err-eval.js
+root-throw-runtime	test/language/module-code/eval-export-dflt-expr-err-get-value.js
+private-name	test/language/module-code/privatename-not-valid-earlyerr-module-1.js
+top-level-await	test/language/module-code/top-level-await/await-expr-resolution.js
+ambiguous-export	test/language/module-code/ambiguous-export-bindings/error-export-from-named-as.js
+cross-family-fixture	test/language/module-code/instn-resolve-empty-import.js

@@ -26,6 +26,8 @@ const DEFAULT_RULES = "dev-support/test262/negative-diagnostic-rules.tsv";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const QUICKJS_NON_JS_DIAGNOSTIC_ANCHORS = new Set([
+  "define_var",
+  "emit_break",
   "get_class_atom",
   "get_lvalue",
   "json_parse_value",

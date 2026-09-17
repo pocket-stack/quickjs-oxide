@@ -552,6 +552,191 @@ assert.equal(
 );
 assert.equal(admissionRecords.length, 13);
 
+// dynamic-import/usage graph closure cohort (S1 C1a). The whole directory is a
+// generated matrix of 6 cases x 18 syntax templates: 108 Script-goal async
+// roots that each dynamically import exactly one of four dependency-free
+// fixtures. 12 roots (the async-gen templates x two template families) also
+// carry async-iteration. 18 roots pull in fnGlobalObject.js. The
+// specifier-tostring case names its request through the standard generated
+// `// import('...')` annotation rather than a literal call, which the shared
+// request scanner already records. Two variants (sloppy + strict) per root
+// give 216 variants.
+const usageAdmissionGroup = "dynamic-import-usage-a";
+const usageDirectory = `${cohort}/usage`;
+const usageFiles = readdirSync(join(suite, usageDirectory), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+  .map((entry) => `${usageDirectory}/${entry.name}`)
+  .sort(bytewise);
+const usageFixturePaths = usageFiles.filter((relativePath) =>
+  relativePath.endsWith("_FIXTURE.js"),
+);
+const usageRootPaths = usageFiles.filter(
+  (relativePath) => !usageFixturePaths.includes(relativePath),
+);
+assert.equal(usageFixturePaths.length, 4, "dynamic-import usage fixture count changed");
+assert.equal(usageRootPaths.length, 108, "dynamic-import usage root count changed");
+assert.equal(
+  new Set(usageFiles).size,
+  usageFiles.length,
+  "dynamic-import usage files overlap",
+);
+assert.equal(
+  sha256(pathManifest(usageRootPaths)),
+  "778d3e7805823de523987fa84776fdd5732c163ea14ad3c73b68f4438e2d8212",
+  "dynamic-import usage root path manifest changed",
+);
+assert.equal(
+  sha256(pathManifest(usageFixturePaths)),
+  "1f9465e41fbc1ac213bcd36081ed310e39f914a15874c6d1ced1506cf87f1a32",
+  "dynamic-import usage fixture path manifest changed",
+);
+const expectedUsageFixtureHashes = new Map([
+  [`${usageDirectory}/dynamic-import-module_FIXTURE.js`,
+    "08bd41ffb3fbbfe3a33b50b66d0ca03f6266e5a4468cafc266eb109c15d7a261"],
+  [`${usageDirectory}/eval-gtbndng-indirect-update-dflt_FIXTURE.js`,
+    "12a289fc58e54afefbf54b974ac7db0432b3dca1815d3c7f0fa7d4f639b0fe1f"],
+  [`${usageDirectory}/eval-gtbndng-indirect-update_FIXTURE.js`,
+    "86f9d73e4f721d046412952d46a9fdeb2864fb6bdc2917d995170945d6f7800b"],
+  [`${usageDirectory}/module-code_FIXTURE.js`,
+    "ca4d734fe7ffe820cb22917ddee0d077afada2cdc2e7ad18784e623888fe2b9b"],
+]);
+for (const relativePath of usageFixturePaths) {
+  assert.equal(
+    sha256(source(relativePath)),
+    expectedUsageFixtureHashes.get(relativePath),
+    `${relativePath}: pinned usage fixture source changed`,
+  );
+  assert.deepEqual(
+    metadata(relativePath),
+    { includes: [], flags: [], features: [], negativePhase: "", negativeType: "" },
+    `${relativePath}: usage fixture metadata changed`,
+  );
+}
+
+const usageShapeCounts = new Map();
+for (const rootPath of usageRootPaths) {
+  const shape = metadata(rootPath);
+  assert.deepEqual(shape.flags, ["async", "generated"], `${rootPath}: usage flags changed`);
+  assert(
+    shape.features.length === 1
+      ? shape.features[0] === "dynamic-import"
+      : shape.features.length === 2
+        && shape.features[0] === "dynamic-import"
+        && shape.features[1] === "async-iteration",
+    `${rootPath}: usage features changed`,
+  );
+  assert(
+    shape.includes.length === 0 || shape.includes[0] === "fnGlobalObject.js",
+    `${rootPath}: unexpected usage include`,
+  );
+  assert(!shape.flags.includes("module"), `${rootPath}: usage root became a Module`);
+  assert.equal(shape.negativePhase, "", `${rootPath}: usage root gained a negative phase`);
+  assert.equal(shape.negativeType, "", `${rootPath}: usage root gained a negative type`);
+  const shapeKey = JSON.stringify({
+    features: shape.features,
+    includes: shape.includes,
+  });
+  usageShapeCounts.set(shapeKey, (usageShapeCounts.get(shapeKey) ?? 0) + 1);
+}
+assert.deepEqual(
+  [...usageShapeCounts].sort(([left], [right]) => bytewise(left, right)),
+  [
+    [
+      JSON.stringify({
+        features: ["dynamic-import", "async-iteration"],
+        includes: ["fnGlobalObject.js"],
+      }),
+      2,
+    ],
+    [
+      JSON.stringify({ features: ["dynamic-import", "async-iteration"], includes: [] }),
+      10,
+    ],
+    [JSON.stringify({ features: ["dynamic-import"], includes: ["fnGlobalObject.js"] }), 16],
+    [JSON.stringify({ features: ["dynamic-import"], includes: [] }), 80],
+  ],
+  "dynamic-import usage metadata shape matrix changed",
+);
+
+const usageFileEdges = new Map(
+  usageFiles.map((relativePath) => [
+    relativePath,
+    requestSpecifiers(relativePath).map((specifier) => ({
+      specifier,
+      normalized: normalize(relativePath, specifier),
+    })),
+  ]),
+);
+for (const fixturePath of usageFixturePaths) {
+  assert.deepEqual(
+    usageFileEdges.get(fixturePath),
+    [],
+    `${fixturePath}: usage fixture gained an import`,
+  );
+}
+const usageFixtureBySpecifier = new Map(
+  usageFixturePaths.map((relativePath) => [`./${relativePath.split("/").at(-1)}`, relativePath]),
+);
+for (const rootPath of usageRootPaths) {
+  const requests = usageFileEdges.get(rootPath);
+  assert.equal(requests.length, 1, `${rootPath}: usage root must request exactly one fixture`);
+  const [request] = requests;
+  assert.equal(
+    request.normalized,
+    usageFixtureBySpecifier.get(request.specifier),
+    `${rootPath}: usage request does not resolve to its pinned fixture`,
+  );
+}
+const usageRequestCount = [...usageFileEdges.values()].reduce(
+  (count, requests) => count + requests.length,
+  0,
+);
+assert.equal(usageRequestCount, 108, "dynamic-import usage edge count changed");
+assert.equal(variantCount(usageRootPaths), 216, "dynamic-import usage variant count changed");
+
+// Priority 1 keeps the earlier dynamic-import-a admission authoritative for
+// the one usage root that group already owns; the catalog keys roots by
+// (group, path), so the duplicate root row here is an independent audit.
+const usageAdmissionRecords = [
+  ...usageFiles.map((relativePath) => {
+    const shape = metadata(relativePath);
+    return admissionRecord({
+      kind: "graph-file",
+      group: usageAdmissionGroup,
+      path: relativePath,
+      source_sha256: sha256(source(relativePath)),
+      includes: shape.includes,
+      flags: shape.flags,
+      features: shape.features,
+      negative_phase: shape.negativePhase,
+      negative_type: shape.negativeType,
+    });
+  }),
+  ...usageFiles.flatMap((relativePath) =>
+    usageFileEdges.get(relativePath).map((request, requestIndex) =>
+      admissionRecord({
+        kind: "graph-request",
+        group: usageAdmissionGroup,
+        path: relativePath,
+        request_index: requestIndex,
+        specifier: request.specifier,
+        normalized_path: request.normalized,
+      }),
+    ),
+  ),
+  ...usageRootPaths.map((rootPath) =>
+    admissionRecord({
+      kind: "dynamic-import-root",
+      group: usageAdmissionGroup,
+      path: rootPath,
+      closure_file_count: 2,
+      priority: 1,
+      policy: "initial-import-tree",
+    }),
+  ),
+];
+assert.equal(usageAdmissionRecords.length, 328);
+
 const moduleFileEdges = new Map();
 const pendingModuleFiles = [...moduleGoalRoots].reverse();
 while (pendingModuleFiles.length !== 0) {
@@ -706,6 +891,212 @@ assert.equal(assignmentTargetAdmissionRecords.length, 34);
 assert.equal(newTargetAdmissionRecords.length, 42);
 assert.equal(parseNegativeAdmissionRecords.length, 172);
 
+// C1b: dynamic-import/syntax/valid positive roots. Every authored test is a
+// Script-goal syntax probe whose only literal request is the dependency-free
+// empty_FIXTURE; the module is never meaningfully instantiated before the
+// assertion observes a TypeError or the expression is only compiled (nested
+// closures, import(''), new-cover). They therefore admit under a closed
+// one/two-file initial-import-tree policy with no transitive graph. Files
+// carrying an upstream-=skip future token (import-defer / import.source) stay
+// canaries and must not enter the catalog.
+const validSyntaxGroup = "dynamic-import-syntax-valid-a";
+const validSyntaxDirectory = `${cohort}/syntax/valid`;
+const closedFixture = `${validSyntaxDirectory}/empty_FIXTURE.js`;
+const validSyntaxFutureTokens = new Set([
+  "import-defer",
+  "source-phase-imports",
+  "source-phase-imports-module-source",
+]);
+const validSyntaxAllowedTokens = new Set([
+  "dynamic-import",
+  "async-iteration",
+  "import-attributes",
+]);
+const validSyntaxFiles = readdirSync(join(suite, validSyntaxDirectory), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+  .map((entry) => `${validSyntaxDirectory}/${entry.name}`)
+  .sort(bytewise);
+assert.equal(validSyntaxFiles.length, 193, "dynamic-import syntax/valid surface changed");
+const validSyntaxCanaries = [];
+const closedSyntaxRoots = [];
+for (const relativePath of validSyntaxFiles) {
+  if (relativePath === closedFixture) continue;
+  const shape = metadata(relativePath);
+  assert(
+    shape.features.includes("dynamic-import"),
+    `${relativePath}: syntax/valid file lost the dynamic-import feature`,
+  );
+  if (shape.features.some((feature) => validSyntaxFutureTokens.has(feature))) {
+    validSyntaxCanaries.push(relativePath);
+  } else {
+    assert.equal(shape.negativePhase, "", `${relativePath}: positive root gained a negative phase`);
+    assert(
+      shape.features.every((feature) => validSyntaxAllowedTokens.has(feature)),
+      `${relativePath}: unexpected cohort feature ${shape.features.join(",")}`,
+    );
+    closedSyntaxRoots.push(relativePath);
+  }
+}
+assert.equal(closedSyntaxRoots.length, 108, "dynamic-import closed-root cohort changed");
+assert.equal(validSyntaxCanaries.length, 84, "dynamic-import syntax/valid canary cohort changed");
+assert.equal(
+  new Set([...closedSyntaxRoots, ...validSyntaxCanaries, closedFixture]).size,
+  193,
+  "dynamic-import syntax/valid cohorts overlap",
+);
+assert.equal(
+  sha256(pathManifest(closedSyntaxRoots)),
+  "f04254868b28e7110efe903505e69f731dc871111f72637bc77d635b650fcccf",
+  "dynamic-import closed-root path manifest changed",
+);
+assert.equal(
+  sha256(pathManifest(validSyntaxCanaries)),
+  "62c4339db029d22dd55fb8e3f20e0d4af47aa54b77eb89b4af47ed3e7486f3b2",
+  "dynamic-import syntax/valid canary path manifest changed",
+);
+const closedFeatureShape = (features) => JSON.stringify({ flags: [], features });
+const closedFeatureShapes = new Map();
+for (const relativePath of closedSyntaxRoots) {
+  const key = closedFeatureShape(metadata(relativePath).features);
+  closedFeatureShapes.set(key, (closedFeatureShapes.get(key) ?? 0) + 1);
+}
+assert.deepEqual(
+  [...closedFeatureShapes].sort(([left], [right]) => bytewise(left, right)),
+  [
+    [closedFeatureShape(["dynamic-import", "async-iteration"]), 3],
+    [closedFeatureShape(["dynamic-import"]), 63],
+    [
+      closedFeatureShape(["import-attributes", "dynamic-import", "async-iteration"]),
+      2,
+    ],
+    [closedFeatureShape(["import-attributes", "dynamic-import"]), 40],
+  ],
+  "dynamic-import closed-root feature shapes changed",
+);
+const closedFlagShapes = new Map();
+for (const relativePath of closedSyntaxRoots) {
+  const key = JSON.stringify(metadata(relativePath).flags);
+  closedFlagShapes.set(key, (closedFlagShapes.get(key) ?? 0) + 1);
+}
+assert.deepEqual(
+  [...closedFlagShapes].sort(([left], [right]) => bytewise(left, right)),
+  [
+    [JSON.stringify(["generated", "noStrict"]), 10],
+    [JSON.stringify(["generated"]), 95],
+    [JSON.stringify([]), 3],
+  ],
+  "dynamic-import closed-root flag shapes changed",
+);
+assert.equal(variantCount(closedSyntaxRoots), 206, "dynamic-import closed-root variant count changed");
+
+assert.equal(
+  sha256(source(closedFixture)),
+  "a2094af42316bee0dfd33e1d4e5dd95cb42c51df911929ee01afe9f36714f52d",
+  "dynamic-import closed-root fixture source changed",
+);
+assert.deepEqual(metadata(closedFixture), {
+  includes: [],
+  flags: [],
+  features: [],
+  negativePhase: "",
+  negativeType: "",
+});
+const closedSources = [closedFixture, ...closedSyntaxRoots].sort(bytewise);
+assert.equal(closedSources.length, 109, "dynamic-import closed-root source count changed");
+assert.equal(
+  sha256(pathManifest(closedSources)),
+  "9469673eafc703d38fb066fa75ed9469da8229252bbdc52e6f68db78841a81e8",
+  "dynamic-import closed-root source path manifest changed",
+);
+
+const closedEdges = new Map(
+  closedSyntaxRoots.map((relativePath) => [
+    relativePath,
+    requestSpecifiers(relativePath).map((specifier) => ({
+      specifier,
+      normalized: normalize(relativePath, specifier),
+    })),
+  ]),
+);
+const closedEdgeLines = closedSyntaxRoots.flatMap((relativePath) =>
+  closedEdges
+    .get(relativePath)
+    .flatMap((request, requestIndex) => [
+      `${relativePath}\t${requestIndex}\t${request.specifier}\t${request.normalized}`,
+    ]),
+);
+const closedZeroEdgeRoots = closedSyntaxRoots
+  .filter((relativePath) => closedEdges.get(relativePath).length === 0)
+  .sort(bytewise);
+const closedEdgeRoots = closedSyntaxRoots.filter(
+  (relativePath) => closedEdges.get(relativePath).length === 1,
+);
+assert.equal(
+  closedZeroEdgeRoots.length + closedEdgeRoots.length,
+  closedSyntaxRoots.length,
+  "dynamic-import closed root has an unexpected request count",
+);
+assert.equal(closedZeroEdgeRoots.length, 22, "dynamic-import import('') cohort changed");
+assert.equal(closedEdgeRoots.length, 86, "dynamic-import fixture-import cohort changed");
+assert.equal(closedEdgeLines.length, 86, "dynamic-import closed-root edge count changed");
+for (const relativePath of closedEdgeRoots) {
+  assert.deepEqual(
+    closedEdges.get(relativePath),
+    [{ specifier: "./empty_FIXTURE.js", normalized: closedFixture }],
+    `${relativePath}: closed-root request shape changed`,
+  );
+}
+assert.equal(
+  sha256(pathManifest(closedZeroEdgeRoots)),
+  "1e6bfb0bb475c63b7e50122cfb8c23ae6771ba0b753f45ba0c48a67fd675c2d3",
+  "dynamic-import import('') path manifest changed",
+);
+assert.equal(
+  sha256(pathManifest(closedEdgeLines)),
+  "db75a9cc8fc31c8bc197db041097a3edfd6e733da5f610eb399bd4ce7216346d",
+  "dynamic-import closed-root edge manifest changed",
+);
+
+const closedSyntaxAdmissionRecords = [
+  ...closedSources.map((relativePath) => {
+    const shape = metadata(relativePath);
+    return admissionRecord({
+      kind: "graph-file",
+      group: validSyntaxGroup,
+      path: relativePath,
+      source_sha256: sha256(source(relativePath)),
+      includes: shape.includes,
+      flags: shape.flags,
+      features: shape.features,
+      negative_phase: shape.negativePhase,
+      negative_type: shape.negativeType,
+    });
+  }),
+  ...closedSyntaxRoots.flatMap((relativePath) =>
+    closedEdges.get(relativePath).map((request, requestIndex) =>
+      admissionRecord({
+        kind: "graph-request",
+        group: validSyntaxGroup,
+        path: relativePath,
+        request_index: requestIndex,
+        specifier: request.specifier,
+        normalized_path: request.normalized,
+      }),
+    ),
+  ),
+  ...closedSyntaxRoots.map((rootPath) =>
+    admissionRecord({
+      kind: "dynamic-import-root",
+      group: validSyntaxGroup,
+      path: rootPath,
+      closure_file_count: closedEdges.get(rootPath).length === 0 ? 1 : 2,
+      priority: 0,
+      policy: "initial-import-tree",
+    }),
+  ),
+];
+assert.equal(closedSyntaxAdmissionRecords.length, 303);
+
 const diagnosticRule = "dynamic-import.invalid-new-target";
 const diagnosticRuleLine =
   `${diagnosticRule}\tjs_parse_postfix_expr\tnew cannot directly target ImportCall`;
@@ -803,6 +1194,12 @@ function assertPromoted() {
     assert(!profile.has(relativePath), `${relativePath}: canary escaped into the profile`);
     assert(!focused.has(relativePath), `${relativePath}: canary escaped into the focused manifest`);
   }
+  for (const relativePath of validSyntaxCanaries) {
+    assert(
+      !focused.has(relativePath),
+      `${relativePath}: future-syntax canary escaped into the focused manifest`,
+    );
+  }
   const admittedPaths = readFileSync(checkedAdmissions, "utf8")
     .trimEnd()
     .split("\n")
@@ -812,6 +1209,19 @@ function assertPromoted() {
     admittedPaths.every((relativePath) => !canaryPaths.has(relativePath)),
     "future dynamic-import syntax canary escaped into admissions",
   );
+  assert(
+    admittedPaths.every((relativePath) => !validSyntaxCanaries.includes(relativePath)),
+    "dynamic-import syntax/valid future-syntax canary escaped into admissions",
+  );
+  // The closed positive cohort is full-corpus admissions data, not part of the
+  // frozen focused manifest (which refuses a stale source); neither its roots
+  // nor its empty fixture may silently appear there.
+  for (const relativePath of closedSources) {
+    assert(
+      !focused.has(relativePath),
+      `${relativePath}: closed-root source escaped into the focused manifest`,
+    );
+  }
   const rules = checkedLineSet(checkedRules);
   assert(rules.has(diagnosticRuleLine), `${diagnosticRule}: rule not promoted`);
   for (const ruleLine of parseNegativeDiagnosticRuleLines) {
@@ -963,6 +1373,8 @@ if (mode === "--admissions") {
       ...assignmentTargetAdmissionRecords,
       ...newTargetAdmissionRecords,
       ...parseNegativeAdmissionRecords,
+      ...closedSyntaxAdmissionRecords,
+      ...usageAdmissionRecords,
     ]),
   );
 } else if (mode === "--diagnostic-candidates") {
@@ -981,11 +1393,24 @@ if (mode === "--admissions") {
     parseNegativeGroup,
     parseNegativeAdmissionRecords,
   );
+  assertAdmissionGroup(
+    checkedAdmissions,
+    validSyntaxGroup,
+    closedSyntaxAdmissionRecords,
+  );
+  assertAdmissionGroup(
+    checkedAdmissions,
+    usageAdmissionGroup,
+    usageAdmissionRecords,
+  );
   assertPromoted();
   console.log(
     "dynamic-import admissions authenticated: runtime roots=4/variants=8; " +
       "module roots=27/files=31/edges=32; " +
       "assignment negatives=17/34; new-target negatives=21/40; " +
-      "parse negatives=86/163; sources=130; edges=3",
+      "parse negatives=86/163; " +
+      "syntax/valid closed roots=108/variants=206/sources=109/edges=86; " +
+      "usage roots=108/variants=216/edges=108; " +
+      "sources=351; edges=197",
   );
 }

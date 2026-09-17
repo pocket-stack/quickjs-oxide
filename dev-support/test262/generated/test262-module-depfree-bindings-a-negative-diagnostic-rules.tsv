@@ -1,0 +1,4 @@
+rule	quickjs_anchor	description
+module.circular-export	js_resolve_export_throw_error	module resolution reports a cycle while looking up an indirectly exported binding
+module.dependency-parse-break	emit_break	module resolution surfaces a dependency parse error for a break outside a loop or switch
+module.dependency-parse-lvalue	get_lvalue	module resolution surfaces a dependency parse error for an invalid assignment target

@@ -1,0 +1,12 @@
+test/language/module-code/instn-iee-err-circular-as.js
+test/language/module-code/instn-iee-err-circular.js
+test/language/module-code/instn-iee-err-not-found-as.js
+test/language/module-code/instn-iee-err-not-found.js
+test/language/module-code/instn-named-err-not-found-as.js
+test/language/module-code/instn-named-err-not-found.js
+test/language/module-code/instn-resolve-empty-export.js
+test/language/module-code/instn-resolve-err-syntax-1.js
+test/language/module-code/instn-resolve-err-syntax-2.js
+test/language/module-code/instn-resolve-order-depth.js
+test/language/module-code/instn-resolve-order-src.js
+test/language/module-code/instn-star-err-not-found.js
