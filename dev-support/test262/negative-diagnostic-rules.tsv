@@ -68,6 +68,7 @@ module.missing-export	js_resolve_export_throw_error	module resolution reports a 
 module.tla-dependency-rejection	js_async_module_execution_rejected	async module evaluation propagates the dependency rejection unchanged
 module.top-level-await.escaped-keyword	js_parse_error_reserved_identifier	the await terminal cannot contain Unicode escapes
 module.top-level-await.function-context	js_parse_unary	the Await grammar parameter does not propagate into nested function syntax
+numeric-literal.invalid	js_parse_get_number	malformed numeric and BigInt literals share the single QuickJS invalid number literal diagnostic
 object-literal.private-name	js_parse_object_literal	private names are invalid object literal properties
 optional-chaining.invalid-assignment-target	get_lvalue	optional chains are not assignment targets
 regexp.flags.unicode-mode-conflict	lre_compile	the u and v Unicode modes are mutually exclusive

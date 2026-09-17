@@ -1141,7 +1141,7 @@ impl<'a> Lexer<'a> {
                     return Err(self.error_from(
                         start,
                         LexErrorKind::InvalidNumber,
-                        format!("base-{base} literal requires at least one digit"),
+                        "invalid number literal",
                     ));
                 }
 
@@ -1248,7 +1248,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::InvalidNumber,
-                    "BigInt suffix cannot follow a fraction or exponent",
+                    "invalid number literal",
                 ));
             }
             if legacy_leading_zero {
@@ -1256,7 +1256,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::InvalidNumber,
-                    "decimal BigInt cannot contain a leading zero",
+                    "invalid number literal",
                 ));
             }
             self.bump_char();
@@ -1373,9 +1373,15 @@ impl<'a> Lexer<'a> {
                 }));
             }
             if matches!(ch, '\r' | '\n') {
-                return Err(
-                    self.error_here(LexErrorKind::UnterminatedString, "unexpected end of string")
-                );
+                // Pinned QuickJS reaches its `invalid_char` label and reports
+                // the error through the token pointer, which is still the
+                // opening quote (a bare CR is not a line continuation either:
+                // only an escaped CR/LF is consumed by scan_escape_sequence).
+                return Err(self.error_from(
+                    start,
+                    LexErrorKind::UnterminatedString,
+                    "unexpected end of string",
+                ));
             }
             if ch == '\\' {
                 has_escape = true;
@@ -1387,6 +1393,19 @@ impl<'a> Lexer<'a> {
                         return Err(self.error_from(
                             start,
                             LexErrorKind::UnexpectedCharacter,
+                            error.message,
+                        ));
+                    }
+                    // A trailing bare backslash is reported at the opening
+                    // quote, exactly like any other unterminated string: the
+                    // pinned parser raises it from the token pointer.
+                    Err(error)
+                        if error.kind == LexErrorKind::UnterminatedString
+                            && error.message == "unexpected end of string" =>
+                    {
+                        return Err(self.error_from(
+                            start,
+                            LexErrorKind::UnterminatedString,
                             error.message,
                         ));
                     }
@@ -1423,10 +1442,14 @@ impl<'a> Lexer<'a> {
             return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
         }
         let Some(ch) = self.peek_char() else {
+            // Pinned QuickJS's `case '\0': goto invalid_char` turns a bare
+            // trailing backslash into "unexpected end of string" rather than
+            // an escape error.  scan_string re-anchors the span at the
+            // opening quote; the template scanner's own EOF branch wins.
             return Err(self.error_from(
                 start,
-                LexErrorKind::InvalidEscape,
-                "escape sequence reaches end of source",
+                LexErrorKind::UnterminatedString,
+                "unexpected end of string",
             ));
         };
 
@@ -1495,10 +1518,13 @@ impl<'a> Lexer<'a> {
             '8' | '9' => {
                 if template || self.options.context.strict {
                     self.bump_char();
+                    // Pinned QuickJS routes the strict/template `\8` and `\9`
+                    // rejection through lre_parse_escape's failure label,
+                    // which uses the generic malformed-escape wording.
                     return Err(self.error_from(
                         start,
                         LexErrorKind::InvalidEscape,
-                        "escape 8 or 9 is not allowed in strict strings or templates",
+                        "malformed escape sequence in string literal",
                     ));
                 }
                 self.bump_char();
@@ -1574,7 +1600,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::InvalidEscape,
-                    "malformed braced Unicode escape",
+                    "malformed escape sequence in string literal",
                 ));
             }
             self.bump_char();
@@ -1582,7 +1608,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::InvalidEscape,
-                    "Unicode escape exceeds U+10FFFF",
+                    "malformed escape sequence in string literal",
                 ));
             }
             Ok(value)
@@ -1597,11 +1623,14 @@ impl<'a> Lexer<'a> {
             if self.invalid_source_byte_at(self.offset) {
                 return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
             }
+            // Both exhaustion and a non-hex byte take pinned QuickJS's
+            // lre_parse_escape failure path, whose only wording is the
+            // generic malformed-escape message.
             let Some(ch) = self.peek_char() else {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::InvalidEscape,
-                    format!("escape requires exactly {count} hexadecimal digits"),
+                    "malformed escape sequence in string literal",
                 ));
             };
             let Some(digit) = ch.to_digit(16) else {
@@ -1609,7 +1638,7 @@ impl<'a> Lexer<'a> {
                 return Err(self.error_from(
                     start,
                     LexErrorKind::InvalidEscape,
-                    format!("escape requires exactly {count} hexadecimal digits"),
+                    "malformed escape sequence in string literal",
                 ));
             };
             self.bump_char();
@@ -2579,6 +2608,26 @@ mod tests {
     }
 
     #[test]
+    fn malformed_number_diagnostic_matches_quickjs_wording() {
+        // Pinned QuickJS 2026-06-04 reports a single `invalid number literal`
+        // message for every malformed numeric literal (quickjs.c:22928,
+        // js_parse_get_number), regardless of the specific grammar failure.
+        // Three failure families, all sharing the same upstream message:
+        // prefixed literals without digits / out-of-radix digits; a BigInt
+        // suffix on a fraction or exponent; a decimal BigInt with a legacy
+        // leading zero.
+        for source in [
+            "0x", "0X", "0b", "0B", "0o", "0O", "0b2n", "0xgn", "0o8", "1.0n", ".5n", "0e0n",
+            "1E2n", "01n", "00n", "012348n", "0008n",
+        ] {
+            let error = Lexer::new(source).next_token().unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::InvalidNumber, "{source}");
+            assert_eq!(error.message, "invalid number literal", "{source}");
+            assert_eq!(error.span.start, Position::new(0, 1, 1), "{source}");
+        }
+    }
+
+    #[test]
     fn rejects_malformed_numbers() {
         for source in [
             "0b2",
@@ -2879,6 +2928,71 @@ mod tests {
     }
 
     #[test]
+    fn newline_terminated_strings_anchor_diagnostic_at_opening_quote() {
+        for source in ["'abc\n", "'abc\r\n", "'abc\r", "\"abc\n", "'\\\n", "'"] {
+            let error = Lexer::new(source).next_token().unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::UnterminatedString, "{source:?}");
+            assert_eq!(error.message, "unexpected end of string", "{source:?}");
+            // Pinned QuickJS raises through the token pointer, which still
+            // addresses the opening quote at column 1.
+            assert_eq!(
+                (error.span.start.line, error.span.start.column),
+                (1, 1),
+                "{source:?}"
+            );
+        }
+
+        let second_line = Lexer::new("var t = 1;\n'abc\n").tokenize().unwrap_err();
+        assert_eq!(second_line.kind, LexErrorKind::UnterminatedString);
+        assert_eq!(
+            (second_line.span.start.line, second_line.span.start.column),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn malformed_string_escapes_share_pinned_quickjs_wording_and_span() {
+        for source in [
+            r"'\u00'",
+            r"'\uz'",
+            r"'\xZZ'",
+            r"'\x'",
+            r"'\u'",
+            r"'\u{}'",
+            r"'\u{zz}'",
+            r"'\u{41'",
+            r"'\u{110000}'",
+        ] {
+            let error = Lexer::new(source).next_token().unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::InvalidEscape, "{source}");
+            assert_eq!(
+                error.message, "malformed escape sequence in string literal",
+                "{source}"
+            );
+            assert_eq!(error.span.start.byte_offset, 1, "{source}");
+            assert_eq!(error.span.start.column, 2, "{source}");
+        }
+
+        let strict = LexerOptions {
+            context: LexContext {
+                strict: true,
+                ..LexContext::default()
+            },
+            ..LexerOptions::default()
+        };
+        for source in [r"'\8'", r"'\9'"] {
+            let error = Lexer::with_options(source, strict)
+                .next_token()
+                .unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::InvalidEscape, "{source}");
+            assert_eq!(
+                error.message, "malformed escape sequence in string literal",
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn raw_source_template_and_regexp_diagnostics_point_at_malformed_byte() {
         for (raw, expected_offset) in [
             (b"`\x80`".as_slice(), 1),
@@ -2998,7 +3112,10 @@ mod tests {
         assert_eq!(part.kind, TemplatePartKind::NoSubstitution);
         assert!(part.cooked.is_none());
         let invalid = part.invalid_escape.expect("invalid escape metadata");
-        assert!(invalid.message.contains("not allowed"));
+        assert_eq!(
+            invalid.message,
+            "malformed escape sequence in string literal"
+        );
     }
 
     #[test]

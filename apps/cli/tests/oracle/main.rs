@@ -40,6 +40,7 @@ mod generator_yield_star_depth;
 mod global;
 mod iterator;
 mod json;
+mod lexical;
 mod math_intrinsic;
 mod member_access;
 mod module_reentry;

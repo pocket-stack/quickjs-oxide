@@ -284,6 +284,79 @@ fn parser_driven_lexing_preserves_quickjs_error_priority_and_locations() {
             1,
             50,
         ),
+        // A string terminated by a raw line terminator is reported at the
+        // opening quote, matching pinned QuickJS's token-pointer location
+        // rather than at the newline character (B12/C6).
+        (
+            "(function(){ \"unterminated\n})()",
+            "unexpected end of string",
+            1,
+            14,
+        ),
+        (
+            "(function(){ 'unterminated\n})()",
+            "unexpected end of string",
+            1,
+            14,
+        ),
+        (
+            "(function(){ \"unterminated\r\n})()",
+            "unexpected end of string",
+            1,
+            14,
+        ),
+        (
+            "var t = 1;\n(function(){ \"unterminated\n})()",
+            "unexpected end of string",
+            2,
+            14,
+        ),
+        // A trailing backslash before the line terminator takes the same
+        // label and is also anchored at the opening quote.
+        (
+            "(function(){ \"unterminated\\\n})()",
+            "unexpected end of string",
+            1,
+            14,
+        ),
+        // Malformed fixed-width and braced escapes share the pinned wording
+        // and point at the backslash (B12/C5).
+        (
+            "(function(){ \"\\u00\"; })()",
+            "malformed escape sequence in string literal",
+            1,
+            15,
+        ),
+        (
+            "(function(){ \"\\xZZ\"; })()",
+            "malformed escape sequence in string literal",
+            1,
+            15,
+        ),
+        (
+            "(function(){ \"\\u{}\"; })()",
+            "malformed escape sequence in string literal",
+            1,
+            15,
+        ),
+        (
+            "(function(){ \"\\u{110000}\"; })()",
+            "malformed escape sequence in string literal",
+            1,
+            15,
+        ),
+        (
+            "(function(){ \"\\u\"; })()",
+            "malformed escape sequence in string literal",
+            1,
+            15,
+        ),
+        (
+            "(function(){ \"\\x\"; })()",
+            "malformed escape sequence in string literal",
+            1,
+            15,
+        ),
     ];
 
     for (source, message, line, column) in cases {
