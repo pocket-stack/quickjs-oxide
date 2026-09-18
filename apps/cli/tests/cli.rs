@@ -84,3 +84,6 @@ mod modules;
 
 #[path = "cli/options.rs"]
 mod options;
+
+#[path = "cli/rejections.rs"]
+mod rejections;

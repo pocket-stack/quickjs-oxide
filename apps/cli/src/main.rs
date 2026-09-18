@@ -3,12 +3,14 @@ mod profiling;
 use quickjs_oxide::QUICKJS_COMPAT_VERSION;
 use quickjs_oxide::engine::api::{
     Context, DebugInfoMode, DescriptorField, JsString, ModuleImportAttributes,
-    ModuleImportMetaProperty, ModuleLoadResult, ModuleLoader, ModuleLoaderError,
-    OrdinaryPropertyDescriptor, PromiseState, Runtime, RuntimeError, Value, number_to_string,
-    quickjs_detect_module_bytes,
+    ModuleImportMetaProperty, ModuleLoadResult, ModuleLoader, ModuleLoaderError, ObjectRef,
+    OrdinaryPropertyDescriptor, PromiseRejectionEvent, PromiseState, Runtime, RuntimeError, Value,
+    number_to_string, quickjs_detect_module_bytes,
 };
+use std::cell::RefCell;
 use std::io::Write as _;
 use std::process::ExitCode;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum SourceGoal {
@@ -52,15 +54,20 @@ impl ModuleLoader for FileModuleLoader {
 
     fn load(
         &self,
-        _context: &mut quickjs_oxide::engine::api::Context,
+        context: &mut quickjs_oxide::engine::api::Context,
         normalized_name: &JsString,
         attributes: &ModuleImportAttributes,
     ) -> Result<ModuleLoadResult, ModuleLoaderError> {
         let units = normalized_name.utf16_units().collect::<Vec<_>>();
         let filename = String::from_utf16(&units)
             .map_err(|_| ModuleLoaderError::new("module filename is not valid Unicode"))?;
-        let source = std::fs::read(&filename)
-            .map_err(|_| ModuleLoaderError::new(format!("module filename '{filename}'")))?;
+        let source = std::fs::read(&filename).map_err(|_| {
+            module_load_failure(context, &filename).unwrap_or_else(|error| {
+                ModuleLoaderError::new(format!(
+                    "module filename '{filename}': host error construction failed: {error}"
+                ))
+            })
+        })?;
         if import_type_is(attributes, "json5") {
             return Ok(ModuleLoadResult::Json5Bytes(source));
         }
@@ -74,6 +81,23 @@ impl ModuleLoader for FileModuleLoader {
                 .map_err(|error| ModuleLoaderError::new(error.to_string()))?,
         })
     }
+}
+
+/// Build the exact JavaScript `ReferenceError` that upstream's
+/// `js_module_loader` throws when `js_load_file` fails
+/// (`quickjs-libc.c:699`: "could not load module filename '%s'"). The host
+/// loader raises the final text itself, so the engine-side dynamic-import
+/// wrapper is never reached and the message is not doubled. Returning it as
+/// [`ModuleLoaderError::exception`] preserves object identity through rejection.
+fn module_load_failure(
+    context: &mut quickjs_oxide::engine::api::Context,
+    filename: &str,
+) -> Result<ModuleLoaderError, RuntimeError> {
+    let error = context.new_native_error(
+        quickjs_oxide::engine::api::error::NativeErrorKind::Reference,
+        &format!("could not load module filename '{filename}'"),
+    )?;
+    Ok(ModuleLoaderError::exception(error))
 }
 
 fn import_type_is(attributes: &ModuleImportAttributes, expected: &str) -> bool {
@@ -120,6 +144,7 @@ fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut profile = profiling::Options::default();
     let mut debug_info = DebugInfoMode::Full;
+    let mut dump_unhandled_promise_rejection = true;
     let mut expression = None;
     let mut print_result = false;
     let mut quit = false;
@@ -131,6 +156,7 @@ fn main() -> ExitCode {
         match option.as_str() {
             "--" => break,
             "--strip-source" => debug_info = DebugInfoMode::StripSource,
+            "--no-unhandled-rejection" => dump_unhandled_promise_rejection = false,
             "--print-result" => print_result = true,
             "--module" => source_goal = SourceGoal::Module,
             "--script" => source_goal = SourceGoal::Script,
@@ -149,6 +175,7 @@ fn main() -> ExitCode {
                 println!("      --script      load as a script");
                 println!("  -s                strip all debug information");
                 println!("      --strip-source strip only function source text");
+                println!("      --no-unhandled-rejection ignore unhandled promise rejections");
                 println!("      --print-result print the script completion value");
                 println!("  -v, --version     show version and compatibility target");
                 profiling::help();
@@ -216,6 +243,9 @@ fn main() -> ExitCode {
                             println!("      --script      load as a script");
                             println!("  -s                strip all debug information");
                             println!("      --strip-source strip only function source text");
+                            println!(
+                                "      --no-unhandled-rejection ignore unhandled promise rejections"
+                            );
                             println!("  -v, --version     show version and compatibility target");
                             profiling::help();
                             return ExitCode::SUCCESS;
@@ -289,8 +319,11 @@ fn main() -> ExitCode {
             source_goal,
             main_module_path,
             &args[index..],
-            debug_info,
-            print_result,
+            HostOptions {
+                debug_info,
+                print_result,
+                dump_unhandled_promise_rejection,
+            },
             &profile,
         );
     }
@@ -314,8 +347,11 @@ fn main() -> ExitCode {
                 source_goal,
                 Some(file),
                 &args[index..],
-                debug_info,
-                print_result,
+                HostOptions {
+                    debug_info,
+                    print_result,
+                    dump_unhandled_promise_rejection,
+                },
                 &profile,
             )
         }
@@ -332,6 +368,15 @@ enum EvaluationSource<'a> {
     Bytes(&'a [u8]),
 }
 
+/// Process-wide host policies `evaluate` installs on the runtime, mirroring the
+/// qjs.c flags of the same names.
+#[derive(Clone, Copy)]
+struct HostOptions {
+    debug_info: DebugInfoMode,
+    print_result: bool,
+    dump_unhandled_promise_rejection: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn evaluate(
     source: EvaluationSource<'_>,
@@ -339,8 +384,7 @@ fn evaluate(
     source_goal: SourceGoal,
     main_module_path: Option<&str>,
     script_args: &[String],
-    debug_info: DebugInfoMode,
-    print_result: bool,
+    options: HostOptions,
     profile: &profiling::Options,
 ) -> ExitCode {
     // Declared before runtime so trace serialization happens after teardown.
@@ -352,10 +396,28 @@ fn evaluate(
         }
     };
     let runtime = session.runtime();
-    runtime.set_debug_info_mode(debug_info);
+    runtime.set_debug_info_mode(options.debug_info);
     // Upstream qjs installs its filesystem loader for every process, including
     // Script-goal `-e`, so dynamic import has the same host boundary everywhere.
     let _module_loader = runtime.set_module_loader(FileModuleLoader);
+    // Host promise rejection tracking, mirroring
+    // `js_std_promise_rejection_tracker` in quickjs-libc.c: a rejection is
+    // rooted in publication order and its entry is dropped as soon as the
+    // host observes a handler being attached. Entries that survive the job
+    // drain are reported after the queue settles.
+    let pending_rejections: Rc<RefCell<Vec<(ObjectRef, Value)>>> = Rc::default();
+    if options.dump_unhandled_promise_rejection {
+        let pending_rejections = Rc::clone(&pending_rejections);
+        runtime.set_host_promise_rejection_tracker(move |event: PromiseRejectionEvent| {
+            let mut pending = pending_rejections.borrow_mut();
+            let promise = event.promise();
+            if event.is_handled() {
+                pending.retain(|(candidate, _)| candidate != promise);
+            } else if !pending.iter().any(|(candidate, _)| candidate == promise) {
+                pending.push((promise.clone(), event.reason().clone()));
+            }
+        });
+    }
     let mut context = runtime.new_context();
     let snapshot = session.snapshot_guard(&runtime);
     let script_args = match script_args
@@ -386,25 +448,31 @@ fn evaluate(
     };
     match evaluation {
         Ok(value) => {
-            loop {
-                match runtime
-                    .execute_pending_job()
-                    .map_err(|error| error.into_error())
-                {
-                    Ok(outcome) if outcome.executed() => {}
-                    Ok(_) => break,
-                    Err(RuntimeError::Exception) => {
-                        report_exception(format_pending_exception(&runtime, &mut context));
-                        return ExitCode::from(1);
-                    }
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::from(1);
-                    }
-                }
+            if !drain_pending_jobs(&runtime, &mut context) {
+                return ExitCode::from(1);
             }
             snapshot.phase("after-jobs-before-context-drop");
-            if print_result {
+            // `js_std_promise_rejection_check`: report every rejection that
+            // remained unhandled once the job queue drained, then exit 1.
+            let pending = std::mem::take(&mut *pending_rejections.borrow_mut());
+            if !pending.is_empty() {
+                let stderr = std::io::stderr();
+                let mut stderr = stderr.lock();
+                for (_, reason) in &pending {
+                    let _ = stderr.write_all(b"Possibly unhandled promise rejection: ");
+                    match runtime.qjs_print_value_bytes(reason) {
+                        Ok(diagnostic) => {
+                            let _ = stderr.write_all(&diagnostic);
+                        }
+                        Err(_) => {
+                            let _ = stderr.write_all(b"[unknown]");
+                        }
+                    }
+                    let _ = stderr.write_all(b"\n");
+                }
+                return ExitCode::from(1);
+            }
+            if options.print_result {
                 println!("{}", completion_text(value));
             }
             ExitCode::SUCCESS
@@ -430,6 +498,31 @@ fn evaluate(
 
 fn is_module_file(filename: &str, source: &[u8]) -> bool {
     filename.ends_with(".mjs") || quickjs_detect_module_bytes(source)
+}
+
+/// Drain the runtime job queue the way `js_std_loop` does. A job that leaves a
+/// pending exception is reported with the ordinary uncaught-exception dump and
+/// the queue keeps draining: the rejection of a derived Promise is routed into
+/// its own reject capability by the reaction job, so such an exception is not a
+/// fatal process error. Returns `false` when an internal host error (not a
+/// JavaScript exception) aborted draining.
+fn drain_pending_jobs(runtime: &Runtime, context: &mut Context) -> bool {
+    loop {
+        match runtime
+            .execute_pending_job()
+            .map_err(|error| error.into_error())
+        {
+            Ok(outcome) if outcome.executed() => {}
+            Ok(_) => return true,
+            Err(RuntimeError::Exception) => {
+                report_exception(format_pending_exception(runtime, context));
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                return false;
+            }
+        }
+    }
 }
 
 fn evaluate_module(

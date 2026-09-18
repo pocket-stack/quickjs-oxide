@@ -272,7 +272,7 @@ impl<'a> NativePublicationWitness<'a> {
             function,
             self.realm,
             ActiveFrameFlags {
-                backtrace_hidden: self.iterator_next_raw,
+                backtrace_hidden: self.backtrace_hidden(),
                 ..Default::default()
             },
             ActiveFrameKind::Native {
@@ -282,6 +282,17 @@ impl<'a> NativePublicationWitness<'a> {
             },
             continuation,
         )
+    }
+
+    /// QuickJS invokes `JS_CLASS_PROMISE_RESOLVE_FUNCTION` /
+    /// `JS_CLASS_PROMISE_REJECT_FUNCTION` through the class call table without
+    /// pushing a `JSStackFrame` (`JS_CallInternal` hands non-bytecode classes
+    /// straight to their call handler), so errors raised while resolving a
+    /// thenable must not name the resolving function in their backtrace.
+    /// `Iterator.prototype.next` raw fast-path frames are hidden for the same
+    /// reason (its `%IteratorHelperPrototype%` frames are not observable).
+    fn backtrace_hidden(&self) -> bool {
+        self.iterator_next_raw || matches!(self.target, NativeFunctionId::PromiseResolving(_))
     }
 }
 

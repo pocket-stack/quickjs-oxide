@@ -98,4 +98,18 @@ impl Context {
     pub fn take_exception(&mut self) -> Result<Option<Value>, RuntimeError> {
         self.runtime.take_pending_exception()
     }
+
+    /// Construct a realm-intrinsic native error value (the same
+    /// `JS_ThrowReferenceError` / `JS_ThrowTypeError` … factory used by
+    /// built-ins), capturing a backtrace exactly as a thrown native error
+    /// would. This reads the realm's intrinsic constructor rather than the
+    /// mutable global binding, so host callbacks that need to raise a
+    /// specification-defined error are immune to global object tampering.
+    pub fn new_native_error(
+        &self,
+        kind: NativeErrorKind,
+        message: &str,
+    ) -> Result<Value, RuntimeError> {
+        self.runtime.new_native_error(self.realm, kind, message)
+    }
 }
