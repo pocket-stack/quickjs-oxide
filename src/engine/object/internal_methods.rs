@@ -1412,3 +1412,176 @@ fn proxy_define_descriptor_is_compatible(
 const fn complete_descriptor_is_data(descriptor: &CompleteOrdinaryPropertyDescriptor) -> bool {
     matches!(descriptor, CompleteOrdinaryPropertyDescriptor::Data { .. })
 }
+
+#[cfg(test)]
+mod long_prototype_chain_tests {
+    use super::*;
+    use crate::engine::value::JsString;
+
+    // Above the measured pre-fix abort thresholds (GET ~19k, `in` ~14k on an
+    // 8 MiB main-thread stack). Pinned QuickJS iterates these walks and
+    // accepts the same length, so parity requires normal completion rather
+    // than a depth-limit RangeError/InternalError.
+    const CHAIN_DEPTH: usize = 50_000;
+
+    fn chain_source(tail: &str) -> String {
+        format!(
+            "var o = {{}};\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             {tail}",
+        )
+    }
+
+    #[test]
+    fn get_missing_property_on_long_chain_returns_undefined() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let value = context.eval(&chain_source("o.missing")).unwrap();
+        assert_eq!(value, Value::Undefined);
+    }
+
+    #[test]
+    fn in_operator_on_long_chain_returns_false() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let value = context.eval(&chain_source("\"missing\" in o")).unwrap();
+        assert_eq!(value, Value::Bool(false));
+    }
+
+    #[test]
+    fn instanceof_on_long_chain_returns_false() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let source = format!(
+            "function F(){{}}\n\
+             var o = {{}};\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             o instanceof F",
+        );
+        assert_eq!(context.eval(&source).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn inherited_data_property_is_found_through_long_chain() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        // `root` becomes the terminal prototype of the Object.create chain.
+        let source = format!(
+            "var root = {{ inherited: 7 }};\n\
+             var o = root;\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             [o.inherited, \"inherited\" in o].join(\"|\")",
+        );
+        assert_eq!(
+            context.eval(&source).unwrap(),
+            Value::String(JsString::from_static("7|true")),
+        );
+    }
+
+    #[test]
+    fn inherited_accessor_through_long_chain_runs_with_original_receiver() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        // The getter must observe the chain tip as `this` (the original
+        // receiver threaded through every iterative link), and `has` must see
+        // the accessor property as present.
+        let source = format!(
+            "var root = {{}};\n\
+             Object.defineProperty(root, \"x\", {{\n\
+                 get: function() {{ return this === o ? \"receiver\" : \"wrong\"; }},\n\
+                 configurable: true,\n\
+             }});\n\
+             var o = root;\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             [o.x, \"x\" in o].join(\"|\")",
+        );
+        assert_eq!(
+            context.eval(&source).unwrap(),
+            Value::String(JsString::from_static("receiver|true")),
+        );
+    }
+
+    #[test]
+    fn accessor_getter_throw_propagates_through_long_chain() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let source = format!(
+            "var root = {{}};\n\
+             Object.defineProperty(root, \"boom\", {{\n\
+                 get: function() {{ throw new Error(\"chain-end-get\"); }},\n\
+                 configurable: true,\n\
+             }});\n\
+             var o = root;\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             try {{ o.boom; \"no-throw\" }} catch (e) {{ e.message }}",
+        );
+        assert_eq!(
+            context.eval(&source).unwrap(),
+            Value::String(JsString::from_static("chain-end-get")),
+        );
+    }
+
+    #[test]
+    fn proxy_in_long_chain_get_trap_is_observed_once() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        // A Proxy sits at the chain root: the iterative walk must still cross
+        // the observable proxy boundary exactly once and surface its trap.
+        let source = r#"
+             var calls = 0;
+             var root = new Proxy({}, {
+                 has: function(t, k) { calls++; return k === "present"; },
+                 get: function(t, k) { calls++; return k === "present" ? 9 : undefined; },
+             });
+             var o = root;
+             for (var i = 0; i < 1000; i++) o = Object.create(o);
+             [o.present, "present" in o, "absent" in o, calls].join("|")
+        "#;
+        assert_eq!(
+            context.eval(source).unwrap(),
+            Value::String(JsString::from_static("9|true|false|3")),
+        );
+    }
+
+    #[test]
+    fn set_walks_long_chain_iteratively_when_slow_path_forced() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        // A Proxy below the tip forces the special Set path. Before the walk
+        // was iterative this aborted the host stack like GET/`in`; pinned
+        // QuickJS accepts it and the proxy set trap fires exactly once.
+        let source = format!(
+            "var calls = 0;\n\
+             var root = new Proxy({{}}, {{\n\
+                 set: function(t, k, v) {{ calls++; t[k] = v; return true; }},\n\
+             }});\n\
+             var o = root;\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             o.newProperty = 5;\n\
+             [o.newProperty, calls].join(\"|\")",
+        );
+        assert_eq!(
+            context.eval(&source).unwrap(),
+            Value::String(JsString::from_static("5|1")),
+        );
+    }
+
+    #[test]
+    fn inherited_setter_through_long_chain_receives_original_receiver() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        // The inherited accessor setter must receive the chain tip as `this`.
+        let source = format!(
+            "var root = {{}};\n\
+             Object.defineProperty(root, \"s\", {{\n\
+                 set: function(v) {{ this.kept = (this === o) ? v : \"wrong\"; }},\n\
+                 configurable: true,\n\
+             }});\n\
+             var o = root;\n\
+             for (var i = 0; i < {CHAIN_DEPTH}; i++) o = Object.create(o);\n\
+             o.s = 11;\n\
+             o.kept",
+        );
+        assert_eq!(context.eval(&source).unwrap(), Value::Int(11));
+    }
+}
