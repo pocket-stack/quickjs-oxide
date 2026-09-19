@@ -214,13 +214,16 @@ enum Finish {
 }
 
 fn finish_numeric(
+    runtime: &Runtime,
     execution: &mut RunningExecution,
     frame: FrameId,
-    value: Value,
-    previous: Option<Value>,
+    value: JsValue,
+    previous: Option<JsValue>,
     _depth: usize,
 ) -> Result<CallStep, Error> {
-    super::frame_operations::commit_numeric_output(execution, frame, value, previous, _depth)?;
+    super::frame_operations::commit_numeric_output(
+        runtime, execution, frame, value, previous, _depth,
+    )?;
     Ok(CallStep::Entered)
 }
 
@@ -527,11 +530,19 @@ pub(super) fn start_call(
     execution: &mut RunningExecution,
     frame: FrameId,
     proxy: ObjectRef,
-    receiver: Value,
-    arguments: Vec<Value>,
+    receiver: crate::engine::value::JsValue,
+    arguments: Vec<crate::engine::value::JsValue>,
     tail: bool,
     depth: usize,
 ) -> Result<CallStep, Error> {
+    let receiver = runtime
+        .root_and_release_jsvalue(receiver)
+        .map_err(runtime_error_to_vm_error)?;
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| runtime.root_and_release_jsvalue(argument))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(runtime_error_to_vm_error)?;
     match start_proxy_call(
         runtime,
         execution,
@@ -552,11 +563,19 @@ pub(super) fn start_callback_call(
     execution: &mut RunningExecution,
     frame: FrameId,
     callable: crate::engine::object::CallableRef,
-    receiver: Value,
-    arguments: Vec<Value>,
+    receiver: crate::engine::value::JsValue,
+    arguments: Vec<crate::engine::value::JsValue>,
     tail: bool,
     depth: usize,
 ) -> Result<CallStep, Error> {
+    let receiver = runtime
+        .root_and_release_jsvalue(receiver)
+        .map_err(runtime_error_to_vm_error)?;
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| runtime.root_and_release_jsvalue(argument))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(runtime_error_to_vm_error)?;
     match start_owned_callback(
         runtime,
         execution,
@@ -776,7 +795,9 @@ pub(super) fn start_waitable_native_call(
                         // activation still owns the protocol call. The reply
                         // resume is likewise consumed before the outer finish.
                         records[0].step =
-                            Step::Complete(Some(Completion::Return(Value::Undefined)));
+                            Step::Complete(Some(Completion::Return(
+                                crate::engine::value::JsValue::Undefined,
+                            )));
                         if let Some(mut parent) = parent.take() {
                             let outer = parent.call.take().expect("outer replace activation");
                             drop(parent);
@@ -804,7 +825,9 @@ pub(super) fn start_waitable_native_call(
                 native::install_waiting(&mut query, call, resume);
                 let step = std::mem::replace(
                     &mut records[0].step,
-                    Step::Complete(Some(Completion::Return(Value::Undefined))),
+                    Step::Complete(Some(Completion::Return(
+                        crate::engine::value::JsValue::Undefined,
+                    ))),
                 );
                 execution.query_storage.recycle_native_wait(records);
                 #[cfg(feature = "profiling")]
@@ -868,13 +891,21 @@ pub(super) fn start_apply(
     let realm = execution.frames.current_mut(frame)?.executable.realm;
     let result = (|| {
         let parent = execution.frames.current_mut(frame)?;
+        // The operands stay in their slots; the spread machine borrows rooted
+        // copies while `start_instruction` consumes the slot owners.
         let step = crate::engine::builtins::InvokeStep::start_spread(
             runtime,
             realm,
             kind,
-            execution.slots.peek(&parent.window, 2)?.clone(),
-            execution.slots.peek(&parent.window, 1)?.clone(),
-            execution.slots.peek(&parent.window, 0)?.clone(),
+            runtime
+                .root_value(execution.slots.peek(&parent.window, 2)?)
+                .map_err(runtime_error_to_vm_error)?,
+            runtime
+                .root_value(execution.slots.peek(&parent.window, 1)?)
+                .map_err(runtime_error_to_vm_error)?,
+            runtime
+                .root_value(execution.slots.peek(&parent.window, 0)?)
+                .map_err(runtime_error_to_vm_error)?,
         )
         .map_err(runtime_error_to_vm_error)?;
         start_instruction(runtime, execution, frame, step.into(), 3)
@@ -891,11 +922,18 @@ pub(super) fn start_construct(
     execution: &mut RunningExecution,
     frame: FrameId,
     target: super::call::ConstructorRef,
-    new_target: Value,
-    arguments: Vec<Value>,
+    new_target: crate::engine::value::JsValue,
+    arguments: Vec<crate::engine::value::JsValue>,
     operand_count: usize,
 ) -> Result<CallStep, Error> {
     let realm = execution.frames.current_mut(frame)?.executable.realm;
+    // The construct machine consumes public roots; the operand owners are
+    // rooted at this entry boundary.
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| runtime.root_and_release_jsvalue(argument))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(runtime_error_to_vm_error)?;
     let result = start_instruction(
         runtime,
         execution,
@@ -1842,6 +1880,11 @@ fn invoke(
     } = match super::call::normalize_callback(runtime, realm, callable, receiver, arguments)? {
         NativeConversion::Value(call) => call,
         NativeConversion::Throw(value) => {
+            // The normalization boundary threw a public root; transfer it into
+            // the internal completion without a retain/release pair.
+            let value = runtime
+                .into_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
             step = resume
                 .resume(runtime, Completion::Throw(value))
                 .map_err(runtime_error_to_vm_error)?;
@@ -1865,6 +1908,16 @@ fn invoke(
             .try_reserve(1)
             .map_err(|_| Error::internal("property continuation allocation failed"))?;
         query.parents.push(resume);
+        // The proxy-call machine consumes public roots; the normalized
+        // internal owners are rooted at this sub-driver boundary.
+        let receiver = runtime
+            .root_and_release_jsvalue(receiver)
+            .map_err(runtime_error_to_vm_error)?;
+        let arguments = arguments
+            .into_iter()
+            .map(|argument| runtime.root_and_release_jsvalue(argument))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(runtime_error_to_vm_error)?;
         step = crate::engine::object::ProxyCallStep::start(
             runtime,
             realm,
@@ -1896,9 +1949,15 @@ fn invoke(
             min_readable_args,
             super::call::NativeInvokeMode::Ordinary,
             super::call::NativeInvocation::Call {
-                this_value: receiver,
+                this_value: runtime
+                    .root_and_release_jsvalue(receiver)
+                    .map_err(runtime_error_to_vm_error)?,
             },
-            arguments,
+            arguments
+                .into_iter()
+                .map(|argument| runtime.root_and_release_jsvalue(argument))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(runtime_error_to_vm_error)?,
             resume,
             next_step,
         )?;
@@ -1918,7 +1977,7 @@ fn invoke(
             .map_err(|error| Error::internal(error.to_string()))?
             .metadata;
         let kind = metadata.function_kind;
-        let module_link = metadata.is_module && receiver == Value::Bool(true);
+        let module_link = metadata.is_module && matches!(receiver, crate::engine::value::JsValue::Bool(true));
         {
             if !execution
                 .frames
@@ -1953,7 +2012,7 @@ fn invoke(
                 arguments,
                 bytecode,
                 closure_slots,
-                new_target: Value::Undefined,
+                new_target: crate::engine::value::JsValue::Undefined,
                 caller_realm: realm,
                 return_to: ReturnTarget {
                     owner,
@@ -2005,14 +2064,8 @@ fn invoke(
         .heap
         .context(realm)
         .map_err(|error| Error::internal(error.to_string()))?;
-    runtime
-        .validate_value_domain(&receiver, "call this value")
-        .map_err(runtime_error_to_vm_error)?;
-    for argument in &arguments {
-        runtime
-            .validate_value_domain(argument, "call argument")
-            .map_err(runtime_error_to_vm_error)?;
-    }
+    // Internal values carry no runtime branding; the slot authentication
+    // above already proved every operand owner.
     let completion = if runtime.native_call_would_overflow(target) {
         overflow(runtime, realm)?
     } else {
@@ -2021,16 +2074,35 @@ fn invoke(
         } else {
             defining_realm
         };
-        runtime
+        // The native ABI consumes public roots; the normalized internal owners
+        // are rooted at this leaf boundary and released after the call.
+        let rooted_receiver = runtime
+            .root_value(&receiver)
+            .map_err(runtime_error_to_vm_error)?;
+        let rooted_arguments = arguments
+            .iter()
+            .map(|argument| runtime.root_value(argument))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(runtime_error_to_vm_error)?;
+        let completion = runtime
             .call_native_function(
                 &callable,
                 execution_realm,
                 target,
                 min_readable_args,
-                receiver,
-                &arguments,
+                rooted_receiver,
+                &rooted_arguments,
             )
-            .map_err(runtime_error_to_vm_error)?
+            .map_err(runtime_error_to_vm_error);
+        runtime
+            .release_jsvalue(receiver)
+            .map_err(runtime_error_to_vm_error)?;
+        for argument in arguments {
+            runtime
+                .release_jsvalue(argument)
+                .map_err(runtime_error_to_vm_error)?;
+        }
+        completion?
     };
     step = resume
         .resume(runtime, completion)
@@ -2042,7 +2114,7 @@ fn invoke(
 fn overflow(runtime: &Runtime, realm: crate::engine::heap::ContextId) -> Result<Completion, Error> {
     Ok(Completion::Throw(
         runtime
-            .new_native_error(
+            .new_native_error_jsvalue(
                 realm,
                 crate::engine::api::error::NativeErrorKind::Internal,
                 "stack overflow",
@@ -2465,9 +2537,12 @@ pub(super) fn start_iterator_read(
     runtime: &Runtime,
     execution: &mut RunningExecution,
     pending: super::iterator_driver::PendingIterator,
-    receiver: Value,
+    receiver: crate::engine::value::JsValue,
     key: PropertyKey,
 ) -> Result<CallStep, Error> {
+    let receiver = runtime
+        .root_and_release_jsvalue(receiver)
+        .map_err(runtime_error_to_vm_error)?;
     start_iterator_query(
         runtime,
         execution,
@@ -2485,8 +2560,11 @@ pub(super) fn start_iterator_call(
     execution: &mut RunningExecution,
     pending: super::iterator_driver::PendingIterator,
     callable: crate::engine::object::CallableRef,
-    receiver: Value,
+    receiver: crate::engine::value::JsValue,
 ) -> Result<CallStep, Error> {
+    let receiver = runtime
+        .root_and_release_jsvalue(receiver)
+        .map_err(runtime_error_to_vm_error)?;
     start_iterator_query(
         runtime,
         execution,
@@ -2505,9 +2583,17 @@ pub(super) fn start_iterator_invoke(
     execution: &mut RunningExecution,
     pending: super::iterator_driver::PendingIterator,
     target: DirectCallTarget,
-    receiver: Value,
-    arguments: Vec<Value>,
+    receiver: crate::engine::value::JsValue,
+    arguments: Vec<crate::engine::value::JsValue>,
 ) -> Result<CallStep, Error> {
+    let receiver = runtime
+        .root_and_release_jsvalue(receiver)
+        .map_err(runtime_error_to_vm_error)?;
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| runtime.root_and_release_jsvalue(argument))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(runtime_error_to_vm_error)?;
     start_iterator_query(
         runtime,
         execution,
@@ -2525,16 +2611,17 @@ pub(super) fn start_iterator_next(
     runtime: &Runtime,
     execution: &mut RunningExecution,
     pending: super::iterator_driver::PendingIterator,
-    iterator: Value,
+    iterator: crate::engine::value::JsValue,
     method: crate::engine::object::CallableRef,
 ) -> Result<CallStep, Error> {
-    let Value::Object(iterator) = iterator else {
+    let crate::engine::value::JsValue::Object(iterator) = iterator else {
         return Err(Error::internal("iterator record lost object receiver"));
     };
     let step = crate::engine::builtins::IteratorNextStep::start_callable(
         runtime,
         pending.realm(),
-        iterator,
+        crate::engine::object::ObjectRef::from_borrowed_handle(runtime.clone(), iterator)
+            .map_err(super::exception::heap_error_to_vm_error)?,
         method,
     )
     .map_err(runtime_error_to_vm_error)?;
@@ -2577,7 +2664,7 @@ pub(super) fn start_array_next_without_pending(
     callable: crate::engine::object::CallableRef,
     defining_realm: crate::engine::heap::ContextId,
     min_readable_args: u8,
-    iterator: Value,
+    iterator: crate::engine::value::JsValue,
 ) -> Result<CallStep, Error> {
     use crate::engine::builtins::{IteratorNextResume, ObjectIteratorStep};
     let realm = execution.frames.current_mut(frame)?.executable.realm;
@@ -2586,11 +2673,14 @@ pub(super) fn start_array_next_without_pending(
             || runtime.host_stack_would_overflow()
         {
             ObjectIteratorStep::Throw(match overflow(runtime, realm)? {
-                Completion::Throw(value) => value,
+                Completion::Throw(value) => runtime
+                    .root_and_release_jsvalue(value)
+                    .map_err(runtime_error_to_vm_error)?,
                 _ => return Err(Error::internal("iterator overflow did not throw")),
             })
         } else {
-            let mut waiting = Step::Complete(Some(Completion::Return(Value::Undefined)));
+            let mut waiting =
+                Step::Complete(Some(Completion::Return(crate::engine::value::JsValue::Undefined)));
             let mut waiting_call = None;
             let result = native::compact_array_next_into(
                 runtime,
@@ -2599,7 +2689,9 @@ pub(super) fn start_array_next_without_pending(
                 callable,
                 defining_realm,
                 min_readable_args,
-                iterator,
+                runtime
+                    .root_and_release_jsvalue(iterator)
+                    .map_err(runtime_error_to_vm_error)?,
                 &mut waiting,
                 &mut waiting_call,
             )?;
@@ -2641,12 +2733,24 @@ pub(super) fn start_array_next_without_pending(
             "iterator_native_completed_without_query",
         );
         let (value, done, abrupt) = match result {
-            ObjectIteratorStep::Yield(value) => (value, false, None),
-            ObjectIteratorStep::Done => (Value::Undefined, true, None),
-            ObjectIteratorStep::Throw(value) => (Value::Undefined, false, Some(value)),
+            ObjectIteratorStep::Yield(value) => (
+                runtime
+                    .into_jsvalue(value)
+                    .map_err(runtime_error_to_vm_error)?,
+                false,
+                None,
+            ),
+            ObjectIteratorStep::Done => (crate::engine::value::JsValue::Undefined, true, None),
+            ObjectIteratorStep::Throw(value) => (
+                crate::engine::value::JsValue::Undefined,
+                false,
+                Some(runtime.into_jsvalue(value).map_err(runtime_error_to_vm_error)?),
+            ),
         };
-        super::iterator_driver::finish_next(execution, frame, record_base, value, done, abrupt)
-            .map(Progress::Call)
+        super::iterator_driver::finish_next(
+            runtime, execution, frame, record_base, value, done, abrupt,
+        )
+        .map(Progress::Call)
     })();
     match finish_error(runtime, realm, result)? {
         Progress::Call(step) => Ok(step),
@@ -2685,14 +2789,19 @@ fn start_array_next_direct(
         // Budget failures are parsed by the same iterator continuation and
         // disable the owned iterator region through PendingIterator::finish.
         match overflow(runtime, realm)? {
-            Completion::Throw(value) => ObjectIteratorStep::Throw(value),
+            Completion::Throw(value) => ObjectIteratorStep::Throw(
+                runtime
+                    .root_and_release_jsvalue(value)
+                    .map_err(runtime_error_to_vm_error)?,
+            ),
             _ => return Err(Error::internal("iterator overflow did not throw")),
         }
     } else {
         if !execution.query_storage.reserve_cached_native_entry()? {
             return Err(Error::internal("direct native entry lost reserved storage"));
         }
-        let mut waiting = Step::Complete(Some(Completion::Return(Value::Undefined)));
+        let mut waiting =
+            Step::Complete(Some(Completion::Return(crate::engine::value::JsValue::Undefined)));
         let mut waiting_call = None;
         let result = native::begin_into(
             runtime,
@@ -2756,7 +2865,7 @@ fn start_array_next_direct(
     crate::engine::api::profiling::record_owned_execution_event(
         "iterator_native_completed_without_query",
     );
-    super::iterator_driver::finish(execution, pending).map(Progress::Call)
+    super::iterator_driver::finish(runtime, execution, pending).map(Progress::Call)
 }
 
 fn iterator_query_identity(execution: &mut RunningExecution, frame: FrameId) -> Result<u64, Error> {
@@ -2873,15 +2982,24 @@ pub(super) fn start_object_copy(
 ) -> Result<CallStep, Error> {
     let parent = execution.frames.current_mut(frame)?;
     let realm = parent.executable.realm;
-    let target = execution.slots.peek(&parent.window, target_depth)?.clone();
+    // The copy machine borrows rooted copies; the slot owners stay live until
+    // the pops below consume them.
+    let target = runtime
+        .root_value(execution.slots.peek(&parent.window, target_depth)?)
+        .map_err(runtime_error_to_vm_error)?;
     let Value::Object(target) = target else {
         return Err(Error::internal(
             "CopyDataProperties target is not an object",
         ));
     };
-    let source = execution.slots.peek(&parent.window, source_depth)?.clone();
+    let source = runtime
+        .root_value(execution.slots.peek(&parent.window, source_depth)?)
+        .map_err(runtime_error_to_vm_error)?;
     let excluded = if let Some(depth) = excluded_depth {
-        let Value::Object(object) = execution.slots.peek(&parent.window, depth)?.clone() else {
+        let excluded = runtime
+            .root_value(execution.slots.peek(&parent.window, depth)?)
+            .map_err(runtime_error_to_vm_error)?;
+        let Value::Object(object) = excluded else {
             return Err(Error::internal(
                 "CopyDataProperties exclusion is not an object",
             ));
@@ -2899,18 +3017,26 @@ pub(super) fn start_object_copy(
     if excluded_depth.is_none() {
         let source = execution.slots.pop(&mut parent.window)?;
         if identity.is_none() {
-            // At exhaustion retain this already-rooted owner only long enough
-            // to restore the old failure input if a real wait is selected.
+            // At exhaustion retain this owner only long enough to restore the
+            // old failure input if a real wait is selected.
             rejected_source = Some(source);
+        } else {
+            // The normal source owner releases before any copy effects, as before.
+            runtime
+                .release_jsvalue(source)
+                .map_err(runtime_error_to_vm_error)?;
         }
-        // The normal source owner drops before any copy effects, as before.
     }
     let result = (|| {
         let step = step
             .advance_without_callback(runtime)
             .map_err(runtime_error_to_vm_error)?;
         if let crate::engine::builtins::ObjectCopyStep::Complete(completion) = step {
-            drop(rejected_source.take());
+            if let Some(source) = rejected_source.take() {
+                runtime
+                    .release_jsvalue(source)
+                    .map_err(runtime_error_to_vm_error)?;
+            }
             return finish_instruction_call(
                 execution,
                 ReturnOwner::Frame(frame),
@@ -3022,11 +3148,16 @@ fn continue_iterator(
     use super::iterator_driver::IteratorAction;
     let (step, next) = match action {
         IteratorAction::Finish => {
-            return super::iterator_driver::finish(execution, pending).map(IteratorProgress::Done);
+            return super::iterator_driver::finish(runtime, execution, pending)
+                .map(IteratorProgress::Done);
         }
         IteratorAction::Read(receiver, key) => (
             Step::ReadValue {
-                receiver: Some(receiver),
+                receiver: Some(
+                    runtime
+                        .root_and_release_jsvalue(receiver)
+                        .map_err(runtime_error_to_vm_error)?,
+                ),
                 key: Some(key),
                 resume: Some(Resume::Identity),
             },
@@ -3035,7 +3166,11 @@ fn continue_iterator(
         IteratorAction::Call(callable, receiver) => (
             Step::Call {
                 target: Some(DirectCallTarget::Callable(callable)),
-                receiver: Some(receiver),
+                receiver: Some(
+                    runtime
+                        .root_and_release_jsvalue(receiver)
+                        .map_err(runtime_error_to_vm_error)?,
+                ),
                 arguments: Some(Vec::new()),
                 resume: Some(Resume::Identity),
             },
@@ -3044,21 +3179,32 @@ fn continue_iterator(
         IteratorAction::Invoke(target, receiver, arguments) => (
             Step::Call {
                 target: Some(target),
-                receiver: Some(receiver),
-                arguments: Some(arguments),
+                receiver: Some(
+                    runtime
+                        .root_and_release_jsvalue(receiver)
+                        .map_err(runtime_error_to_vm_error)?,
+                ),
+                arguments: Some(
+                    arguments
+                        .into_iter()
+                        .map(|argument| runtime.root_and_release_jsvalue(argument))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(runtime_error_to_vm_error)?,
+                ),
                 resume: Some(Resume::Identity),
             },
             false,
         ),
         IteratorAction::Next(callable, receiver) => {
-            let Value::Object(iterator) = receiver else {
+            let JsValue::Object(iterator) = receiver else {
                 return Err(Error::internal("iterator record lost object receiver"));
             };
             (
                 crate::engine::builtins::IteratorNextStep::start_callable(
                     runtime,
                     pending.realm(),
-                    iterator,
+                    ObjectRef::from_borrowed_handle(runtime.clone(), iterator)
+                        .map_err(super::exception::heap_error_to_vm_error)?,
                     callable,
                 )
                 .map_err(runtime_error_to_vm_error)?
@@ -3091,7 +3237,7 @@ pub(super) fn start_numeric(
             crate::engine::api::profiling::record_owned_execution_event(
                 "numeric_completed_without_query",
             );
-            return match finish_numeric(execution, frame, value, previous, depth)? {
+            return match finish_numeric(runtime, execution, frame, value, previous, depth)? {
                 CallStep::Entered => Ok(NumericProgress::Completed),
                 _ => Err(Error::internal(
                     "immediate numeric completion changed its frame protocol",
@@ -3159,14 +3305,18 @@ pub(super) fn start_public_field(
     frame: FrameId,
     object: ObjectRef,
     key: PropertyKey,
-    value: Value,
+    value: crate::engine::value::JsValue,
     depth: usize,
 ) -> Result<CallStep, Error> {
     let realm = execution.frames.current_mut(frame)?.executable.realm;
     let step = Step::Define {
         object: Some(object),
         key: Some(key),
-        descriptor: Some(Runtime::public_class_field_descriptor(value)),
+        descriptor: Some(Runtime::public_class_field_descriptor(
+            runtime
+                .root_and_release_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?,
+        )),
         resume: Some(Resume::PublicField),
     };
     start_instruction_query(
@@ -3229,9 +3379,19 @@ pub(super) fn start_for_in_query(
             crate::engine::api::profiling::record_owned_execution_event(
                 "for_in_completed_without_query",
             );
+            // The for-in machine is a public-root consumer; its completion
+            // owner transfers into the internal value without a counting pair.
+            let value = runtime
+                .into_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
             finish_for_in(execution, frame, value, done, depth)
         }
-        ForInStep::Throw(value) => Ok(CallStep::Complete(Completion::Throw(value))),
+        ForInStep::Throw(value) => {
+            let value = runtime
+                .into_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
+            Ok(CallStep::Complete(Completion::Throw(value)))
+        }
         step => {
             let parent = execution.frames.current_mut(frame)?;
             let identity = parent
@@ -3275,7 +3435,7 @@ fn start_for_in_pending(
 fn finish_for_in(
     execution: &mut RunningExecution,
     frame: FrameId,
-    value: Value,
+    value: crate::engine::value::JsValue,
     done: Option<bool>,
     _depth: usize,
 ) -> Result<CallStep, Error> {
@@ -3284,7 +3444,7 @@ fn finish_for_in(
     if let Some(done) = done {
         execution
             .slots
-            .push(&mut parent.window, Value::Bool(done))?;
+            .push(&mut parent.window, crate::engine::value::JsValue::Bool(done))?;
     }
     parent.resume_pc = parent
         .fault_pc
@@ -3324,8 +3484,14 @@ pub(super) fn start_import(
         .executable
         .ensure_root(runtime)
         .map_err(runtime_error_to_vm_error)?;
-    let options = execution.slots.peek(&parent.window, 0)?.clone();
-    let specifier = execution.slots.peek(&parent.window, 1)?.clone();
+    // The import machine borrows rooted copies; `start_instruction` consumes
+    // the two slot owners.
+    let options = runtime
+        .root_value(execution.slots.peek(&parent.window, 0)?)
+        .map_err(runtime_error_to_vm_error)?;
+    let specifier = runtime
+        .root_value(execution.slots.peek(&parent.window, 1)?)
+        .map_err(runtime_error_to_vm_error)?;
     let result = crate::engine::modules::import::ImportStep::start(
         runtime,
         realm,

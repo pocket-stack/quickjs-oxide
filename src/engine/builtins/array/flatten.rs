@@ -274,7 +274,7 @@ impl FlattenResume {
     }
     fn overflow(&self, runtime: &Runtime) -> Result<FlattenStep, RuntimeError> {
         Ok(FlattenStep::Complete(Completion::Throw(
-            runtime.new_native_error(self.0.realm, NativeErrorKind::Internal, "stack overflow")?,
+            runtime.new_native_error_jsvalue(self.0.realm, NativeErrorKind::Internal, "stack overflow")?,
         )))
     }
     fn begin(mut self, runtime: &Runtime) -> Result<FlattenStep, RuntimeError> {
@@ -375,7 +375,7 @@ impl FlattenResume {
         }
         if self.0.target_index >= self.0.target_limit {
             return Ok(FlattenStep::Complete(Completion::Throw(
-                runtime.new_native_error(self.0.realm, NativeErrorKind::Type, "Array too long")?,
+                runtime.new_native_error_jsvalue(self.0.realm, NativeErrorKind::Type, "Array too long")?,
             )));
         }
         self.0.phase = Phase::Define;

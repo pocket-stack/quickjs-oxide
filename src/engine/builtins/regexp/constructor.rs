@@ -5,6 +5,7 @@
 //! pattern conversion precedes the derived `.prototype` lookup, and flags are
 //! converted only after the branded object has been allocated.
 
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::error::Error;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
@@ -160,7 +161,7 @@ impl Runtime {
         let last_index =
             self.pinned_property_key(crate::engine::atom::pinned::PinnedAtom::LastIndex)?;
         let entries = [ShapeEntry {
-            atom: last_index.atom(),
+            atom: AtomIdx::from_raw(last_index.atom().raw()),
             flags: PropertyFlags::data(true, false, false),
         }];
         let mut state = self.0.state.borrow_mut();

@@ -88,7 +88,7 @@ impl DefinitionsStep {
                 Value::Null => runtime.new_object(None)?,
                 _ => {
                     return Ok(Self::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Type,
                             "not a prototype",
@@ -100,7 +100,7 @@ impl DefinitionsStep {
                 Value::Object(object) => object.clone(),
                 _ => {
                     return Ok(Self::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
                     )));
                 }
             },

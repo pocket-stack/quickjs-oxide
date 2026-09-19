@@ -58,7 +58,7 @@ impl RegExpSearchStep {
         };
         let Value::Object(regexp) = this_value else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         Ok(Self::make_primitive(

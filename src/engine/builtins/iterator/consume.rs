@@ -258,7 +258,7 @@ impl ConsumeResume {
                     ConsumeKind::Reduce => match self.0.accumulator.take() {
                         Some(value) => value,
                         None => {
-                            let error = runtime.new_native_error(
+                            let error = runtime.new_native_error_jsvalue(
                                 self.0.realm,
                                 NativeErrorKind::Type,
                                 "empty iterator",

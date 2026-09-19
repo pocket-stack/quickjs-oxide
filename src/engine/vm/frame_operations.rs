@@ -487,7 +487,7 @@ pub(super) fn binding(
                 return Err(error);
             };
             let value = runtime
-                .new_native_error_from_error(realm, kind, &error)
+                .new_native_error_from_error_jsvalue(realm, kind, &error)
                 .map_err(runtime_error_to_vm_error)?;
             Ok(CallStep::Complete(Completion::Throw(value)))
         }
@@ -510,7 +510,7 @@ pub(super) fn lexical_uninitialized(
         !frame.executable.metadata.strip_variable_debug,
     )?;
     let value = runtime
-        .new_native_error_from_error(
+        .new_native_error_from_error_jsvalue(
             frame.executable.realm,
             crate::engine::api::error::NativeErrorKind::Reference,
             &error,
@@ -569,7 +569,7 @@ pub(super) fn initialize_derived(
                 return Err(error);
             };
             let value = runtime
-                .new_native_error_from_error(frame.executable.realm, kind, &error)
+                .new_native_error_from_error_jsvalue(frame.executable.realm, kind, &error)
                 .map_err(runtime_error_to_vm_error)?;
             Ok(CallStep::Complete(Completion::Throw(value)))
         }

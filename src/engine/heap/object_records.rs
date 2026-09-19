@@ -1,7 +1,7 @@
 use super::*;
 
 /// Parallel property payload for one shape entry.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum PropertySlot {
     Data(RawValue),
     /// QuickJS `JS_PROP_VARREF`: an ordinary data descriptor whose mutable
@@ -19,7 +19,7 @@ pub enum PropertySlot {
 /// Typed autoinit payloads. Keeping the creation realm in the per-object slot
 /// mirrors QuickJS's `JSProperty.u.init.realm_and_id` and allows objects which
 /// share a shape to retain different realms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub enum AutoInitProperty {
     FunctionPrototype {
         realm: ContextId,
@@ -65,7 +65,7 @@ pub enum AutoInitProperty {
 /// New variants are added only with their complete class slice so Symbol atom
 /// ownership and String exotic storage cannot be accidentally skipped by a
 /// prematurely generic raw-value container.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum PrimitiveObjectData {
     Number(f64),
     /// Exact UTF-16 backing store for a genuine String wrapper. Unlike Symbol,
@@ -98,7 +98,7 @@ impl PrimitiveObjectData {
 /// explicit uninitialized state preserves that observable allocation/error
 /// order. Compiled programs and their source strings are reference-counted
 /// leaves outside the GC arena and own no heap or atom edge.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum RegExpObjectData {
     Uninitialized,
     Compiled {
@@ -113,7 +113,7 @@ pub enum RegExpObjectData {
 /// be referenced by an active native call. `is_callable` is fixed at creation
 /// time, while the object's constructor bit independently mirrors the target's
 /// initial `[[Construct]]` capability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct ProxyData {
     pub target: ObjectId,
     pub handler: ObjectId,
@@ -127,7 +127,7 @@ pub struct ProxyData {
 /// resolve/reject pair shares one first-call-wins bit without introducing a
 /// `Runtime -> heap -> Runtime` ownership cycle.  Every raw object identity in
 /// this enum is still an ordinary traced and reference-counted heap edge.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum InternalCallableData {
     /// `Proxy.revocable`'s one-shot revocation closure. The edge is released
     /// after the first call, matching QuickJS's `func_data[0] = JS_NULL`.
@@ -209,7 +209,7 @@ pub(crate) enum InternalCallableData {
 // embedder. Public callers may still inspect that a payload is native with
 // `internal: _` without naming the hidden capture type.
 #[allow(private_interfaces)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ObjectPayload {
     Ordinary,
     /// Runtime-wide, unforgeable `JS_CLASS_RAWJSON` brand. The exact source
@@ -462,7 +462,7 @@ pub enum ObjectKind {
 ///
 /// The shape entries and slots are parallel arrays and must have identical
 /// lengths and storage kinds.  Allocation validates that invariant.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ObjectData {
     pub shape: ShapeId,
 

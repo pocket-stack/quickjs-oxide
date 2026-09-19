@@ -64,7 +64,7 @@ impl Runtime {
         this_value: &Value,
     ) -> Result<Completion, RuntimeError> {
         let Value::Object(object) = this_value else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "not an object",
@@ -125,7 +125,7 @@ impl Runtime {
             }
         };
         let Some(pattern) = pattern else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "RegExp object expected",
@@ -148,7 +148,7 @@ impl Runtime {
         flag: RegExpFlagKind,
     ) -> Result<Completion, RuntimeError> {
         let Value::Object(object) = this_value else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "not an object",
@@ -211,7 +211,7 @@ impl Runtime {
         if object.object_id() == self.regexp_realm_data(realm)?.prototype {
             return Ok(Completion::Return(Value::Undefined));
         }
-        Ok(Completion::Throw(self.new_native_error(
+        Ok(Completion::Throw(self.new_native_error_jsvalue(
             realm,
             NativeErrorKind::Type,
             "RegExp object expected",
@@ -385,7 +385,7 @@ impl RegExpPresentationStep {
         }
         let Value::Object(object) = this_value else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         let (phase, name) = if matches!(kind, RegExpNativeKind::ToString) {

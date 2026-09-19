@@ -251,7 +251,7 @@ fn eval_variable_object_local_requires_exact_metadata_authentication() {
         .unwrap();
     assert_eq!(
         heap.release_function_bytecode(published).unwrap().atoms,
-        vec![name]
+        vec![AtomIdx::from_raw(name.raw())]
     );
     heap.release_context(context).unwrap();
     heap.release_shape(shape).unwrap();
@@ -408,7 +408,7 @@ fn with_object_metadata_is_fail_closed_at_the_heap_boundary() {
     let published = heap.allocate_function_bytecode(local).unwrap();
     assert_eq!(
         heap.release_function_bytecode(published).unwrap().atoms,
-        vec![name]
+        vec![AtomIdx::from_raw(name.raw())]
     );
 
     let mut lexical = bytecode(&code, context, Vec::new(), vec![name]);
@@ -617,7 +617,7 @@ fn bytecode_allocation_requires_published_closure_name_atom_ownership() {
     let published = heap.allocate_function_bytecode(published).unwrap();
     assert_eq!(
         heap.release_function_bytecode(published).unwrap().atoms,
-        vec![name]
+        vec![AtomIdx::from_raw(name.raw())]
     );
     heap.release_context(context).unwrap();
     heap.release_shape(shape).unwrap();
@@ -664,7 +664,7 @@ fn eval_environment_closure_is_confined_to_direct_eval_root() {
         .unwrap();
     assert_eq!(
         heap.release_function_bytecode(direct).unwrap().atoms,
-        vec![name]
+        vec![AtomIdx::from_raw(name.raw())]
     );
     heap.release_context(context).unwrap();
     heap.release_shape(shape).unwrap();
@@ -740,7 +740,7 @@ fn bytecode_allocation_requires_one_atom_reference_per_eval_binding_name() {
         .unwrap();
     assert_eq!(
         heap.release_function_bytecode(published).unwrap().atoms,
-        vec![name, name]
+        vec![AtomIdx::from_raw(name.raw()), AtomIdx::from_raw(name.raw())]
     );
     heap.release_context(context).unwrap();
     heap.release_shape(shape).unwrap();

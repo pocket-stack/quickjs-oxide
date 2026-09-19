@@ -191,7 +191,7 @@ impl BufferConstructorResume {
                 };
                 if maximum > MAX_SAFE_INTEGER_I64 || length > maximum as u64 {
                     return Ok(BufferConstructorStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Range,
                             "invalid array buffer max length",

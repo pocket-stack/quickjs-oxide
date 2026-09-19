@@ -85,7 +85,7 @@ impl StringSearchStep {
         };
         if matches!(this_value, Value::Undefined | Value::Null) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "null or undefined are forbidden",
@@ -219,7 +219,7 @@ impl StringSearchResume {
                 let regexp = runtime.is_regexp_from_match(object, &value)?;
                 if regexp {
                     return Ok(StringSearchStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Type,
                             "regexp not supported",

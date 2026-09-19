@@ -325,7 +325,7 @@ impl Runtime {
         self.construct_internal_with_new_target(
             caller_realm,
             constructor,
-            ConstructNewTarget::Raw(new_target),
+            ConstructNewTarget::Raw(self.unroot_value(&new_target)?),
             arguments,
         )
     }
@@ -425,7 +425,7 @@ impl Runtime {
         caller_realm: ContextId,
         mut constructor: ConstructorRef,
         mut new_target: ConstructNewTarget,
-        mut arguments: Vec<Value>,
+        mut arguments: Vec<crate::engine::value::JsValue>,
     ) -> Result<NativeConversion<NormalizedConstructor>, RuntimeError> {
         self.0.state.borrow().heap.context(caller_realm)?;
         if !constructor.as_object().belongs_to(self) {
@@ -435,13 +435,8 @@ impl Runtime {
             ConstructNewTarget::Validated(target) if !target.as_object().belongs_to(self) => {
                 return Err(RuntimeError::WrongRuntime("constructor"));
             }
-            ConstructNewTarget::Raw(value) => {
-                self.validate_value_domain(value, "raw construct new target")?
-            }
+            // Internal values carry no runtime branding.
             _ => {}
-        }
-        for argument in &arguments {
-            self.validate_value_domain(argument, "construct argument")?;
         }
         loop {
             if !self.is_constructor(constructor.as_object())? {
@@ -466,8 +461,11 @@ impl Runtime {
                     arguments: bound,
                     ..
                 } => {
+                    // The bound payload roots transfer into internal values
+                    // without a retain/release pair; the accumulated argument
+                    // edges move into the merged buffer.
                     arguments =
-                        match self.concatenate_bound_arguments(caller_realm, &bound, &arguments)? {
+                        match self.concatenate_bound_arguments_jsvalue(caller_realm, bound, arguments)? {
                             NativeConversion::Value(arguments) => arguments,
                             NativeConversion::Throw(value) => {
                                 return Ok(NativeConversion::Throw(value));
@@ -497,6 +495,12 @@ impl Runtime {
         new_target: ConstructNewTarget,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
+        // Public-root arguments entering the internal constructor convention
+        // are duplicated; the caller's roots release through their Drop path.
+        let arguments = arguments
+            .iter()
+            .map(|argument| self.unroot_value(argument))
+            .collect::<Result<Vec<_>, _>>()?;
         let NormalizedConstructor {
             target,
             new_target,
@@ -505,11 +509,18 @@ impl Runtime {
             caller_realm,
             constructor.clone(),
             new_target,
-            arguments.to_vec(),
+            arguments,
         )? {
             NativeConversion::Value(result) => result,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
+        // This synchronous host path consumes public roots; the normalized
+        // internal owners are rooted at this boundary and their internal
+        // edges are released.
+        let arguments = arguments
+            .into_iter()
+            .map(|argument| self.root_and_release_jsvalue(argument))
+            .collect::<Result<Vec<_>, _>>()?;
         let (callable, classification) = match target {
             ConstructorTarget::Proxy(constructor) => {
                 return self.construct_proxy(caller_realm, &constructor, new_target, &arguments);
@@ -535,7 +546,7 @@ impl Runtime {
                     execution_realm,
                     target,
                     min_readable_args,
-                    new_target.value(),
+                    self.root_and_release_jsvalue(new_target.into_value())?,
                     &arguments,
                 )
             }
@@ -562,13 +573,13 @@ impl Runtime {
                             caller_realm,
                             &callable,
                             Value::Undefined,
-                            new_target.value(),
+                            self.root_and_release_jsvalue(new_target.into_value())?,
                             &arguments,
                             bytecode,
                             closure_slots,
                         )?;
                         return match completion {
-                            Completion::Return(value @ Value::Object(_)) => {
+                            Completion::Return(value @ crate::engine::value::JsValue::Object(_)) => {
                                 Ok(Completion::Return(value))
                             }
                             Completion::Throw(value) => Ok(Completion::Throw(value)),
@@ -579,23 +590,27 @@ impl Runtime {
                     }
                     ConstructorKind::Base => {}
                 }
-                let raw_new_target = new_target.value();
+                let raw_new_target =
+                    self.root_and_release_jsvalue(new_target.into_value())?;
                 let this_value =
                     match self.create_from_constructor_value(caller_realm, &raw_new_target)? {
                         Completion::Return(value) => value,
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     };
+                let this_argument = self.root_value(&this_value)?;
                 let completion = self.execute_bytecode_callable(
                     caller_realm,
                     &callable,
-                    this_value.clone(),
+                    this_argument,
                     raw_new_target,
                     &arguments,
                     bytecode,
                     closure_slots,
                 )?;
                 Ok(match completion {
-                    Completion::Return(value @ Value::Object(_)) => Completion::Return(value),
+                    Completion::Return(value @ crate::engine::value::JsValue::Object(_)) => {
+                        Completion::Return(value)
+                    }
                     Completion::Throw(value) => Completion::Throw(value),
                     Completion::Return(_) => Completion::Return(this_value),
                 })
@@ -867,6 +882,12 @@ impl ConstructorRef {
     pub(crate) fn as_object(&self) -> &ObjectRef {
         &self.0
     }
+
+    /// Consume this validated constructor root, transferring its one owned
+    /// object edge to the caller without retaining or releasing.
+    pub(crate) fn into_object(self) -> ObjectRef {
+        self.0
+    }
 }
 
 /// Whether one internal constructor entry carries an ECMAScript-validated
@@ -875,17 +896,57 @@ impl ConstructorRef {
 /// `OP_call_constructor`, `OP_apply` constructor mode, and derived `super()`
 /// use the raw form. Public Context and Reflect entry points retain the
 /// validated form and its existing constructor checks.
-#[derive(Clone)]
 pub(crate) enum ConstructNewTarget {
     Validated(ConstructorRef),
-    Raw(Value),
+    Raw(crate::engine::value::JsValue),
 }
 
 impl ConstructNewTarget {
-    pub(crate) fn value(&self) -> Value {
+    /// Consume into the internal new-target value, transferring the validated
+    /// constructor's edge or moving the raw owner.
+    pub(crate) fn into_value(self) -> crate::engine::value::JsValue {
         match self {
-            Self::Validated(constructor) => Value::Object(constructor.as_object().clone()),
-            Self::Raw(value) => value.clone(),
+            Self::Validated(constructor) => {
+                crate::engine::value::JsValue::Object(constructor.into_object().into_handle())
+            }
+            Self::Raw(value) => value,
+        }
+    }
+
+    /// Borrow as the internal new-target value without transferring the edge.
+    /// Callers must not release through the returned value.
+    pub(crate) fn value(&self) -> crate::engine::value::JsValue {
+        match self {
+            Self::Validated(constructor) => {
+                crate::engine::value::JsValue::Object(constructor.as_object().object_id())
+            }
+            Self::Raw(value) => match value {
+                crate::engine::value::JsValue::Undefined => {
+                    crate::engine::value::JsValue::Undefined
+                }
+                crate::engine::value::JsValue::Null => crate::engine::value::JsValue::Null,
+                crate::engine::value::JsValue::Bool(value) => {
+                    crate::engine::value::JsValue::Bool(*value)
+                }
+                crate::engine::value::JsValue::Int(value) => {
+                    crate::engine::value::JsValue::Int(*value)
+                }
+                crate::engine::value::JsValue::Float(value) => {
+                    crate::engine::value::JsValue::Float(*value)
+                }
+                crate::engine::value::JsValue::String(id) => {
+                    crate::engine::value::JsValue::String(*id)
+                }
+                crate::engine::value::JsValue::BigInt(id) => {
+                    crate::engine::value::JsValue::BigInt(*id)
+                }
+                crate::engine::value::JsValue::Symbol(index) => {
+                    crate::engine::value::JsValue::Symbol(*index)
+                }
+                crate::engine::value::JsValue::Object(id) => {
+                    crate::engine::value::JsValue::Object(*id)
+                }
+            },
         }
     }
 
@@ -921,7 +982,7 @@ pub(crate) enum DirectCallTarget {
 pub(crate) struct NormalizedConstructor {
     pub target: ConstructorTarget,
     pub new_target: ConstructNewTarget,
-    pub arguments: Vec<Value>,
+    pub arguments: Vec<crate::engine::value::JsValue>,
 }
 pub(crate) enum ConstructorTarget {
     Proxy(ConstructorRef),

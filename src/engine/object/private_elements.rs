@@ -11,7 +11,7 @@ use crate::engine::api::error::{Error, ErrorKind, NativeErrorMessage};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
-use crate::engine::atom::{Atom, AtomKind};
+use crate::engine::atom::{Atom, AtomIdx, AtomKind};
 use crate::engine::code::function::metadata::{
     ClosureVariableKind, ConstructorKind, EvalKind, FunctionKind,
 };
@@ -54,14 +54,30 @@ impl Runtime {
         self.validate_private_receiver(receiver, name)?;
         self.validate_value_domain(&value, "private field value")?;
         let raw = self.raw_property_value(&value)?;
+        // Clone duplicates only the handle; the probe keeps the producer edge
+        // accountable through every store-or-decline path below.
+        let conversion_probe = raw.clone();
         let object_id = receiver.object_id();
 
         let duplicate = {
             let state = self.0.state.borrow();
-            let object = state.heap.object(object_id)?;
-            state.heap.shape(object.shape)?.find(name.atom()).is_some()
+            let found = state.heap.object(object_id).and_then(|object| {
+                state
+                    .heap
+                    .shape(object.shape)
+                    .map(|shape| shape.find(AtomIdx::from_raw(name.atom().raw())).is_some())
+            });
+            match found {
+                Ok(duplicate) => duplicate,
+                Err(error) => {
+                    drop(state);
+                    self.release_converted_value_edge(&conversion_probe);
+                    return Err(error.into());
+                }
+            }
         };
         if duplicate {
+            self.release_converted_value_edge(&conversion_probe);
             return Err(RuntimeError::Engine(self.private_field_error(
                 name,
                 "private class field '",
@@ -71,33 +87,51 @@ impl Runtime {
 
         let mut state = self.0.state.borrow_mut();
         let (prototype, mut entries, mut slots) = {
-            let object = state.heap.object(object_id)?;
-            let shape = state.heap.shape(object.shape)?;
+            let snapshot = state.heap.object(object_id).and_then(|object| {
+                state.heap.shape(object.shape).map(|shape| {
+                    (
+                        shape.prototype(),
+                        shape.entries().to_vec(),
+                        object.slots.clone(),
+                    )
+                })
+            });
+            let (prototype, entries, slots) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    drop(state);
+                    self.release_converted_value_edge(&conversion_probe);
+                    return Err(error.into());
+                }
+            };
             // Recheck under the mutable borrow so a future interior mutator
             // cannot turn the snapshot above into a duplicate transition.
-            if shape.find(name.atom()).is_some() {
+            if entries
+                .iter()
+                .any(|entry| entry.atom == AtomIdx::from_raw(name.atom().raw()))
+            {
                 drop(state);
+                self.release_converted_value_edge(&conversion_probe);
                 return Err(RuntimeError::Engine(self.private_field_error(
                     name,
                     "private class field '",
                     "' already exists",
                 )?));
             }
-            (
-                shape.prototype(),
-                shape.entries().to_vec(),
-                object.slots.clone(),
-            )
+            (prototype, entries, slots)
         };
         entries.push(ShapeEntry {
-            atom: name.atom(),
+            atom: AtomIdx::from_raw(name.atom().raw()),
             flags: PropertyFlags::data(true, true, true),
         });
         slots.push(PropertySlot::Data(raw));
-        state.replace_layout(object_id, prototype, &entries, slots)?;
+        let layout_result = state.replace_layout(object_id, prototype, &entries, slots);
         drop(state);
-        // `replace_layout` retained the heap occurrence before this incoming
-        // public root is released.
+        // `replace_layout` retained the heap occurrence on success; a rejected
+        // layout never stored the value. Balance the producer edge either way
+        // before this incoming public root is released.
+        self.release_converted_value_edge(&conversion_probe);
+        layout_result?;
         drop(value);
         Ok(())
     }
@@ -114,7 +148,7 @@ impl Runtime {
             let state = self.0.state.borrow();
             let object = state.heap.object(receiver.object_id())?;
             let shape = state.heap.shape(object.shape)?;
-            let Some(index) = shape.find(name.atom()) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(name.atom().raw())) else {
                 drop(state);
                 return Err(RuntimeError::Engine(self.private_field_error(
                     name,
@@ -156,13 +190,31 @@ impl Runtime {
         self.validate_private_receiver(receiver, name)?;
         self.validate_value_domain(&value, "private field value")?;
         let raw = self.raw_property_value(&value)?;
+        // Clone duplicates only the handle; the probe keeps the producer edge
+        // accountable through every store-or-decline path below.
+        let conversion_probe = raw.clone();
         let object_id = receiver.object_id();
         let index = {
             let state = self.0.state.borrow();
-            let object = state.heap.object(object_id)?;
-            let shape = state.heap.shape(object.shape)?;
-            let Some(index) = shape.find(name.atom()) else {
+            let object = match state.heap.object(object_id) {
+                Ok(object) => object,
+                Err(error) => {
+                    drop(state);
+                    self.release_converted_value_edge(&conversion_probe);
+                    return Err(error.into());
+                }
+            };
+            let shape = match state.heap.shape(object.shape) {
+                Ok(shape) => shape,
+                Err(error) => {
+                    drop(state);
+                    self.release_converted_value_edge(&conversion_probe);
+                    return Err(error.into());
+                }
+            };
+            let Some(index) = shape.find(AtomIdx::from_raw(name.atom().raw())) else {
                 drop(state);
+                self.release_converted_value_edge(&conversion_probe);
                 return Err(RuntimeError::Engine(self.private_field_error(
                     name,
                     "private class field '",
@@ -172,6 +224,8 @@ impl Runtime {
             let index = usize::try_from(index)
                 .map_err(|_| RuntimeError::Invariant("private field index does not fit usize"))?;
             if !matches!(object.slots.get(index), Some(PropertySlot::Data(_))) {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
                 return Err(RuntimeError::Invariant(
                     "private data field used non-data storage",
                 ));
@@ -181,10 +235,12 @@ impl Runtime {
 
         let replacement = PropertySlot::Data(raw);
         let mut state = self.0.state.borrow_mut();
-        state.replace_property_slot(object_id, index, replacement)?;
+        let replaced = state.replace_property_slot(object_id, index, replacement);
         drop(state);
-        // `replace_object_slot` retained the heap occurrence before this
-        // incoming public root is released.
+        // The slot retained its own copy edge on success; balance the
+        // producer edge either way before releasing the public root.
+        self.release_converted_value_edge(&conversion_probe);
+        replaced?;
         drop(value);
         Ok(())
     }
@@ -200,7 +256,7 @@ impl Runtime {
         self.validate_private_receiver(receiver, name)?;
         let state = self.0.state.borrow();
         let object = state.heap.object(receiver.object_id())?;
-        Ok(state.heap.shape(object.shape)?.find(name.atom()).is_some())
+        Ok(state.heap.shape(object.shape)?.find(AtomIdx::from_raw(name.atom().raw())).is_some())
     }
 
     /// Capture a private-name identity in its dedicated immutable lexical
@@ -215,7 +271,7 @@ impl Runtime {
         let mut state = self.0.state.borrow_mut();
         state.atoms.retain(atom)?;
         let data = VarRefData::captured(
-            RawValue::Private(atom),
+            RawValue::Private(state.atoms.unbrand(atom)?),
             true,
             true,
             ClosureVariableKind::PrivateField,
@@ -262,9 +318,10 @@ impl Runtime {
             }
         }
         state.atoms.retain(atom)?;
+        let index = state.atoms.unbrand(atom)?;
         let cleanup = match state
             .heap
-            .replace_var_ref_value(root.id(), RawValue::Private(atom))
+            .replace_var_ref_value(root.id(), RawValue::Private(index))
         {
             Ok(cleanup) => cleanup,
             Err(error) => {
@@ -300,7 +357,7 @@ impl Runtime {
             }
             match &var_ref.value {
                 RawValue::Private(atom) => {
-                    if state.atoms.kind(*atom)? != AtomKind::Private {
+                    if state.atoms.kind(state.atoms.brand(*atom)?)? != AtomKind::Private {
                         return Err(RuntimeError::Invariant(
                             "private-name VarRef contains a non-private atom",
                         ));
@@ -319,6 +376,7 @@ impl Runtime {
                 }
             }
         };
+        let atom = self.0.state.borrow().atoms.brand(atom)?;
         PrivateNameRef::from_borrowed_atom(self.clone(), atom).map_err(Into::into)
     }
 
@@ -543,7 +601,7 @@ impl Runtime {
         let duplicate = {
             let state = self.0.state.borrow();
             let object = state.heap.object(receiver_id)?;
-            state.heap.shape(object.shape)?.find(brand).is_some()
+            state.heap.shape(object.shape)?.find(AtomIdx::from_raw(brand.raw())).is_some()
         };
         if duplicate {
             return Err(RuntimeError::Engine(Error::new(
@@ -556,7 +614,7 @@ impl Runtime {
         let (prototype, mut entries, mut slots) = {
             let object = state.heap.object(receiver_id)?;
             let shape = state.heap.shape(object.shape)?;
-            if shape.find(brand).is_some() {
+            if shape.find(AtomIdx::from_raw(brand.raw())).is_some() {
                 drop(state);
                 return Err(RuntimeError::Engine(Error::new(
                     ErrorKind::Type,
@@ -570,7 +628,7 @@ impl Runtime {
             )
         };
         entries.push(ShapeEntry {
-            atom: brand,
+            atom: AtomIdx::from_raw(brand.raw()),
             flags: PropertyFlags::data(true, true, true),
         });
         slots.push(PropertySlot::Data(RawValue::Undefined));
@@ -594,7 +652,7 @@ impl Runtime {
         let brand = self.private_method_brand_atom(method, kind)?;
         let state = self.0.state.borrow();
         let object = state.heap.object(receiver.object_id())?;
-        Ok(state.heap.shape(object.shape)?.find(brand).is_some())
+        Ok(state.heap.shape(object.shape)?.find(AtomIdx::from_raw(brand.raw())).is_some())
     }
 
     /// Validate that the method's HomeObject already owns a class-side brand.

@@ -70,7 +70,7 @@ impl SumStep {
             ))?;
         if matches!(iterable, Value::Null | Value::Undefined) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     &format!(
@@ -123,7 +123,7 @@ impl SumResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(SumStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "value is not iterable",
@@ -145,7 +145,7 @@ impl SumResume {
             Phase::Iterator => {
                 let Value::Object(iterator) = value else {
                     return Ok(SumStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not an object",
@@ -220,7 +220,7 @@ impl SumResume {
                         .iterator
                         .take()
                         .ok_or(RuntimeError::Invariant("Math sum iterator missing"))?;
-                    let __pending_field_completion = Completion::Throw(runtime.new_native_error(
+                    let __pending_field_completion = Completion::Throw(runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "not a number",

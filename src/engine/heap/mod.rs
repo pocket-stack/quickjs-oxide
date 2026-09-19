@@ -64,6 +64,7 @@ pub use collections::{WeakCollectionKey, WeakCollectionRecords};
 mod private_validation;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::atom::Atom;
+use crate::engine::atom::AtomIdx;
 use crate::engine::builtins::native;
 use native::{
     ArrayBufferNativeKind, ArrayIteratorKind, DataViewNativeKind, DynamicFunctionKind,
@@ -116,6 +117,8 @@ pub struct HeapCounts {
     pub var_ref_nodes: usize,
     pub context_nodes: usize,
     pub function_bytecode_nodes: usize,
+    pub string_nodes: usize,
+    pub bigint_nodes: usize,
     pub initializing: usize,
     pub live: usize,
     pub zero_queued: usize,
@@ -126,12 +129,14 @@ pub struct HeapCounts {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RawId {
+pub(crate) enum RawId {
     Object(ObjectId),
     Shape(ShapeId),
     VarRef(VarRefId),
     Context(ContextId),
     FunctionBytecode(FunctionBytecodeId),
+    String(StringId),
+    BigInt(BigIntId),
 }
 
 impl RawId {
@@ -142,6 +147,8 @@ impl RawId {
             Self::VarRef(_) => HeapNodeKind::VarRef,
             Self::Context(_) => HeapNodeKind::Context,
             Self::FunctionBytecode(_) => HeapNodeKind::FunctionBytecode,
+            Self::String(_) => HeapNodeKind::String,
+            Self::BigInt(_) => HeapNodeKind::BigInt,
         }
     }
 
@@ -152,6 +159,8 @@ impl RawId {
             Self::VarRef(id) => id.index,
             Self::Context(id) => id.index,
             Self::FunctionBytecode(id) => id.index,
+            Self::String(id) => id.index,
+            Self::BigInt(id) => id.index,
         }
     }
 
@@ -162,6 +171,8 @@ impl RawId {
             Self::VarRef(id) => id.generation,
             Self::Context(id) => id.generation,
             Self::FunctionBytecode(id) => id.generation,
+            Self::String(id) => id.generation,
+            Self::BigInt(id) => id.generation,
         }
     }
 }
@@ -173,6 +184,8 @@ enum NodeData {
     VarRef(VarRefData),
     Context(Box<ContextData>),
     FunctionBytecode(FunctionBytecodeData),
+    String(JsString),
+    BigInt(JsBigInt),
 }
 
 impl NodeData {
@@ -183,6 +196,8 @@ impl NodeData {
             Self::VarRef(_) => HeapNodeKind::VarRef,
             Self::Context(_) => HeapNodeKind::Context,
             Self::FunctionBytecode(_) => HeapNodeKind::FunctionBytecode,
+            Self::String(_) => HeapNodeKind::String,
+            Self::BigInt(_) => HeapNodeKind::BigInt,
         }
     }
 
@@ -193,12 +208,16 @@ impl NodeData {
             Self::VarRef(var_ref) => var_ref_edges(var_ref),
             Self::Context(context) => context_edges(context).into(),
             Self::FunctionBytecode(bytecode) => function_bytecode_edges(bytecode).into(),
+            // String and BigInt payloads keep their resource ownership inside
+            // the `Rc` payload (rope children stay in the rope tree) and own no
+            // heap edges, so cascade-only cycle handling holds trivially.
+            Self::String(_) | Self::BigInt(_) => Edges::new(),
         }
     }
 }
 
 struct Node {
-    strong: u32,
+    strong: Cell<u32>,
     data: NodeData,
 }
 
@@ -223,7 +242,7 @@ impl SlotState {
     const fn strong(&self) -> Option<u32> {
         match self {
             Self::Initializing { strong, .. } | Self::Zombie { strong, .. } => Some(*strong),
-            Self::Live(node) | Self::ZeroQueued(node) => Some(node.strong),
+            Self::Live(node) | Self::ZeroQueued(node) => Some(node.strong.get()),
             Self::Vacant | Self::Retired => None,
         }
     }
@@ -330,6 +349,8 @@ fn increment_kind_count(counts: &mut HeapCounts, kind: HeapNodeKind) {
         HeapNodeKind::FunctionBytecode => {
             counts.function_bytecode_nodes = counts.function_bytecode_nodes.saturating_add(1);
         }
+        HeapNodeKind::String => counts.string_nodes = counts.string_nodes.saturating_add(1),
+        HeapNodeKind::BigInt => counts.bigint_nodes = counts.bigint_nodes.saturating_add(1),
     }
 }
 
@@ -394,6 +415,8 @@ mod realm_storage;
 
 mod dictionary_storage;
 mod object_storage;
+
+mod value_storage;
 
 mod binding_storage;
 

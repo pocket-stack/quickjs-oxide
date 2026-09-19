@@ -3,7 +3,7 @@
 
 use crate::engine::api::error::Error;
 use crate::engine::api::runtime::Runtime;
-use crate::engine::value::Value;
+use crate::engine::value::JsValue;
 use crate::engine::vm::frame::FrameStore;
 use crate::engine::vm::stack::SlotStore;
 use std::cell::{Cell, RefCell};
@@ -224,22 +224,36 @@ pub(super) struct RunningExecution {
     pub query_storage: super::proxy_get_driver::QueryStorage,
     pub call_storage: super::frame::CallStorage,
     /// Cold completion owns its payload before the active window is cleared.
-    pub pending: Option<Value>,
+    pub pending: Option<JsValue>,
     /// Retained GetField2 result's classification, consumed by the immediate Call.
     pub selected_native: Option<crate::engine::object::LinkedNativeSelection>,
     /// A typed root terminal result; never represented by a manufactured JS Value.
     pub root_descriptor: Option<super::entry::DescriptorReply>,
     pub root_query: Option<Box<super::proxy_get_driver::PendingProxyGet>>,
+    // The execution never keeps its runtime alive; teardown releases through
+    // the upgrade only when the runtime still exists.
+    runtime: std::rc::Weak<crate::engine::heap::runtime::RuntimeInner>,
     _guard: ExecutionGuard,
 }
 
 impl Drop for RunningExecution {
     fn drop(&mut self) {
-        drop(self.pending.take());
+        let Some(runtime) = self.runtime.upgrade().map(Runtime) else {
+            // The runtime (and its whole heap) died first; no edge release can
+            // observe anything. Discard the storage without accounting.
+            self.pending = None;
+            self.slots = SlotStore::new(0);
+            return;
+        };
+        if let Some(pending) = self.pending.take() {
+            // Teardown cannot report errors; invariant violations surface at
+            // the deferred-drain boundary like every trusted release.
+            let _ = runtime.release_jsvalue(pending);
+        }
         while let Some(mut frame) = self.frames.pop_current() {
             // Clear this child's captures and operands while its activation
             // and every enclosing native query still own their roots.
-            if self.slots.clear_frame(frame.window.take()).is_err() {
+            if self.slots.clear_frame(&runtime, frame.window.take()).is_err() {
                 // A failed legacy handoff may have detached its Frame before
                 // an allocation failure. Release any remaining arena owners
                 // before unwinding parent native activations; never panic here.
@@ -263,6 +277,7 @@ impl RunningExecution {
             selected_native: None,
             root_query: None,
             root_descriptor: None,
+            runtime: std::rc::Rc::downgrade(&runtime.0),
             _guard: guard,
         })
     }

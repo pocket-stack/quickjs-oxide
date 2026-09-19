@@ -1,6 +1,7 @@
 //! Owned ToPrimitive phases. A reply consumes its continuation exactly once.
 use super::*;
-use crate::engine::object::CallableRef;
+use crate::engine::object::{CallableRef, ObjectRef};
+use crate::engine::value::JsValue;
 
 pub(crate) enum PrimitiveStep {
     Get { resume: PrimitiveResume },
@@ -81,10 +82,10 @@ impl PrimitiveResume {
     pub(crate) fn start(
         runtime: &Runtime,
         realm: ContextId,
-        value: Value,
+        value: JsValue,
         hint: ToPrimitiveHint,
     ) -> PrimitiveStep {
-        let Value::Object(object) = value else {
+        let JsValue::Object(object) = value else {
             return PrimitiveStep::Complete(Completion::Return(value));
         };
         let key = PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::ToPrimitive));
@@ -150,7 +151,7 @@ impl PrimitiveResume {
 
     fn type_error(self, runtime: &Runtime, message: &str) -> Result<PrimitiveStep, RuntimeError> {
         Ok(PrimitiveStep::Complete(Completion::Throw(
-            runtime.new_native_error(self.0.realm, NativeErrorKind::Type, message)?,
+            runtime.new_native_error_jsvalue(self.0.realm, NativeErrorKind::Type, message)?,
         )))
     }
 
@@ -167,12 +168,14 @@ impl PrimitiveResume {
         };
         match self.0.phase {
             Phase::ExoticMethod => {
-                if matches!(value, Value::Undefined | Value::Null) {
+                if matches!(value, JsValue::Undefined | JsValue::Null) {
                     return self.read_ordinary(runtime, false);
                 }
-                let Value::Object(method) = value else {
+                let JsValue::Object(method) = value else {
                     return self.type_error(runtime, "not a function");
                 };
+                let method =
+                    ObjectRef::from_borrowed_handle(runtime.clone(), method)?;
                 let Some(callable) = runtime.as_callable(&method)? else {
                     return self.type_error(runtime, "not a function");
                 };
@@ -186,16 +189,18 @@ impl PrimitiveResume {
                 Ok(self.call(callable, receiver, vec![argument]))
             }
             Phase::ExoticResult => {
-                if matches!(value, Value::Object(_)) {
+                if matches!(value, JsValue::Object(_)) {
                     self.type_error(runtime, "toPrimitive")
                 } else {
                     Ok(PrimitiveStep::Complete(Completion::Return(value)))
                 }
             }
             Phase::OrdinaryMethod(second) => {
-                let Value::Object(method) = value else {
+                let JsValue::Object(method) = value else {
                     return self.failed_method(runtime, second);
                 };
+                let method =
+                    ObjectRef::from_borrowed_handle(runtime.clone(), method)?;
                 let Some(callable) = runtime.as_callable(&method)? else {
                     return self.failed_method(runtime, second);
                 };
@@ -204,7 +209,7 @@ impl PrimitiveResume {
                 Ok(self.call(callable, receiver, Vec::new()))
             }
             Phase::OrdinaryResult(second) => {
-                if matches!(value, Value::Object(_)) {
+                if matches!(value, JsValue::Object(_)) {
                     self.failed_method(runtime, second)
                 } else {
                     Ok(PrimitiveStep::Complete(Completion::Return(value)))

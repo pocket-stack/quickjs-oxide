@@ -4,6 +4,7 @@ use super::{
     OperationTarget, Query, Resume, ReturnOwner, ReturnTarget, ReturnValue, RunningExecution,
     Runtime, Step, Value, overflow, runtime_error_to_vm_error,
 };
+use crate::engine::value::JsValue;
 use crate::engine::{
     code::function::metadata::ConstructorKind,
     vm::call::{ConstructNewTarget, ConstructorRef, ConstructorTarget, NormalizedConstructor},
@@ -18,7 +19,7 @@ pub(super) fn start(
     realm: crate::engine::heap::ContextId,
     constructor: ConstructorRef,
     new_target: ConstructNewTarget,
-    arguments: Vec<Value>,
+    arguments: Vec<JsValue>,
     resume: Resume,
 ) -> Result<Step, Error> {
     let normalized = match runtime
@@ -74,7 +75,7 @@ pub(super) fn prepared(
             defining_realm: Some(defining_realm),
             min_readable_args: Some(min_readable_args),
             invocation: Some(crate::engine::vm::call::NativeInvocation::Construct {
-                new_target: new_target.value(),
+                new_target: new_target.into_value(),
             }),
             arguments: Some(arguments),
             resume: Some(resume),
@@ -94,8 +95,8 @@ pub(super) fn prepared(
                 .constructor_kind;
             let request = Box::new(BytecodeCallRequest {
                 callable,
-                receiver: Value::Undefined,
-                new_target: new_target.value(),
+                receiver: JsValue::Undefined,
+                new_target: new_target.into_value(),
                 arguments,
                 bytecode,
                 closure_slots,
@@ -113,20 +114,27 @@ pub(super) fn prepared(
                 )),
                 ConstructorKind::Derived => Ok(Step::ConstructorReady {
                     request: Some(request),
-                    receiver: Some(Completion::Return(Value::Undefined)),
+                    receiver: Some(Completion::Return(JsValue::Undefined)),
                     derived: Some(true),
                     resume: Some(resume),
                 }),
-                ConstructorKind::Base if matches!(request.new_target, Value::Undefined) => {
+                ConstructorKind::Base if matches!(request.new_target, JsValue::Undefined) => {
                     prototype(
                         runtime,
                         request,
-                        Completion::Return(Value::Undefined),
+                        Completion::Return(JsValue::Undefined),
                         resume,
                     )
                 }
                 ConstructorKind::Base => Ok(Step::ReadValue {
-                    receiver: Some(request.new_target.clone()),
+                    receiver: Some(
+                        runtime
+                            .root_and_release_jsvalue(std::mem::replace(
+                                &mut request.new_target,
+                                JsValue::Undefined,
+                            ))
+                            .map_err(runtime_error_to_vm_error)?,
+                    ),
                     key: Some(
                         runtime
                             .pinned_property_key(crate::engine::atom::pinned::PinnedAtom::Prototype)
@@ -188,12 +196,20 @@ pub(super) fn ready(
             .resume(runtime, overflow(runtime, request.caller_realm)?)
             .map_err(runtime_error_to_vm_error)?));
     }
-    request.receiver = receiver.clone();
+    // The child frame request owns one edge; the cold constructor-return
+    // record owns a duplicate.
+    request.receiver = runtime
+        .dup_jsvalue(&receiver)
+        .map_err(runtime_error_to_vm_error)?;
     let mut entry = request.prepare(runtime, &mut execution.call_storage)?;
     entry.cold.constructor_return = Some(if derived {
         crate::engine::vm::frame::ConstructorReturn::Derived
     } else {
-        crate::engine::vm::frame::ConstructorReturn::Base(receiver)
+        crate::engine::vm::frame::ConstructorReturn::Base(
+            runtime
+                .root_and_release_jsvalue(receiver)
+                .map_err(runtime_error_to_vm_error)?,
+        )
     });
     Ok(Ok(Next::Call {
         entry: Box::new(entry),

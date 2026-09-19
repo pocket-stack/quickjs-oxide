@@ -263,7 +263,7 @@ impl MutationResume {
                 self.0.new_length = self.0.length.saturating_add(self.argument_count() as u64);
                 if self.0.new_length > (1_u64 << 53) - 1 {
                     return Ok(MutationAction::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "Array loo long",
@@ -366,7 +366,7 @@ impl MutationResume {
             Phase::DeleteLast => {
                 if !value {
                     return Ok(MutationAction::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "could not delete property",

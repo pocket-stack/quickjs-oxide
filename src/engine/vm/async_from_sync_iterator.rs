@@ -53,7 +53,7 @@ impl Runtime {
             let sync_iterator = match self.call_internal(realm, &sync_method, iterable, &[])? {
                 Completion::Return(Value::Object(iterator)) => iterator,
                 Completion::Return(_) => {
-                    return Ok(NativeConversion::Throw(self.new_native_error(
+                    return Ok(NativeConversion::Throw(self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "not an object",
@@ -80,7 +80,7 @@ impl Runtime {
             match self.call_internal(realm, &async_method, iterable, &[])? {
                 Completion::Return(Value::Object(iterator)) => Value::Object(iterator),
                 Completion::Return(_) => {
-                    return Ok(NativeConversion::Throw(self.new_native_error(
+                    return Ok(NativeConversion::Throw(self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "not an object",
@@ -121,6 +121,59 @@ impl Runtime {
         Ok(NativeConversion::Value(callable))
     }
 
+    /// Internal-value form of [`Runtime::new_async_from_sync_iterator`]. The
+    /// borrowed value already owns its edges; the wrapper retains its own copy
+    /// transactionally, so no producer edge exists.
+    pub(super) fn new_async_from_sync_iterator_jsvalue(
+        &self,
+        realm: ContextId,
+        sync_iterator: crate::engine::heap::ObjectId,
+        next: &crate::engine::value::JsValue,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let prototype = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .context(realm)?
+            .async_generator
+            .ok_or(RuntimeError::Invariant(
+                "realm has no AsyncGenerator intrinsics",
+            ))?
+            .async_from_sync_iterator_prototype;
+        let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
+        let raw_next = next.as_raw();
+        let mut state = self.0.state.borrow_mut();
+        let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
+        let retained_atoms = match state.retain_raw_value_atoms(std::iter::once(&raw_next)) {
+            Ok(atoms) => atoms,
+            Err(error) => {
+                let cleanup = state.heap.release_shape(shape)?;
+                state.apply_cleanup(cleanup)?;
+                return Err(error);
+            }
+        };
+        let object = match state
+            .heap
+            .allocate_object(ObjectData::async_from_sync_iterator(
+                shape,
+                Vec::new(),
+                sync_iterator,
+                raw_next,
+            )) {
+            Ok(object) => object,
+            Err(error) => {
+                state.release_atoms(retained_atoms)?;
+                let cleanup = state.heap.release_shape(shape)?;
+                state.apply_cleanup(cleanup)?;
+                return Err(error.into());
+            }
+        };
+        let cleanup = state.heap.release_shape(shape)?;
+        state.apply_cleanup(cleanup)?;
+        Ok(ObjectRef::from_owned_handle(self.clone(), object))
+    }
+
     pub(super) fn new_async_from_sync_iterator(
         &self,
         realm: ContextId,
@@ -140,6 +193,10 @@ impl Runtime {
             .async_from_sync_iterator_prototype;
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
         let raw_next = self.raw_property_value(next)?;
+        // The conversion allocated a string/BigInt node with one producer
+        // edge; whichever arm runs, that edge is ours to release (the object
+        // retains its own copy edge on success).
+        let conversion_edge = raw_next.conversion_node_edge();
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
         let retained_atoms = match state.retain_raw_value_atoms(std::iter::once(&raw_next)) {
@@ -147,6 +204,10 @@ impl Runtime {
             Err(error) => {
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                drop(state);
+                if let Some(edge) = conversion_edge {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error);
             }
         };
@@ -163,12 +224,19 @@ impl Runtime {
                 state.release_atoms(retained_atoms)?;
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                drop(state);
+                if let Some(edge) = conversion_edge {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error.into());
             }
         };
         let cleanup = state.heap.release_shape(shape)?;
         state.apply_cleanup(cleanup)?;
         drop(state);
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
+        }
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 

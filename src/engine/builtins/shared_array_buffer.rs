@@ -212,7 +212,7 @@ impl Runtime {
         max_byte_length: Option<u64>,
     ) -> Result<Completion, RuntimeError> {
         if length > u64::from(MAX_SHARED_ARRAY_BUFFER_BYTE_LENGTH) {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid array buffer length",
@@ -221,7 +221,7 @@ impl Runtime {
         if max_byte_length
             .is_some_and(|maximum| maximum > u64::from(MAX_SHARED_ARRAY_BUFFER_BYTE_LENGTH))
         {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid max array buffer length",
@@ -240,7 +240,7 @@ impl Runtime {
         let handle = match SharedBufferHandle::new(length, max_byte_length) {
             Ok(handle) => handle,
             Err(SharedMemoryError::Allocation) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "out of memory",
@@ -329,7 +329,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.shared_array_buffer_snapshot(&object)?;
         let Some(maximum) = current.max_byte_length else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "array buffer is not resizable",
@@ -339,7 +339,7 @@ impl Runtime {
             || new_length > i64::from(maximum)
             || new_length < i64::from(current.byte_length)
         {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid array buffer length",
@@ -421,7 +421,7 @@ impl Runtime {
         new_length: u32,
     ) -> Result<Completion, RuntimeError> {
         if target.object_id() == source.object_id() {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "cannot use identical ArrayBuffer",
@@ -430,7 +430,7 @@ impl Runtime {
         let target_snapshot = match self.shared_array_buffer_snapshot_if_branded(&target)? {
             Some(snapshot) => snapshot,
             None => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "SharedArrayBuffer object expected",
@@ -438,7 +438,7 @@ impl Runtime {
             }
         };
         if target_snapshot.byte_length < new_length {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "new ArrayBuffer is too small",
@@ -456,7 +456,7 @@ impl Runtime {
             ));
         };
         if end > source_snapshot.byte_length {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",

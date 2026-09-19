@@ -177,7 +177,10 @@ impl Runtime {
         prototype: &ObjectRef,
         activation: EncodedVmActivation,
     ) -> Result<ObjectRef, RuntimeError> {
-        let atoms = activation.atoms();
+        let atoms = {
+            let state = self.0.state.borrow();
+            activation.atoms(&state.atoms)?
+        };
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
         let mut retained_atoms = Vec::with_capacity(atoms.len());
@@ -186,6 +189,7 @@ impl Runtime {
                 state.release_atoms(retained_atoms)?;
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                activation.release_conversion_edges(self);
                 return Err(error.into());
             }
             retained_atoms.push(atom);
@@ -200,11 +204,15 @@ impl Runtime {
                 state.release_atoms(retained_atoms)?;
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                activation.release_conversion_edges(self);
                 return Err(error.into());
             }
         };
         let cleanup = state.heap.release_shape(shape)?;
         state.apply_cleanup(cleanup)?;
+        // The async-generator object retained its own activation edges, so
+        // the caller-owned conversion edges can drop.
+        activation.release_conversion_edges(self);
         drop(state);
         drop(activation);
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
@@ -249,9 +257,12 @@ impl Runtime {
             .heap
             .async_generator_enqueue(generator.object_id(), request)
         {
+            self.release_converted_value_edge(&result);
             state.release_atoms(retained_atoms)?;
             return Err(error.into());
         }
+        // The queued request retained its own copy of the value edge.
+        self.release_converted_value_edge(&result);
         Ok(())
     }
 
@@ -262,12 +273,16 @@ impl Runtime {
         resume_realm: Option<ContextId>,
         activation: &EncodedVmActivation,
     ) -> Result<(), RuntimeError> {
-        let atoms = activation.atoms();
+        let atoms = {
+            let state = self.0.state.borrow();
+            activation.atoms(&state.atoms)?
+        };
         let mut state = self.0.state.borrow_mut();
         let mut retained_atoms = Vec::with_capacity(atoms.len());
         for atom in atoms {
             if let Err(error) = state.atoms.retain(atom) {
                 state.release_atoms(retained_atoms)?;
+                activation.release_conversion_edges(self);
                 return Err(error.into());
             }
             retained_atoms.push(atom);
@@ -279,8 +294,12 @@ impl Runtime {
             resume_realm,
         ) {
             state.release_atoms(retained_atoms)?;
+            activation.release_conversion_edges(self);
             return Err(error.into());
         }
+        // The heap record retained its own activation edges, so the
+        // caller-owned conversion edges can drop.
+        activation.release_conversion_edges(self);
         Ok(())
     }
 

@@ -20,7 +20,7 @@ use crate::engine::heap::{
     BytecodeConstant, ContextId, FunctionBytecodeData, FunctionDebugInfo, PublishedPrivateBindings,
     RawValue,
 };
-use crate::engine::value::JsString;
+use crate::engine::value::{JsString, Value};
 #[cfg(test)]
 use crate::source::LineColumn;
 use std::rc::Rc;
@@ -71,47 +71,52 @@ impl Runtime {
             let mut atom_string_constants = Vec::new();
             let mut children = Vec::new();
             let mut materialized_constant_roots = Vec::new();
-            for constant in function.constants {
-                match constant {
-                    FlatConstant::Value(value) => {
-                        linked_constants.push(BytecodeConstant::Value(value));
-                    }
-                    FlatConstant::AtomString(value) => {
-                        atom_string_constants.push(linked_constants.len());
-                        linked_constants.push(BytecodeConstant::Value(RawValue::String(value)));
-                    }
-                    FlatConstant::RegExp { pattern, program } => {
-                        linked_constants.push(BytecodeConstant::RegExp { pattern, program });
-                    }
-                    FlatConstant::TemplateObject { cooked, raw } => {
-                        let template = self.instantiate_template_object(realm, cooked, raw)?;
-                        linked_constants.push(BytecodeConstant::Value(RawValue::Object(
-                            template.object_id(),
-                        )));
-                        materialized_constant_roots.push(template);
-                    }
-                    FlatConstant::Child(index) => {
-                        let child = roots.get(index).and_then(Option::as_ref).ok_or(
-                            RuntimeError::Invariant(
-                                "flattened child function root was unavailable",
-                            ),
-                        )?;
-                        linked_constants.push(BytecodeConstant::Function(child.bytecode_id()));
-                        children.push(index);
+            let constants_linked = (|| -> Result<(), RuntimeError> {
+                for constant in function.constants {
+                    match constant {
+                        FlatConstant::Value(value) => {
+                            let raw = self.raw_property_value(&value)?;
+                            linked_constants.push(BytecodeConstant::Value(raw));
+                        }
+                        FlatConstant::AtomString(value) => {
+                            atom_string_constants.push(linked_constants.len());
+                            let raw = self.raw_property_value(&Value::String(value))?;
+                            linked_constants.push(BytecodeConstant::Value(raw));
+                        }
+                        FlatConstant::RegExp { pattern, program } => {
+                            linked_constants.push(BytecodeConstant::RegExp { pattern, program });
+                        }
+                        FlatConstant::TemplateObject { cooked, raw } => {
+                            let template = self.instantiate_template_object(realm, cooked, raw)?;
+                            linked_constants.push(BytecodeConstant::Value(RawValue::Object(
+                                template.object_id(),
+                            )));
+                            materialized_constant_roots.push(template);
+                        }
+                        FlatConstant::Child(index) => {
+                            let child = roots.get(index).and_then(Option::as_ref).ok_or(
+                                RuntimeError::Invariant(
+                                    "flattened child function root was unavailable",
+                                ),
+                            )?;
+                            linked_constants.push(BytecodeConstant::Function(child.bytecode_id()));
+                            children.push(index);
+                        }
                     }
                 }
+                Ok(())
+            })();
+            if let Err(error) = constants_linked {
+                // No bytecode node will retain these converted constants, so
+                // drop their caller-owned string/BigInt producer edges now.
+                release_constant_edges(self, &linked_constants);
+                return Err(error);
             }
 
             let mut closure_variables = function.closure_variables;
             let eval_environments = function.eval_environments;
             let argument_definitions = function.argument_definitions;
             let local_definitions = function.local_definitions;
-            let private_binding_publication =
-                bytecode_publish::prepare_private_binding_publication(
-                    &local_definitions,
-                    &closure_variables,
-                    &linked_constants,
-                )?;
             let mut linked_argument_definitions = Vec::with_capacity(argument_definitions.len());
             let mut linked_local_definitions = Vec::with_capacity(local_definitions.len());
             let mut linked_eval_environments = Vec::with_capacity(eval_environments.len());
@@ -125,7 +130,9 @@ impl Runtime {
                 let linking = (|| -> Result<(), RuntimeError> {
                     for index in atom_string_constants {
                         let value = match linked_constants.get(index) {
-                            Some(BytecodeConstant::Value(RawValue::String(value))) => value.clone(),
+                            Some(BytecodeConstant::Value(RawValue::String(value))) => {
+                                state.heap.string(*value)?.clone()
+                            }
                             Some(BytecodeConstant::Value(_))
                             | Some(BytecodeConstant::RegExp { .. })
                             | Some(BytecodeConstant::Function(_))
@@ -143,8 +150,17 @@ impl Runtime {
                         }
                         auxiliary_atoms.push(atom);
                         let canonical = state.atoms.to_js_string(atom)?;
-                        linked_constants[index] =
-                            BytecodeConstant::Value(RawValue::String(canonical));
+                        let canonical = state.heap.allocate_string(canonical)?;
+                        // The replaced draft string is never stored, so its
+                        // producer edge dies here; the bytecode node retains
+                        // its own edge for the canonical constant.
+                        let previous = std::mem::replace(
+                            &mut linked_constants[index],
+                            BytecodeConstant::Value(RawValue::String(canonical)),
+                        );
+                        if let BytecodeConstant::Value(previous) = previous {
+                            self.release_converted_value_edge(&previous);
+                        }
                     }
                     property_key_atoms = bytecode_publish::link_constant_property_keys(
                         &mut state,
@@ -152,6 +168,13 @@ impl Runtime {
                         &linked_constants,
                         &mut auxiliary_atoms,
                     )?;
+                    let private_binding_publication =
+                        bytecode_publish::prepare_private_binding_publication(
+                            &local_definitions,
+                            &closure_variables,
+                            &linked_constants,
+                            &state.heap,
+                        )?;
                     if let Some(debug) = unlinked_debug.take() {
                         let filename =
                             state.atoms.intern_property_key_js_string(&debug.filename)?;
@@ -178,7 +201,8 @@ impl Runtime {
                             .ok_or(RuntimeError::Invariant(
                                 "verified closure name was not a string constant",
                             ))?;
-                        let atom = state.atoms.intern_property_key_js_string(name)?;
+                        let text = state.heap.string(*name)?.clone();
+                        let atom = state.atoms.intern_property_key_js_string(&text)?;
                         auxiliary_atoms.push(atom);
                         descriptor.name = ClosureVariableName::Atom(atom);
                     }
@@ -222,6 +246,7 @@ impl Runtime {
                     Ok(())
                 })();
                 if let Err(error) = linking {
+                    release_constant_edges(self, &linked_constants);
                     state.release_atoms(auxiliary_atoms.drain(..))?;
                     return Err(error);
                 }
@@ -247,9 +272,28 @@ impl Runtime {
                     debug: linked_debug,
                     auxiliary_atoms: auxiliary_atoms.into_boxed_slice(),
                 };
+                let producer_values = bytecode
+                    .constants
+                    .iter()
+                    .filter_map(|constant| match constant {
+                        BytecodeConstant::Value(raw) => Some(raw.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 match state.heap.allocate_function_bytecode(bytecode) {
-                    Ok(id) => id,
+                    Ok(id) => {
+                        // The bytecode node retained its own copy of every
+                        // constant edge; release the caller-owned producer
+                        // edges carried by the boundary conversion.
+                        for raw in &producer_values {
+                            self.release_converted_value_edge(raw);
+                        }
+                        id
+                    }
                     Err(error) => {
+                        for raw in &producer_values {
+                            self.release_converted_value_edge(raw);
+                        }
                         state.release_atoms(owned_atoms)?;
                         return Err(error.into());
                     }
@@ -409,7 +453,10 @@ impl Runtime {
 }
 
 pub(crate) enum FlatConstant {
-    Value(RawValue),
+    /// Unlinked primitive payload. String and BigInt literals stay as public
+    /// values here; the publish transaction below is their node creation
+    /// point (§2.2), where they enter the constant pool as `RawValue`s.
+    Value(Value),
     AtomString(JsString),
     RegExp {
         pattern: JsString,
@@ -420,6 +467,17 @@ pub(crate) enum FlatConstant {
         raw: Box<[JsString]>,
     },
     Child(usize),
+}
+
+/// Release every caller-owned string/BigInt producer edge carried by
+/// converted value constants. Idempotent for constants without a node edge.
+fn release_constant_edges(runtime: &Runtime, constants: &[BytecodeConstant]) {
+    for raw in constants.iter().filter_map(|constant| match constant {
+        BytecodeConstant::Value(raw) => Some(raw),
+        _ => None,
+    }) {
+        runtime.release_converted_value_edge(raw);
+    }
 }
 
 pub(crate) struct FlatFunction {

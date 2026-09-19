@@ -57,6 +57,39 @@ impl Runtime {
         Ok(NativeConversion::Value((target, this_argument)))
     }
 
+    /// Internal-value form of [`Runtime::concatenate_bound_arguments`]. The
+    /// bound roots transfer into internal values without a retain/release pair;
+    /// the caller's argument edges move into the merged buffer.
+    pub(crate) fn concatenate_bound_arguments_jsvalue(
+        &self,
+        realm: ContextId,
+        bound_arguments: Vec<Value>,
+        call_arguments: Vec<crate::engine::value::JsValue>,
+    ) -> Result<NativeConversion<Vec<crate::engine::value::JsValue>>, RuntimeError> {
+        const MAX_CALL_ARGUMENTS: usize = 65_534;
+
+        let Some(total) = bound_arguments.len().checked_add(call_arguments.len()) else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        };
+        if total > MAX_CALL_ARGUMENTS {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        }
+        let mut arguments = Vec::with_capacity(total);
+        for argument in bound_arguments {
+            arguments.push(self.into_jsvalue(argument)?);
+        }
+        arguments.extend(call_arguments);
+        Ok(NativeConversion::Value(arguments))
+    }
+
     pub(crate) fn concatenate_bound_arguments(
         &self,
         realm: ContextId,
@@ -137,7 +170,7 @@ impl Runtime {
                 } => {
                     if target == NativeFunctionId::FunctionPrototypeCall {
                         if self.native_call_would_overflow(target) {
-                            return Ok(Completion::Throw(self.new_native_error(
+                            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                                 caller_realm,
                                 NativeErrorKind::Internal,
                                 "stack overflow",
@@ -182,7 +215,7 @@ impl Runtime {
                         }
                     }
                     if self.native_call_would_overflow(target) {
-                        return Ok(Completion::Throw(self.new_native_error(
+                        return Ok(Completion::Throw(self.new_native_error_jsvalue(
                             caller_realm,
                             NativeErrorKind::Internal,
                             "stack overflow",
@@ -373,7 +406,7 @@ impl Runtime {
                 NativeInvocation::Call { .. },
             ) => {
                 let exception =
-                    self.new_native_error(realm, NativeErrorKind::Type, "must be called with new")?;
+                    self.new_native_error_jsvalue(realm, NativeErrorKind::Type, "must be called with new")?;
                 return Ok(NativeInvocationAdaptation::Complete(Completion::Throw(
                     exception,
                 )));
@@ -528,7 +561,7 @@ impl Runtime {
             ) => self.call_shared_array_buffer_getter(realm, kind, invocation),
             NativeFunctionId::DataView(kind) => self.call_data_view_getter(realm, kind, invocation),
             NativeFunctionId::TypedArray(Ta::BaseConstructor) => {
-                Ok(Completion::Throw(self.new_native_error(
+                Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     crate::engine::api::error::NativeErrorKind::Type,
                     "cannot be called",

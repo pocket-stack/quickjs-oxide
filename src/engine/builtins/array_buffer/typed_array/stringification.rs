@@ -233,7 +233,7 @@ impl TypedStringResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(TypedStringStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not a function",

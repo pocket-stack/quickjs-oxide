@@ -37,9 +37,11 @@ impl Heap {
     ) -> Result<HeapCleanup, HeapError> {
         let shape_id = self.exclusive_dictionary_shape(id)?;
         let shape = self.shape(shape_id)?;
-        let index = shape.find(atom).ok_or(HeapError::Invariant(
-            "dictionary deletion requires an existing property",
-        ))? as usize;
+        let index = shape
+            .find(AtomIdx::from_raw(atom.raw()))
+            .ok_or(HeapError::Invariant(
+                "dictionary deletion requires an existing property",
+            ))? as usize;
         if !shape.is_dictionary() || !shape.entries()[index].flags.configurable {
             return Err(HeapError::Invariant(
                 "dictionary deletion requires configurable dictionary storage",
@@ -48,7 +50,7 @@ impl Heap {
 
         self.invalidate_property_layout(id);
         self.shape_mut(shape_id)?
-            .remove_dictionary_property(atom)
+            .remove_dictionary_property(AtomIdx::from_raw(atom.raw()))
             .expect("dictionary key was validated before mutation");
         let slots = &mut self.object_mut(id)?.slots;
         let previous = slots.swap_remove(index);
@@ -57,7 +59,7 @@ impl Heap {
             slots.shrink_to(len.saturating_mul(2).saturating_add(8));
         }
         let mut cleanup = HeapCleanup::default();
-        cleanup.atoms.push(atom);
+        cleanup.atoms.push(AtomIdx::from_raw(atom.raw()));
         cleanup.atoms.extend(property_slot_atoms(&previous));
         for edge in property_slot_edges(&previous) {
             self.release_raw_no_drain(edge)?;

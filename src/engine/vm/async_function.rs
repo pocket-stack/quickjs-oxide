@@ -42,7 +42,7 @@ impl Runtime {
         caller_realm: ContextId,
     ) -> Result<Completion, RuntimeError> {
         let reason =
-            self.new_native_error(caller_realm, NativeErrorKind::Internal, "stack overflow")?;
+            self.new_native_error_jsvalue(caller_realm, NativeErrorKind::Internal, "stack overflow")?;
         let promise = self.new_rejected_default_promise(caller_realm, reason)?;
         Ok(Completion::Return(Value::Object(promise)))
     }
@@ -175,12 +175,16 @@ impl Runtime {
         state_object: &ObjectRef,
         activation: &EncodedVmActivation,
     ) -> Result<(), RuntimeError> {
-        let atoms = activation.atoms();
+        let atoms = {
+            let state = self.0.state.borrow();
+            activation.atoms(&state.atoms)?
+        };
         let mut state = self.0.state.borrow_mut();
         let mut retained_atoms = Vec::with_capacity(atoms.len());
         for atom in atoms {
             if let Err(error) = state.atoms.retain(atom) {
                 state.release_atoms(retained_atoms)?;
+                activation.release_conversion_edges(self);
                 return Err(error.into());
             }
             retained_atoms.push(atom);
@@ -190,8 +194,12 @@ impl Runtime {
             .suspend_async_function(state_object.object_id(), activation.data.clone())
         {
             state.release_atoms(retained_atoms)?;
+            activation.release_conversion_edges(self);
             return Err(error.into());
         }
+        // The heap record retained its own activation edges, so the
+        // caller-owned conversion edges can drop.
+        activation.release_conversion_edges(self);
         Ok(())
     }
 

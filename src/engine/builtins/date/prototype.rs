@@ -208,7 +208,7 @@ impl Runtime {
         let output = match format_date_string(fields.as_ref(), kind) {
             Ok(output) => output,
             Err(_) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Range,
                     "Date value is NaN",

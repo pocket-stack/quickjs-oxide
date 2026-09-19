@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::error::{Error, ErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
@@ -200,7 +201,7 @@ impl Runtime {
         let (prototype, mut entries, mut slots) = {
             let object = state.heap.object(object_id)?;
             let shape = state.heap.shape(object.shape)?;
-            if shape.find(key.atom()).is_some() {
+            if shape.find(AtomIdx::from_raw(key.atom().raw())).is_some() {
                 return Err(RuntimeError::Invariant(
                     "function prototype autoinit property already exists",
                 ));
@@ -212,7 +213,7 @@ impl Runtime {
             )
         };
         entries.push(ShapeEntry {
-            atom: key.atom(),
+            atom: AtomIdx::from_raw(key.atom().raw()),
             flags: PropertyFlags::data(true, false, false),
         });
         slots.push(PropertySlot::AutoInit(
@@ -262,7 +263,7 @@ impl Runtime {
         let (prototype, mut entries, mut slots) = {
             let object = state.heap.object(object_id)?;
             let shape = state.heap.shape(object.shape)?;
-            if shape.find(key.atom()).is_some() {
+            if shape.find(AtomIdx::from_raw(key.atom().raw())).is_some() {
                 return Err(RuntimeError::Invariant(
                     "native builtin autoinit property already exists",
                 ));
@@ -274,7 +275,7 @@ impl Runtime {
             )
         };
         entries.push(ShapeEntry {
-            atom: key.atom(),
+            atom: AtomIdx::from_raw(key.atom().raw()),
             flags,
         });
         slots.push(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
@@ -301,7 +302,7 @@ impl Runtime {
         let (prototype, mut entries, mut slots) = {
             let object = state.heap.object(object_id)?;
             let shape = state.heap.shape(object.shape)?;
-            if shape.find(key.atom()).is_some() {
+            if shape.find(AtomIdx::from_raw(key.atom().raw())).is_some() {
                 return Err(RuntimeError::Invariant(
                     "string autoinit property already exists",
                 ));
@@ -313,7 +314,7 @@ impl Runtime {
             )
         };
         entries.push(ShapeEntry {
-            atom: key.atom(),
+            atom: AtomIdx::from_raw(key.atom().raw()),
             flags: PropertyFlags::data(true, false, true),
         });
         slots.push(PropertySlot::AutoInit(AutoInitProperty::String {
@@ -344,7 +345,7 @@ impl Runtime {
             )
         };
         entries.push(ShapeEntry {
-            atom: key.atom(),
+            atom: AtomIdx::from_raw(key.atom().raw()),
             flags: PropertyFlags::data(true, false, true),
         });
         slots.push(PropertySlot::AutoInit(AutoInitProperty::FailureProbe {

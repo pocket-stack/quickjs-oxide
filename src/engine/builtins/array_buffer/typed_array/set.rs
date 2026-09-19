@@ -143,7 +143,7 @@ impl TypedSetResume {
                 };
                 if offset < 0 {
                     return Ok(TypedSetStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Range,
                             "invalid offset",
@@ -223,7 +223,7 @@ impl TypedSetResume {
                     .is_none_or(|end| end > u64::from(state.target_length))
                 {
                     return Ok(TypedSetStep::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Range, "out of bound")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Range, "out of bound")?,
                     )));
                 }
                 Self::next(runtime, realm, state)

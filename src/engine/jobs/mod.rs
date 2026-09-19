@@ -323,8 +323,16 @@ impl RuntimeState {
                     let cleanup = self.heap.release_object(*object)?;
                     self.apply_cleanup(cleanup)?;
                 }
-                RawValue::Symbol(atom) => {
-                    self.atoms.release(*atom)?;
+                RawValue::Symbol(index) => {
+                    self.atoms.release_index(*index)?;
+                }
+                RawValue::String(id) => {
+                    let cleanup = self.heap.release_string(*id)?;
+                    self.apply_cleanup(cleanup)?;
+                }
+                RawValue::BigInt(id) => {
+                    let cleanup = self.heap.release_bigint(*id)?;
+                    self.apply_cleanup(cleanup)?;
                 }
                 RawValue::Private(_) => {
                     return Err(RuntimeError::Invariant(
@@ -335,9 +343,7 @@ impl RuntimeState {
                 | RawValue::Null
                 | RawValue::Bool(_)
                 | RawValue::Int(_)
-                | RawValue::Float(_)
-                | RawValue::BigInt(_)
-                | RawValue::String(_) => {}
+                | RawValue::Float(_) => {}
                 RawValue::Uninitialized | RawValue::Exception => {
                     return Err(RuntimeError::Invariant(
                         "internal value sentinel occupied a pending job root",

@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::Context;
 use crate::engine::heap::{AutoInitProperty, PropertySlot, RawValue};
 use crate::engine::object::shape::PropertyFlags;
@@ -91,7 +92,7 @@ fn object_keys_family_autoinit_preserves_pinned_metadata() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -133,7 +134,7 @@ fn object_extensibility_autoinit_preserves_pinned_metadata() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -233,7 +234,7 @@ fn object_descriptor_statics_autoinit_preserve_pinned_metadata() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -275,7 +276,7 @@ fn object_is_autoinit_and_same_value_semantics_match_pinned_quickjs() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -338,7 +339,7 @@ fn object_assign_autoinit_and_ordinary_snapshot_semantics_match_pinned_quickjs()
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -408,7 +409,7 @@ fn object_assign_autoinit_and_ordinary_snapshot_semantics_match_pinned_quickjs()
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert!(matches!(
             object.slots.get(slot_index),
             Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
@@ -477,7 +478,7 @@ fn object_from_entries_autoinit_preserves_pinned_metadata() {
     let state = runtime.0.state.borrow();
     let object = state.heap.object(object_constructor.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
-    let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+    let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
     assert_eq!(
         shape.entries()[slot_index].flags,
         PropertyFlags::data(true, false, true),
@@ -514,7 +515,7 @@ fn object_has_own_autoinit_preserves_pinned_metadata_and_presence_is_non_materia
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(has_own_key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(has_own_key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -541,7 +542,7 @@ fn object_has_own_autoinit_preserves_pinned_metadata_and_presence_is_non_materia
     let state = runtime.0.state.borrow();
     let object = state.heap.object(object_constructor.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
-    let slot_index = usize::try_from(shape.find(keys_key.atom()).unwrap()).unwrap();
+    let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(keys_key.atom().raw())).unwrap()).unwrap();
     assert!(matches!(
         object.slots.get(slot_index),
         Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
@@ -693,7 +694,7 @@ fn object_integrity_autoinit_materializes_and_tightens_in_pinned_order() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -719,7 +720,7 @@ fn object_integrity_autoinit_materializes_and_tightens_in_pinned_order() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, false),
@@ -747,7 +748,7 @@ fn object_integrity_autoinit_materializes_and_tightens_in_pinned_order() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(false, false, false),
@@ -777,7 +778,7 @@ fn object_is_sealed_scans_descriptors_before_extensibility_and_short_circuits_au
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert!(matches!(
             object.slots.get(slot_index),
             Some(PropertySlot::AutoInit(
@@ -814,8 +815,8 @@ fn object_is_sealed_scans_descriptors_before_extensibility_and_short_circuits_au
     let state = runtime.0.state.borrow();
     let object = state.heap.object(object_constructor.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
-    let create_slot = usize::try_from(shape.find(create.atom()).unwrap()).unwrap();
-    let get_prototype_slot = usize::try_from(shape.find(get_prototype_of.atom()).unwrap()).unwrap();
+    let create_slot = usize::try_from(shape.find(AtomIdx::from_raw(create.atom().raw())).unwrap()).unwrap();
+    let get_prototype_slot = usize::try_from(shape.find(AtomIdx::from_raw(get_prototype_of.atom().raw())).unwrap()).unwrap();
     assert!(matches!(
         object.slots.get(create_slot),
         Some(PropertySlot::Data(RawValue::Object(_)))
@@ -1135,7 +1136,7 @@ fn object_keys_descriptor_recheck_materializes_non_enumerable_autoinits() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert!(matches!(
             object.slots.get(slot_index),
             Some(PropertySlot::AutoInit(
@@ -1157,7 +1158,7 @@ fn object_keys_descriptor_recheck_materializes_non_enumerable_autoinits() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(object_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         let Some(PropertySlot::Data(RawValue::Object(function))) = object.slots.get(slot_index)
         else {
             panic!("Object.{name} was not materialized during descriptor recheck");

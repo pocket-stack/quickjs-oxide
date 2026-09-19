@@ -156,7 +156,7 @@ impl NextResume {
             NextPhase::Result => {
                 let Value::Object(object) = value else {
                     return Ok(NextStep::Complete(ObjectIteratorStep::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Type,
                             "iterator must return an object",
@@ -304,7 +304,7 @@ impl CloseResume {
                 if preserving || matches!(value, Value::Object(_)) {
                     self.0.completion
                 } else {
-                    Completion::Throw(runtime.new_native_error(
+                    Completion::Throw(runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "not an object",
@@ -323,7 +323,7 @@ impl CloseResume {
             return Ok(CloseStep::Complete(if preserving {
                 self.0.completion
             } else {
-                Completion::Throw(runtime.new_native_error(
+                Completion::Throw(runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     "not a function",

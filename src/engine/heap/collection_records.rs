@@ -9,15 +9,15 @@
 use std::collections::{BTreeSet, HashMap, btree_set};
 
 use super::collection_index::CollectionIndex;
-use super::{HeapError, RawValue};
+use super::{Heap, HeapError, RawValue};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct MapRecord {
     pub key: RawValue,
     pub value: RawValue,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct CollectionRecords {
     entries: HashMap<usize, (MapRecord, u64)>,
     order: BTreeSet<usize>,
@@ -69,8 +69,8 @@ impl CollectionRecords {
         Some((id, &self.entries[&id].0))
     }
 
-    pub(super) fn find(&self, key: &RawValue) -> Option<usize> {
-        self.key_index.find(self, key)
+    pub(super) fn find(&self, heap: &Heap, key: &RawValue) -> Option<usize> {
+        self.key_index.find(heap, self, key)
     }
 
     /// Must run before retaining a new record's heap edges.
@@ -81,14 +81,27 @@ impl CollectionRecords {
         Ok(())
     }
 
+    /// Compute the storage key hash before the caller borrows this record set
+    /// mutably; hashing string and BigInt keys needs heap access.
+    pub(super) fn precompute_insert_hash(&self, heap: &Heap, key: &RawValue) -> u64 {
+        self.key_index.hash(heap, key)
+    }
+
     /// The heap has validated the key, uniqueness and ID capacity before commit.
-    pub(super) fn insert(&mut self, record: MapRecord) -> usize {
+    pub(super) fn insert(&mut self, heap: &Heap, record: MapRecord) -> usize {
+        let hash = self.precompute_insert_hash(heap, &record.key);
+        self.insert_hashed(record, hash)
+    }
+
+    /// Commit a record whose storage hash was computed before the caller
+    /// borrowed this record set mutably (hashing string and BigInt keys
+    /// needs heap access).
+    pub(super) fn insert_hashed(&mut self, record: MapRecord, hash: u64) -> usize {
         let id = self.next_id;
         self.next_id = id
             .checked_add(1)
             .expect("collection insertion was preflighted");
-        let key = &record.key;
-        let hash = self.key_index.insert(key, id);
+        self.key_index.insert_hashed(hash, id);
         assert!(
             self.entries.insert(id, (record, hash)).is_none(),
             "collection record ID was reused"
@@ -123,7 +136,7 @@ impl CollectionRecords {
         }
     }
 
-    pub(super) fn validate(&self) -> Result<(), HeapError> {
+    pub(super) fn validate(&self, heap: &Heap) -> Result<(), HeapError> {
         if self.entries.len() != self.order.len()
             || self
                 .order
@@ -134,7 +147,7 @@ impl CollectionRecords {
                 "collection record IDs do not match live storage",
             ));
         }
-        self.key_index.validate(self)
+        self.key_index.validate(heap, self)
     }
 }
 
@@ -177,10 +190,11 @@ mod tests {
 
     #[test]
     fn collection_record_storage_reclaims_capacity_and_keeps_id_clock() {
+        let heap = Heap::new();
         for peak in [64, 1024, 16384] {
             let mut records = CollectionRecords::default();
             for key in 0..peak {
-                records.insert(record(key as i32, key as i32));
+                records.insert(&heap, record(key as i32, key as i32));
             }
             for id in 0..peak - 1 {
                 records.remove(id).unwrap();
@@ -198,12 +212,13 @@ mod tests {
             assert_eq!(records.take_all().count(), 1);
             assert_eq!(records.entries.capacity(), 0);
             assert_eq!(records.key_index.retained_capacities(), (0, 0));
-            assert_eq!(records.insert(record(1, 2)), peak);
+            assert_eq!(records.insert(&heap, record(1, 2)), peak);
         }
     }
 
     #[test]
     fn collection_record_storage_matches_a_tombstone_reference_model() {
+        let heap = Heap::new();
         let mut records = CollectionRecords::default();
         let mut model: Vec<Option<(i32, i32)>> = Vec::new();
         let mut seed = 0x8cae_7753_u64;
@@ -214,7 +229,7 @@ mod tests {
             let existing = model
                 .iter()
                 .position(|entry| entry.is_some_and(|(k, _)| k == key));
-            assert_eq!(records.find(&RawValue::Int(key)), existing);
+            assert_eq!(records.find(&heap, &RawValue::Int(key)), existing);
             match (seed >> 16) % 7 {
                 0..=2 => {
                     if let Some(id) = existing {
@@ -222,7 +237,7 @@ mod tests {
                         model[id] = Some((key, step));
                     } else {
                         records.preflight_insert().unwrap();
-                        assert_eq!(records.insert(record(key, step)), model.len());
+                        assert_eq!(records.insert(&heap, record(key, step)), model.len());
                         model.push(Some((key, step)));
                     }
                 }
@@ -251,7 +266,7 @@ mod tests {
                     model.fill(None);
                 }
             }
-            records.validate().unwrap();
+            records.validate(&heap).unwrap();
             assert_eq!(records.len(), model.iter().flatten().count());
             assert_eq!(records.next_id(), model.len());
             let actual = records
@@ -263,13 +278,23 @@ mod tests {
                 .flatten()
                 .map(|&(key, value)| record(key, value))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                actual,
-                expected
-                    .iter()
-                    .map(|entry| (&entry.key, &entry.value))
-                    .collect::<Vec<_>>()
-            );
+            assert_eq!(actual.len(), expected.len());
+            for ((actual_key, actual_value), expected) in
+                actual.iter().zip(expected.iter())
+            {
+                assert!(
+                    crate::engine::value::collection_key::same_value_zero(
+                        &heap, actual_key, &expected.key
+                    ),
+                    "key mismatch: {actual_key:?}"
+                );
+                assert!(
+                    crate::engine::value::collection_key::same_value_zero(
+                        &heap, actual_value, &expected.value
+                    ),
+                    "value mismatch: {actual_value:?}"
+                );
+            }
         }
     }
 

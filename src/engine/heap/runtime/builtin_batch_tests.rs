@@ -21,6 +21,12 @@ fn layout(runtime: &Runtime, object: &ObjectRef) -> (ShapeId, Vec<PropertySlot>)
     (object.shape, object.slots.clone())
 }
 
+/// `PropertySlot` has no `PartialEq` (its payloads embed `RawValue`), so
+/// layout snapshots compare through their debug rendering instead.
+fn layout_summary(layout: &(ShapeId, Vec<PropertySlot>)) -> (ShapeId, String) {
+    (layout.0, format!("{:?}", layout.1))
+}
+
 #[test]
 fn builtin_batch_preserves_order_flags_metadata_and_lazy_identity() {
     let runtime = Runtime::new();
@@ -41,21 +47,29 @@ fn builtin_batch_preserves_order_flags_metadata_and_lazy_identity() {
             assert_eq!(
                 state
                     .atoms
-                    .to_js_string(entries[index].atom)
+                    .to_js_string(state.atoms.brand(entries[index].atom).unwrap())
                     .unwrap()
                     .to_string(),
                 method.name
             );
             assert_eq!(entries[index].flags, method.flags);
-            assert_eq!(
-                object.slots[index],
-                PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
-                    realm: context.realm,
-                    target: method.target,
-                    name: method.name,
-                    length: method.length,
-                    min_readable_args: method.min_readable_args,
-                })
+            assert!(
+                matches!(
+                    &object.slots[index],
+                    PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                        realm,
+                        target,
+                        name,
+                        length,
+                        min_readable_args,
+                    }) if *realm == context.realm
+                        && *target == method.target
+                        && *name == method.name
+                        && *length == method.length
+                        && *min_readable_args == method.min_readable_args
+                ),
+                "slot mismatch: {:?}",
+                object.slots[index]
             );
         }
     }
@@ -104,20 +118,29 @@ fn builtin_batch_rejects_entire_invalid_table_without_leaking_keys() {
                 .define_native_builtin_auto_init_batch(&object, context.realm, methods)
                 .is_err()
         );
-        assert_eq!(layout(&runtime, &object), original);
+        assert_eq!(
+            layout_summary(&layout(&runtime, &object)),
+            layout_summary(&original)
+        );
         assert_eq!(runtime.test_atom_count(), atoms);
     }
     runtime
         .define_native_builtin_auto_init_batch(&object, context.realm, [])
         .unwrap();
-    assert_eq!(layout(&runtime, &object), original);
+    assert_eq!(
+            layout_summary(&layout(&runtime, &object)),
+            layout_summary(&original)
+        );
     runtime.prevent_extensions(&object).unwrap();
     assert!(
         runtime
             .define_native_builtin_auto_init_batch(&object, context.realm, [method("batch_new")])
             .is_err()
     );
-    assert_eq!(layout(&runtime, &object), original);
+    assert_eq!(
+            layout_summary(&layout(&runtime, &object)),
+            layout_summary(&original)
+        );
 }
 
 #[test]
@@ -147,7 +170,10 @@ fn builtin_batch_validates_receiver_domain_and_realm_lifetime() {
             .define_native_builtin_auto_init_batch(&object, realm, [method("batch_stale")])
             .is_err()
     );
-    assert_eq!(layout(&runtime, &object), original);
+    assert_eq!(
+            layout_summary(&layout(&runtime, &object)),
+            layout_summary(&original)
+        );
     assert_eq!(runtime.test_atom_count(), atoms);
 }
 
@@ -165,8 +191,8 @@ fn builtin_batch_rolls_back_shape_and_realm_edges_on_retain_overflow() {
             .heap
             .live_node_mut(RawId::Context(context.realm))
             .unwrap();
-        let strong = node.strong;
-        node.strong = u32::MAX;
+        let strong = node.strong.get();
+        node.strong.set(u32::MAX);
         (strong, counts.live, counts.shape_nodes)
     };
     let result = runtime.define_native_builtin_auto_init_batch(
@@ -180,14 +206,17 @@ fn builtin_batch_rolls_back_shape_and_realm_edges_on_retain_overflow() {
             .heap
             .live_node_mut(RawId::Context(context.realm))
             .unwrap();
-        let after = node.strong;
-        node.strong = strong;
+        let after = node.strong.get();
+        node.strong.set(strong);
         assert_eq!(after, u32::MAX);
         assert_eq!(state.heap.counts().live, live);
         assert_eq!(state.heap.counts().shape_nodes, shapes);
     }
     assert!(result.is_err());
-    assert_eq!(layout(&runtime, &object), original);
+    assert_eq!(
+            layout_summary(&layout(&runtime, &object)),
+            layout_summary(&original)
+        );
     assert_eq!(runtime.test_atom_count(), atoms);
 }
 
@@ -283,7 +312,10 @@ fn builtin_batch_rejects_exotic_receivers_without_observable_traps() {
                 )
                 .is_err()
         );
-        assert_eq!(layout(&runtime, &object), original);
+        assert_eq!(
+            layout_summary(&layout(&runtime, &object)),
+            layout_summary(&original)
+        );
         assert_eq!(runtime.test_atom_count(), atoms);
     }
 }

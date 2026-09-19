@@ -3,7 +3,7 @@
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 use crate::engine::builtins::CanonicalNumericIndex;
 use crate::engine::code::function::metadata::ClosureVariableKind;
 use crate::engine::heap::roots::VarRefRoot;
@@ -267,7 +267,7 @@ impl Runtime {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
             let shape = state.heap.shape(object_data.shape)?;
-            let Some(index) = shape.find(key.atom()) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                 return Ok(None);
             };
             let index = usize::try_from(index)
@@ -384,7 +384,7 @@ impl Runtime {
             let shape = state.heap.shape(object.shape)?;
             let slot_index = usize::try_from(
                 shape
-                    .find(key.atom())
+                    .find(AtomIdx::from_raw(key.atom().raw()))
                     .ok_or(RuntimeError::Invariant("autoinit property disappeared"))?,
             )
             .map_err(|_| RuntimeError::Invariant("shape index does not fit usize"))?;
@@ -486,9 +486,16 @@ impl Runtime {
             }
         };
         let raw = self.raw_property_value(&initialized)?;
+        // Clone duplicates only the handle; the probe keeps the
+        // producer edge accountable through every store-or-decline path.
+        let conversion_probe = raw.clone();
         let mut state = self.0.state.borrow_mut();
-        state.replace_property_slot(object_id, slot_index, PropertySlot::Data(raw))?;
+        let replaced = state.replace_property_slot(object_id, slot_index, PropertySlot::Data(raw));
         drop(state);
+        // The slot retained its own copy edge on success; a rejected
+        // replacement kept nothing. Balance the producer edge either way.
+        self.release_converted_value_edge(&conversion_probe);
+        replaced?;
         drop(initialized);
         Ok(())
     }
@@ -790,7 +797,11 @@ impl Runtime {
                 };
                 let shape = state.heap.shape(object_data.shape)?;
                 for entry in shape.entries() {
-                    if state.atoms.array_index(entry.atom)?.is_some() {
+                    if state
+                        .atoms
+                        .array_index(state.atoms.brand(entry.atom)?)?
+                        .is_some()
+                    {
                         return Err(RuntimeError::Invariant(
                             "fast Array shape already contained a numeric property",
                         ));
@@ -819,7 +830,7 @@ impl Runtime {
                 .map_err(|_| RuntimeError::Invariant("fast Array count exceeded Uint32"))?;
             let key = self.property_key_for_index(index as u64)?;
             entries.push(ShapeEntry {
-                atom: key.atom(),
+                atom: AtomIdx::from_raw(key.atom().raw()),
                 flags: PropertyFlags::data(true, true, true),
             });
             keys.push(key);
@@ -837,12 +848,30 @@ impl Runtime {
         value: &Value,
     ) -> Result<(), RuntimeError> {
         let raw = self.raw_property_value(value)?;
+        // Clone duplicates only the handle; the probe keeps the
+        // producer edge accountable through every store-or-decline path.
+        let conversion_probe = raw.clone();
         let mut state = self.0.state.borrow_mut();
-        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
-        match state.heap.append_array_dense_value(object.object_id(), raw) {
-            Ok(()) => Ok(()),
+        let retained_atoms = match state.retain_raw_value_atoms(std::iter::once(&raw)) {
+            Ok(atoms) => atoms,
             Err(error) => {
-                state.release_atoms(retained_atoms)?;
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error);
+            }
+        };
+        let appended = state.heap.append_array_dense_value(object.object_id(), raw);
+        match appended {
+            Ok(()) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                Ok(())
+            }
+            Err(error) => {
+                let released = state.release_atoms(retained_atoms);
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                released?;
                 Err(error.into())
             }
         }
@@ -855,15 +884,33 @@ impl Runtime {
         value: &Value,
     ) -> Result<(), RuntimeError> {
         let raw = self.raw_property_value(value)?;
+        // Clone duplicates only the handle; the probe keeps the
+        // producer edge accountable through every store-or-decline path.
+        let conversion_probe = raw.clone();
         let mut state = self.0.state.borrow_mut();
-        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
-        match state
-            .heap
-            .replace_array_dense_value(object.object_id(), index, raw)
-        {
-            Ok(cleanup) => state.apply_cleanup(cleanup),
+        let retained_atoms = match state.retain_raw_value_atoms(std::iter::once(&raw)) {
+            Ok(atoms) => atoms,
             Err(error) => {
-                state.release_atoms(retained_atoms)?;
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error);
+            }
+        };
+        let replaced = state
+            .heap
+            .replace_array_dense_value(object.object_id(), index, raw);
+        match replaced {
+            Ok(cleanup) => {
+                let applied = state.apply_cleanup(cleanup);
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                applied
+            }
+            Err(error) => {
+                let released = state.release_atoms(retained_atoms);
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                released?;
                 Err(error.into())
             }
         }
@@ -895,7 +942,7 @@ impl Runtime {
         }
         let shape = heap.shape(object_data.shape)?;
         let index = shape
-            .find(length)
+            .find(AtomIdx::from_raw(length.raw()))
             .ok_or(RuntimeError::Invariant("Array has no length property"))?;
         if index != 0 {
             return Err(RuntimeError::Invariant(
@@ -1390,7 +1437,7 @@ impl Runtime {
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         let shape = state.heap.shape(object.shape)?;
-        let Some(index) = shape.find(key.atom()) else {
+        let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
             return Ok(None);
         };
         let index = usize::try_from(index)
@@ -1438,7 +1485,7 @@ impl Runtime {
         }
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
-        Ok(state.heap.shape(object.shape)?.find(key.atom()).is_some())
+        Ok(state.heap.shape(object.shape)?.find(AtomIdx::from_raw(key.atom().raw())).is_some())
     }
 
     /// Read an own property's enumerable bit without materializing autoinit
@@ -1472,7 +1519,7 @@ impl Runtime {
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         let shape = state.heap.shape(object.shape)?;
-        let Some(index) = shape.find(key.atom()) else {
+        let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
             return Ok(false);
         };
         let index = usize::try_from(index)
@@ -1524,7 +1571,7 @@ impl Runtime {
             match &object_data.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => {
                     let shape = state.heap.shape(object_data.shape)?;
-                    let Some(index) = shape.find(key.atom()) else {
+                    let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                         return Ok(true);
                     };
                     let index = index as usize;
@@ -1617,7 +1664,7 @@ impl Runtime {
         };
         if dictionary_eligible {
             let shape = state.heap.shape(state.heap.object(object_id)?.shape)?;
-            let Some(index) = shape.find(key.atom()) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                 return Ok(true);
             };
             if !shape.entries()[index as usize].flags.configurable {
@@ -1633,7 +1680,7 @@ impl Runtime {
         let (prototype, entries, mut slots, index, configurable) = {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
-            let Some(index) = shape.find(key.atom()) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                 return Ok(true);
             };
             let index = usize::try_from(index)

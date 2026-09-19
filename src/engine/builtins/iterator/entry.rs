@@ -185,7 +185,7 @@ impl TagSetterResume {
                 Completion::Return(Value::Undefined)
             }
             NativeConversion::Value(InternalDefineResult::RejectedProxyTrap) => {
-                Completion::Throw(runtime.new_native_error(
+                Completion::Throw(runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     "proxy: defineProperty exception",
@@ -199,7 +199,7 @@ impl TagSetterResume {
                 } else {
                     "property is not configurable"
                 };
-                Completion::Throw(runtime.new_native_error(
+                Completion::Throw(runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     message,

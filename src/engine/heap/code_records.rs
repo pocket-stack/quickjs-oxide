@@ -1,7 +1,7 @@
 use super::*;
 
 /// Constant-pool entry owned by a [`FunctionBytecodeData`] node.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum BytecodeConstant {
     Value(RawValue),
     /// Compile-once RegExp literal payload. These reference-counted Rust
@@ -21,7 +21,7 @@ pub enum BytecodeConstant {
 /// layer which still owns both the exact source spelling and its interned
 /// [`Atom`], so it seals that distinction here before handing linked bytecode
 /// to the atom-table-independent heap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum PublishedPrivateBindingRole {
     Primary,
     SetterStorage,
@@ -32,7 +32,7 @@ pub(crate) enum PublishedPrivateBindingRole {
 /// or closure descriptor. Local setter halves also carry reciprocal `pair`
 /// indices; closure captures may legitimately retain only one half and leave
 /// it absent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub(crate) struct PublishedPrivateBinding {
     pub(in crate::engine::heap) name: Atom,
     pub(in crate::engine::heap) role: PublishedPrivateBindingRole,
@@ -151,7 +151,7 @@ pub struct FunctionBytecodeData {
 ///
 /// `filename` is backed by one distinct reference in `auxiliary_atoms`; it is
 /// intentionally not released separately when the bytecode node dies.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct FunctionDebugInfo {
     pub filename: Atom,
     pub pc2line: Option<Pc2LineTable>,

@@ -212,7 +212,7 @@ impl DynamicFunctionResume {
                 };
                 let Value::Object(function) = self.0.value else {
                     return Ok(DynamicFunctionStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not an object",
@@ -221,7 +221,7 @@ impl DynamicFunctionResume {
                 };
                 if !runtime.set_prototype_of(&function, Some(&prototype))? {
                     return Ok(DynamicFunctionStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "prototype is immutable",

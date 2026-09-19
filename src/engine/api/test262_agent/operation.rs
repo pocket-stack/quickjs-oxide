@@ -178,7 +178,7 @@ impl AgentResume {
                     {
                         Ok(source) => source,
                         Err(_) => {
-                            return Ok(Completion::Throw(runtime.new_native_error(
+                            return Ok(Completion::Throw(runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             "agent source containing a lone UTF-16 surrogate is not implemented",
@@ -186,7 +186,7 @@ impl AgentResume {
                         }
                     };
                     if let Err(error) = session.start_worker(source) {
-                        return Ok(Completion::Throw(runtime.new_native_error(
+                        return Ok(Completion::Throw(runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             &error,
@@ -225,7 +225,7 @@ impl AgentResume {
                 Phase::Broadcast(handle) => {
                     let value = crate::engine::value::number::to_int32(value);
                     if let Err(error) = session.broadcast(handle, value) {
-                        return Ok(Completion::Throw(runtime.new_native_error(
+                        return Ok(Completion::Throw(runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             &error,

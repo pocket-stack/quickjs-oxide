@@ -127,7 +127,7 @@ impl Runtime {
         match result {
             Ok(value) => Ok(Completion::Return(Value::String(value))),
             Err(crate::engine::builtins::uri::UriCodecError::String(error)) => Err(error.into()),
-            Err(error) => Ok(Completion::Throw(self.new_native_error(
+            Err(error) => Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Uri,
                 error.message(),
@@ -343,7 +343,7 @@ impl Runtime {
         };
         let Value::Object(iterator) = this_value else {
             return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                self.new_native_error(
+                self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "String Iterator object expected",
@@ -361,7 +361,7 @@ impl Runtime {
         );
         if !branded {
             return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                self.new_native_error(
+                self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "String Iterator object expected",
@@ -505,7 +505,7 @@ impl Runtime {
                 if value.exceeds_allocation_limit()
                     && (value.is_negative() || !radix.is_power_of_two())
                 {
-                    return Ok(Completion::Throw(self.new_native_error(
+                    return Ok(Completion::Throw(self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Range,
                         "BigInt is too large to allocate",
@@ -560,14 +560,14 @@ impl Runtime {
                 )))
             }
             Err(crate::engine::value::number::NumberFormatError::InvalidDigits) => {
-                Ok(Completion::Throw(self.new_native_error(
+                Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Range,
                     "invalid number of digits",
                 )?))
             }
             Err(crate::engine::value::number::NumberFormatError::InvalidRadix) => {
-                Ok(Completion::Throw(self.new_native_error(
+                Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Range,
                     "radix must be between 2 and 36",
@@ -674,7 +674,7 @@ impl Runtime {
             ),
             SymbolRegistryKind::KeyFor => {
                 let Value::Symbol(symbol) = argument else {
-                    return Ok(Completion::Throw(self.new_native_error(
+                    return Ok(Completion::Throw(self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "not a symbol",

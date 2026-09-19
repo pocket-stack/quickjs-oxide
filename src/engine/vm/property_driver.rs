@@ -13,7 +13,7 @@ use crate::engine::{
     code::function::metadata::FunctionKind,
     heap::ContextId,
     object::{OrdinaryRead, PropertyKey},
-    value::{Value, conversion::NativeConversion},
+    value::{JsValue, Value, conversion::NativeConversion},
 };
 
 #[derive(Clone, Copy)]
@@ -43,8 +43,8 @@ impl PropertyProgress {
 /// Converted inputs stay owned after ToPrimitive's reply, even if lookup next
 /// reaches a Proxy or a callable whose domain continuation is still pending.
 pub(super) struct ConvertedRead {
-    pub base: Value,
-    pub key: Value,
+    pub base: JsValue,
+    pub key: JsValue,
     pub keep_receiver: bool,
     pub keep_key: bool,
 }
@@ -61,7 +61,7 @@ pub(super) fn throw_error(
     };
     Ok(CallStep::Complete(Completion::Throw(
         runtime
-            .new_native_error_from_error(realm, kind, &error)
+            .new_native_error_from_error_jsvalue(realm, kind, &error)
             .map_err(runtime_error_to_vm_error)?,
     )))
 }
@@ -139,6 +139,7 @@ pub(super) fn read_progress_selected(
                     keep_receiver,
                     value,
                 )?;
+                let _ = runtime;
                 if let Some(count) = count {
                     // GetField2 completed even if a later fallible argument
                     // retain fails at its own canonical PC.
@@ -151,6 +152,7 @@ pub(super) fn read_progress_selected(
                         frame.fault_pc = start + offset + 1;
                         frame.resume_pc = frame.fault_pc;
                         let literal = super::method_arguments::argument(
+                            runtime,
                             slots,
                             &executable.code[frame.fault_pc],
                         )?;
@@ -202,13 +204,13 @@ pub(super) fn read_progress_selected(
         }
     }
     let base = execution.slots.peek(&frame.window, usize::from(computed))?;
-    if computed && matches!(base, Value::Null | Value::Undefined) {
+    if computed && matches!(base, JsValue::Null | JsValue::Undefined) {
         let key = execution.slots.peek(&frame.window, 0)?;
         let message = if matches!(key_kind, ReadKey::Computed { keep_key: true })
-            && !matches!(key, Value::Int(_) | Value::String(_) | Value::Symbol(_))
+            && !matches!(key, JsValue::Int(_) | JsValue::String(_) | JsValue::Symbol(_))
         {
             "value has no property"
-        } else if matches!(base, Value::Null) {
+        } else if matches!(base, JsValue::Null) {
             "cannot read property of null"
         } else {
             "cannot read property of undefined"
@@ -246,17 +248,23 @@ pub(super) fn read_progress_selected(
         }
         ReadKey::Computed { keep_key } => {
             let value = execution.slots.peek(&frame.window, 0)?;
-            if matches!(value, Value::Object(_)) {
+            if matches!(value, JsValue::Object(_)) {
                 return Err(Error::internal(
                     "object property key did not enter its conversion operation",
                 ));
             }
+            let owned = runtime
+                .dup_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
             let key = match runtime
-                .native_to_property_key(realm, value.clone())
+                .native_to_property_key_jsvalue(realm, owned)
                 .map_err(runtime_error_to_vm_error)?
             {
                 NativeConversion::Value(key) => key,
                 NativeConversion::Throw(value) => {
+                    let value = runtime
+                        .into_jsvalue(value)
+                        .map_err(runtime_error_to_vm_error)?;
                     return Ok(PropertyProgress::Deferred(CallStep::Complete(
                         Completion::Throw(value),
                     )));
@@ -264,8 +272,13 @@ pub(super) fn read_progress_selected(
             };
             let retained = keep_key
                 .then(|| match value {
-                    Value::Int(_) | Value::String(_) | Value::Symbol(_) => Ok(value.clone()),
-                    value => value.to_js_string().map(Value::String),
+                    JsValue::Int(_) | JsValue::String(_) | JsValue::Symbol(_) => {
+                        runtime.dup_jsvalue(value).map_err(runtime_error_to_vm_error)
+                    }
+                    value => Ok(super::numeric::allocate_string_jsvalue(
+                        runtime,
+                        super::numeric::to_js_string_jsvalue(runtime, value)?,
+                    )?),
                 })
                 .transpose()?;
             (Some(std::borrow::Cow::Owned(key)), retained)
@@ -274,7 +287,7 @@ pub(super) fn read_progress_selected(
     // Lookup borrows the original rooted operand. Only a pending callback
     // needs a second receiver owner; completed reads move this slot directly.
     let read = match selected_read.map(Ok).unwrap_or_else(|| {
-        runtime.prepare_value_property_read_selected(
+        runtime.prepare_value_property_read_selected_jsvalue(
             realm,
             base,
             key.as_deref()
@@ -297,18 +310,21 @@ pub(super) fn read_progress_selected(
     };
     match read {
         OrdinaryRead::Complete(value) => complete_read(
+            runtime,
             execution,
             id,
             None,
             retained_key,
             keep_receiver,
             1 + usize::from(computed),
-            value.unwrap_or(Value::Undefined),
+            value.unwrap_or(JsValue::Undefined),
             depth,
         )
         .map(|()| PropertyProgress::Completed),
         read => {
-            let preserved_receiver = base.clone();
+            let preserved_receiver = runtime
+                .dup_jsvalue(base)
+                .map_err(runtime_error_to_vm_error)?;
             read_pending(
                 runtime,
                 execution,
@@ -340,7 +356,7 @@ pub(super) fn read_converted(
         keep_receiver,
         keep_key,
     } = *input;
-    if matches!(key, Value::Object(_)) {
+    if matches!(key, JsValue::Object(_)) {
         return Err(Error::internal(
             "ToPrimitive returned an object property key",
         ));
@@ -352,18 +368,28 @@ pub(super) fn read_converted(
     // if ToPrimitive returned an Int. Direct Int keys retain their original tag.
     let retained = if keep_key {
         Some(match &key {
-            Value::Symbol(_) | Value::String(_) => key.clone(),
-            value => Value::String(value.to_js_string()?),
+            JsValue::Symbol(_) | JsValue::String(_) => {
+                runtime.dup_jsvalue(&key).map_err(runtime_error_to_vm_error)?
+            }
+            value => super::numeric::allocate_string_jsvalue(
+                runtime,
+                super::numeric::to_js_string_jsvalue(runtime, value)?,
+            )?,
         })
     } else {
         None
     };
     let key = match runtime
-        .native_to_property_key(realm, key)
+        .native_to_property_key_jsvalue(realm, key)
         .map_err(runtime_error_to_vm_error)?
     {
         NativeConversion::Value(key) => key,
-        NativeConversion::Throw(value) => return Ok(CallStep::Complete(Completion::Throw(value))),
+        NativeConversion::Throw(value) => {
+            let value = runtime
+                .into_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
+            return Ok(CallStep::Complete(Completion::Throw(value)));
+        }
     };
     finish_read(
         runtime,
@@ -384,15 +410,15 @@ fn finish_read(
     runtime: &Runtime,
     execution: &mut RunningExecution,
     id: FrameId,
-    base: Value,
+    base: JsValue,
     key: PropertyKey,
-    retained_key: Option<Value>,
+    retained_key: Option<JsValue>,
     keep_receiver: bool,
     consume: usize,
     depth: usize,
 ) -> Result<PropertyProgress, Error> {
     let realm = execution.frames.current_mut(id)?.executable.realm;
-    let read = match runtime.prepare_value_property_read_borrowed(realm, &base, &key) {
+    let read = match runtime.prepare_value_property_read_borrowed_jsvalue(realm, &base, &key) {
         Ok(read) => read,
         Err(error) => {
             return throw_error(runtime, realm, runtime_error_to_vm_error(error))
@@ -418,10 +444,10 @@ pub(super) fn read_prepared(
     runtime: &Runtime,
     execution: &mut RunningExecution,
     id: FrameId,
-    preserved_receiver: Value,
+    preserved_receiver: JsValue,
     key: PropertyKey,
     read: OrdinaryRead,
-    retained_key: Option<Value>,
+    retained_key: Option<JsValue>,
     keep_receiver: bool,
     consume: usize,
     depth: usize,
@@ -446,23 +472,24 @@ fn read_prepared_progress(
     runtime: &Runtime,
     execution: &mut RunningExecution,
     id: FrameId,
-    preserved_receiver: Value,
+    preserved_receiver: JsValue,
     key: PropertyKey,
     read: OrdinaryRead,
-    retained_key: Option<Value>,
+    retained_key: Option<JsValue>,
     keep_receiver: bool,
     consume: usize,
     depth: usize,
 ) -> Result<PropertyProgress, Error> {
     match read {
         OrdinaryRead::Complete(value) => complete_read(
+            runtime,
             execution,
             id,
             Some(preserved_receiver),
             retained_key,
             keep_receiver,
             consume,
-            value.unwrap_or(Value::Undefined),
+            value.unwrap_or(JsValue::Undefined),
             depth,
         )
         .map(|()| PropertyProgress::Completed),
@@ -485,13 +512,14 @@ fn read_prepared_progress(
 // Keep the no-callback path out of the callback dispatcher's large native frame.
 #[allow(clippy::too_many_arguments)]
 fn complete_read(
+    runtime: &Runtime,
     execution: &mut RunningExecution,
     id: FrameId,
-    mut preserved_receiver: Option<Value>,
-    mut retained_key: Option<Value>,
+    mut preserved_receiver: Option<JsValue>,
+    mut retained_key: Option<JsValue>,
     keep_receiver: bool,
     consume: usize,
-    value: Value,
+    value: JsValue,
     depth: usize,
 ) -> Result<(), Error> {
     if consume > 2 || (preserved_receiver.is_none() && consume == 0) {
@@ -503,17 +531,17 @@ fn complete_read(
     let discarded = {
         let mut slots = transaction.slots();
         // Moving the base preserves its owner until after result publication.
-        // The remaining removed key may be released inside this window only
-        // when its tag proves that it cannot free storage or drain deferred GC.
+        // A scalar key's release cannot free arena storage or drain deferred
+        // GC; heap-backed keys take the outside-window release below.
         let immediate_key = preserved_receiver.is_none()
             && (consume == 1
                 || matches!(
                     slots.peek(0)?,
-                    Value::Undefined
-                        | Value::Null
-                        | Value::Bool(_)
-                        | Value::Int(_)
-                        | Value::Float(_)
+                    JsValue::Undefined
+                        | JsValue::Null
+                        | JsValue::Bool(_)
+                        | JsValue::Int(_)
+                        | JsValue::Float(_)
                 ));
         let mut discarded = [None, None];
         for destination in discarded.iter_mut().take(consume) {
@@ -523,7 +551,12 @@ fn complete_read(
             preserved_receiver = discarded[consume - 1].take();
         }
         if immediate_key {
-            drop(discarded);
+            for slot in discarded.iter_mut().flatten() {
+                let taken = slot.take().expect("discarded operand");
+                runtime
+                    .release_jsvalue(taken)
+                    .map_err(runtime_error_to_vm_error)?;
+            }
             publish_read_result(
                 &mut slots,
                 &mut frame.resume_pc,
@@ -539,8 +572,12 @@ fn complete_read(
         discarded
     };
     // Preserve original pop/release order outside RunSlots for owning keys
-    // and externally prepared reads. The base and normalized key stay rooted.
-    drop(discarded);
+    // and externally prepared reads. The base and normalized key stay owned.
+    for slot in discarded.into_iter().flatten() {
+        runtime
+            .release_jsvalue(slot)
+            .map_err(runtime_error_to_vm_error)?;
+    }
     let mut slots = transaction.slots();
     publish_read_result(
         &mut slots,
@@ -561,10 +598,10 @@ fn publish_read_result(
     slots: &mut super::stack::RunSlots<'_>,
     resume_pc: &mut usize,
     fault_pc: usize,
-    preserved_receiver: &mut Option<Value>,
-    retained_key: &mut Option<Value>,
+    preserved_receiver: &mut Option<JsValue>,
+    retained_key: &mut Option<JsValue>,
     keep_receiver: bool,
-    value: &mut Option<Value>,
+    value: &mut Option<JsValue>,
 ) -> Result<(), Error> {
     if keep_receiver {
         slots.push_pending(preserved_receiver)?;
@@ -595,10 +632,10 @@ fn read_pending(
     runtime: &Runtime,
     execution: &mut RunningExecution,
     id: FrameId,
-    preserved_receiver: Value,
+    preserved_receiver: JsValue,
     key: Option<PropertyKey>,
     read: OrdinaryRead,
-    retained_key: Option<Value>,
+    retained_key: Option<JsValue>,
     keep_receiver: bool,
     consume: usize,
     depth: usize,
@@ -610,7 +647,7 @@ fn read_pending(
     let mut proxy_callback = None;
     let mut native_callback = None;
     let value = match read {
-        OrdinaryRead::Complete(value) => Some(value.unwrap_or(Value::Undefined)),
+        OrdinaryRead::Complete(value) => Some(value.unwrap_or(JsValue::Undefined)),
         OrdinaryRead::Call { getter, receiver } => {
             if let Some(call) =
                 super::call::ordinary::OrdinaryCall::select_callback(runtime, getter.as_object())
@@ -677,7 +714,7 @@ fn read_pending(
                         callable,
                         receiver,
                         arguments,
-                        new_target: Value::Undefined,
+                        new_target: JsValue::Undefined,
                         bytecode,
                         closure_slots,
                         caller_realm: realm,

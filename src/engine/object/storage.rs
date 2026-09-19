@@ -1,6 +1,6 @@
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 use crate::engine::code::function::metadata::ClosureVariableKind;
 use crate::engine::heap::roots::VarRefRoot;
 use crate::engine::heap::runtime::RuntimeState;
@@ -142,6 +142,51 @@ impl Runtime {
         }
     }
 
+    /// Internal-value form of [`Runtime::value_to_boolean`].
+    pub(crate) fn value_to_boolean_jsvalue(&self, value: &JsValue) -> Result<bool, RuntimeError> {
+        if let JsValue::Object(id) = value {
+            Ok(!self.0.state.borrow().heap.object(*id)?.is_html_dda)
+        } else {
+            Ok(value.to_boolean_primitive())
+        }
+    }
+
+    /// Strict equality over internal values: handle identity is the fast path;
+    /// string and BigInt handles fall back to arena content comparison.
+    pub(crate) fn strict_equal_jsvalue(
+        &self,
+        left: &JsValue,
+        right: &JsValue,
+    ) -> Result<bool, RuntimeError> {
+        Ok(match (left, right) {
+            (JsValue::Undefined, JsValue::Undefined) | (JsValue::Null, JsValue::Null) => true,
+            (JsValue::Bool(left), JsValue::Bool(right)) => left == right,
+            (JsValue::Int(left), JsValue::Int(right)) => left == right,
+            (JsValue::Symbol(left), JsValue::Symbol(right)) => left == right,
+            (JsValue::Object(left), JsValue::Object(right)) => left == right,
+            (JsValue::String(left), JsValue::String(right)) => {
+                if left == right {
+                    true
+                } else {
+                    let state = self.0.state.borrow();
+                    state.heap.string(*left)? == state.heap.string(*right)?
+                }
+            }
+            (JsValue::BigInt(left), JsValue::BigInt(right)) => {
+                if left == right {
+                    true
+                } else {
+                    let state = self.0.state.borrow();
+                    state.heap.bigint(*left)? == state.heap.bigint(*right)?
+                }
+            }
+            (left, right) => match (left.as_number(), right.as_number()) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            },
+        })
+    }
+
     /// Mirror `JS_SetIsHTMLDDA` for a runtime-owned object.
     #[cfg(feature = "test262-host")]
     pub(crate) fn set_object_is_html_dda(&self, object: &ObjectRef) -> Result<(), RuntimeError> {
@@ -156,6 +201,19 @@ impl Runtime {
         Ok(())
     }
 
+    /// Convert a public value into its heap-stored form at a boundary.
+    ///
+    /// String and BigInt payloads allocate one arena node each (API input
+    /// conversion is a genuine creation point); the returned value carries
+    /// that one producer-owned node edge, which the caller releases with
+    /// [`Runtime::release_converted_value_edge`] once a transactional store
+    /// has retained its own copy edge (or immediately when nothing stores
+    /// the value).  Object edges and Symbol atoms are *not* retained here —
+    /// the historical contract stands: transactional stores retain object and
+    /// string/BigInt edges, and Symbol/Private atoms are retained by the
+    /// store's atom accounting or explicitly by transfer points.
+    ///
+    /// This conversion takes its own state borrow; callers must not hold one.
     pub(crate) fn raw_property_value(&self, value: &Value) -> Result<RawValue, RuntimeError> {
         Ok(match value {
             Value::Undefined => RawValue::Undefined,
@@ -163,13 +221,22 @@ impl Runtime {
             Value::Bool(value) => RawValue::Bool(*value),
             Value::Int(value) => RawValue::Int(*value),
             Value::Float(value) => RawValue::Float(*value),
-            Value::BigInt(value) => RawValue::BigInt(value.clone()),
-            Value::String(value) => RawValue::String(value.clone()),
+            Value::BigInt(value) => {
+                let mut state = self.0.state.borrow_mut();
+                RawValue::BigInt(state.heap.allocate_bigint(value.clone())?)
+            }
+            Value::String(value) => {
+                let mut state = self.0.state.borrow_mut();
+                let id = state.heap.allocate_string(value.clone())?;
+                RawValue::String(id)
+            }
             Value::Symbol(symbol) => {
                 if !symbol.belongs_to(self) {
                     return Err(RuntimeError::WrongRuntime("property value"));
                 }
-                RawValue::Symbol(symbol.atom())
+                let atom = symbol.atom();
+                let index = self.0.state.borrow().atoms.unbrand(atom)?;
+                RawValue::Symbol(index)
             }
             Value::Object(object) => {
                 if !object.belongs_to(self) {
@@ -232,16 +299,22 @@ impl Runtime {
             return self.store_complete_global_property(object, hidden, key, complete);
         }
 
-        let (flags, replacement) = match complete {
+        // Clone duplicates only the handle; the probe keeps the boundary
+        // conversion's producer edge accountable through the store below.
+        let (flags, replacement, value_probe) = match complete {
             CompleteOrdinaryPropertyDescriptor::Data {
                 value,
                 writable,
                 enumerable,
                 configurable,
-            } => (
-                PropertyFlags::data(writable, enumerable, configurable),
-                PropertySlot::Data(self.raw_property_value(&value)?),
-            ),
+            } => {
+                let raw = self.raw_property_value(&value)?;
+                (
+                    PropertyFlags::data(writable, enumerable, configurable),
+                    PropertySlot::Data(raw.clone()),
+                    Some(raw),
+                )
+            }
             CompleteOrdinaryPropertyDescriptor::Accessor {
                 get,
                 set,
@@ -253,9 +326,16 @@ impl Runtime {
                     get: get.as_ref().map(|value| value.as_object().object_id()),
                     set: set.as_ref().map(|value| value.as_object().object_id()),
                 },
+                None,
             ),
         };
-        self.store_property_slot(object, key, flags, replacement)
+        let stored = self.store_property_slot(object, key, flags, replacement);
+        // The store retained its own copy edge on success; a rejected store
+        // never kept the value. Balance the producer edge either way.
+        if let Some(raw) = &value_probe {
+            self.release_converted_value_edge(raw);
+        }
+        stored
     }
 
     pub(crate) fn store_complete_global_property(
@@ -291,7 +371,7 @@ impl Runtime {
                     self.write_var_ref(&root, value)?;
                     root
                 } else {
-                    self.new_var_ref(value, false, !writable, ClosureVariableKind::Normal)?
+                    self.new_var_ref_rooted(value, false, !writable, ClosureVariableKind::Normal)?
                 };
                 self.set_var_ref_metadata(&root, false, !writable, ClosureVariableKind::Normal)?;
                 self.store_property_slot(
@@ -353,7 +433,7 @@ impl Runtime {
             let state = self.0.state.borrow();
             let object = state.heap.object(object.object_id())?;
             let shape = state.heap.shape(object.shape)?;
-            let Some(index) = shape.find(key.atom()) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                 return Ok(None);
             };
             match object.slots.get(index as usize) {
@@ -387,7 +467,7 @@ impl Runtime {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
             shape
-                .find(key.atom())
+                .find(AtomIdx::from_raw(key.atom().raw()))
                 .map(|index| {
                     let index = index as usize;
                     let entry = shape.entries().get(index).ok_or(RuntimeError::Invariant(
@@ -464,7 +544,7 @@ impl RuntimeState {
             );
         }
         if existing.is_none() && !dictionary {
-            let target = state.append_transition(shape_id, ShapeEntry { atom, flags })?;
+            let target = state.append_transition(shape_id, ShapeEntry { atom: AtomIdx::from_raw(atom.raw()), flags })?;
             let mut slots = state.heap.object(object_id)?.slots.clone();
             slots.push(replacement);
             return state.replace_layout_with_owned_shape(object_id, target, slots);
@@ -485,7 +565,7 @@ impl RuntimeState {
             entries[index].flags = flags;
             slots[index] = replacement;
         } else {
-            entries.push(ShapeEntry { atom, flags });
+            entries.push(ShapeEntry { atom: AtomIdx::from_raw(atom.raw()), flags });
             slots.push(replacement);
         }
         state.replace_layout(object_id, prototype, &entries, slots)
@@ -510,7 +590,7 @@ mod selected_append_tests {
         let mut state = runtime.0.state.borrow_mut();
         let shape = state.heap.object(owner.object_id()).unwrap().shape;
         assert_eq!(state.heap.shape_strong_count(shape), Ok(1));
-        assert!(state.heap.shape(shape).unwrap().find(key.atom()).is_none());
+        assert!(state.heap.shape(shape).unwrap().find(AtomIdx::from_raw(key.atom().raw())).is_none());
         let before_atoms = state.atoms.resolve(key.atom()).unwrap().ref_count;
         let fingerprint = state.shape_fingerprints.get(&shape).unwrap().clone();
         let selected = SelectedMissingAppend {

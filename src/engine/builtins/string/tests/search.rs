@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::heap::{AutoInitProperty, PropertySlot};
 use crate::engine::object::shape::PropertyFlags;
 
@@ -90,7 +91,7 @@ fn string_includes_family_publishes_typed_autoinit_entries_and_identities() {
     let object = state.heap.object(prototype.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
     for (name, selector, key) in &keys {
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),

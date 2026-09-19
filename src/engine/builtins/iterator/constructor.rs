@@ -30,7 +30,7 @@ impl ConstructorStep {
             } => object,
             NativeInvocation::Construct { .. } | NativeInvocation::Call { .. } => {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "constructor requires 'new'",
@@ -49,7 +49,7 @@ impl ConstructorStep {
         };
         if native_iterator {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "abstract class not constructable",
@@ -99,12 +99,12 @@ impl ConstructorStep {
         }
         let Some(Value::Object(value)) = arguments.readable.first() else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         let Value::Object(receiver) = this_value else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         let key =
@@ -119,7 +119,7 @@ impl ConstructorStep {
         let completion = if runtime.define_own_property(receiver, &key, &descriptor)? {
             Completion::Return(Value::Undefined)
         } else {
-            Completion::Throw(runtime.new_native_error(
+            Completion::Throw(runtime.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "cannot define property",

@@ -7,7 +7,7 @@ use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::code::rooted::FunctionBytecodeRef;
 use crate::engine::code::runtime::{PublishedFunctionData, PublishedFunctionSnapshot};
 use crate::engine::object::CallableRef;
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 use crate::engine::vm::CallInput;
 use crate::engine::vm::bindings::FrameBinding;
 use crate::engine::vm::frames::ActiveFrameGuard;
@@ -61,11 +61,13 @@ impl Runtime {
                 .enumerate()
                 .map(|(index, definition)| {
                     initial_local_binding(
+                        self,
                         definition.is_lexical,
                         metadata.function_name_local == Some(index as u16),
                         callable.as_object(),
                     )
-                }),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         );
         #[cfg(feature = "profiling")]
         if crate::engine::api::profiling::cost_profile_active() {
@@ -94,8 +96,8 @@ impl Runtime {
     pub(in crate::engine::vm) fn prepare_owned_bytecode_frame(
         &self,
         callable: &CallableRef,
-        this_value: Value,
-        new_target: Value,
+        this_value: JsValue,
+        new_target: JsValue,
         bytecode: FunctionBytecodeRef,
     ) -> Result<PreparedBytecodeHeader, RuntimeError> {
         #[cfg(feature = "profiling")]
@@ -107,8 +109,8 @@ impl Runtime {
     fn prepare_bytecode_header(
         &self,
         callable: &CallableRef,
-        this_value: Value,
-        new_target: Value,
+        this_value: JsValue,
+        new_target: JsValue,
         bytecode: FunctionBytecodeRef,
     ) -> Result<PreparedBytecodeHeader, RuntimeError> {
         let executable = self.snapshot_function_bytecode(&bytecode)?;
@@ -148,13 +150,17 @@ impl Runtime {
 }
 
 /// Shared initial binding shape for both legacy vectors and owned windows.
+/// The named-function binding duplicates the callable's edge for the frame.
 pub(in crate::engine::vm) fn initial_local_binding(
+    runtime: &Runtime,
     lexical: bool,
     function_name: bool,
     callable: &crate::engine::object::ObjectRef,
-) -> FrameBinding {
+) -> Result<FrameBinding, RuntimeError> {
     if function_name {
-        FrameBinding::Direct(Value::Object(callable.clone()))
+        let id = callable.object_id();
+        runtime.retain_object_handle(id)?;
+        Ok(FrameBinding::Direct(JsValue::Object(id)))
     } else if lexical {
         FrameBinding::Uninitialized
     } else {

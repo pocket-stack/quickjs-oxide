@@ -813,14 +813,16 @@ fn data_view_intrinsics_attach_transactionally_once() {
         )),
     );
     assert_eq!(heap.object_strong_count(object_prototype), Ok(root_strong),);
-    assert_eq!(heap.context(realm).unwrap().data_view, None);
+    assert!(
+        matches!(heap.context(realm).unwrap().data_view, None)
+    );
 
     let prototype_strong = heap.object_strong_count(prototype).unwrap();
     heap.attach_data_view_intrinsics(realm, constructor, DataViewRealmData { prototype })
         .unwrap();
-    assert_eq!(
-        heap.context(realm).unwrap().data_view,
-        Some(DataViewRealmData { prototype }),
+    assert!(
+        matches!(heap.context(realm).unwrap().data_view, Some(attached)
+            if attached.prototype == prototype)
     );
     assert_eq!(
         heap.object_strong_count(prototype),
@@ -850,8 +852,8 @@ fn data_view_intrinsics_attach_transactionally_once() {
 fn symbol_atom_ownership_is_returned_on_replace_and_finalize() {
     let mut heap = Heap::new();
     let shape = one_slot_shape(&mut heap);
-    let first_symbol = Atom::from_raw(17);
-    let second_symbol = Atom::from_raw(23);
+    let first_symbol = AtomIdx::from_raw(17);
+    let second_symbol = AtomIdx::from_raw(23);
     let object = heap
         .allocate_object(ObjectData::ordinary(
             shape,
@@ -873,6 +875,6 @@ fn symbol_atom_ownership_is_returned_on_replace_and_finalize() {
     let shape_cleanup = heap.release_shape(shape).unwrap();
     assert_eq!(
         shape_cleanup.atoms,
-        vec![Atom::from_immediate_integer(0).unwrap()]
+        vec![AtomIdx::from_raw(Atom::from_immediate_integer(0).unwrap().raw())]
     );
 }

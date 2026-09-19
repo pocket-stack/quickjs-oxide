@@ -53,6 +53,8 @@ impl ArrayNextStep {
         let length = first.atom;
         // Borrow the already-owned mandatory property name; a malformed or
         // unexpected layout falls back to the original interned-key accessor.
+        // The stored unbranded index is re-branded at this table boundary.
+        let length = state.atoms.brand(length)?;
         let info = state.atoms.resolve(length)?;
         let AtomSpelling::Text(text) = info.spelling else {
             return Ok(None);

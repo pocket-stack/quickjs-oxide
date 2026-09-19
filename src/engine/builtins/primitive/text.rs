@@ -88,7 +88,7 @@ impl ScalarTextStep {
         };
         if matches!(this_value, Value::Null | Value::Undefined) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "null or undefined are forbidden",

@@ -264,7 +264,9 @@ mod tests {
             )
             .unwrap();
         let end = slots.active_end;
-        let borrow = other.0.state.borrow();
+        // A mutable borrow injects the retain failure (shared borrows take
+        // the nested-materialization fast path and retain successfully).
+        let borrow = other.0.state.borrow_mut();
         assert!(
             slots
                 .push_ordinary_frame(

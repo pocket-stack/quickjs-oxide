@@ -17,7 +17,7 @@
 //! shape must retain those atoms at the runtime boundary.
 
 use super::dictionary_order::DictionaryOrder;
-use crate::engine::atom::{Atom, AtomError, AtomTable, PropertyKeyKind};
+use crate::engine::atom::{Atom, AtomError, AtomIdx, AtomTable, PropertyKeyKind};
 use crate::engine::heap::ObjectId;
 use std::collections::HashMap;
 use std::error::Error;
@@ -45,6 +45,10 @@ pub struct PropertyFlags {
     pub storage: PropertyStorageKind,
 }
 
+// `PropertyFlags` must stay compact: it shares the 8-byte `ShapeEntry` with
+// the `AtomIdx` key.
+const _: () = assert!(std::mem::size_of::<PropertyFlags>() == 4);
+
 impl PropertyFlags {
     /// Construct flags for a data property.
     #[must_use]
@@ -70,11 +74,17 @@ impl PropertyFlags {
 }
 
 /// One entry in a shape's insertion-ordered property metadata.
+///
+/// The key is the unbranded [`AtomIdx`]: the shape retains every admitted atom
+/// for its own lifetime, so the entry itself needs no brand stamp.  Brand
+/// checks run at boundaries which receive or expose an entry's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ShapeEntry {
-    pub atom: Atom,
+    pub atom: AtomIdx,
     pub flags: PropertyFlags,
 }
+
+const _: () = assert!(std::mem::size_of::<ShapeEntry>() == 8);
 
 /// Failure to construct a valid immutable shape transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +129,7 @@ pub struct Shape {
     layout_revision: u64,
     prototype: Option<ObjectId>,
     entries: Vec<ShapeEntry>,
-    lookup: HashMap<Atom, u32, crate::engine::hash::FxBuildHasher>,
+    lookup: HashMap<AtomIdx, u32, crate::engine::hash::FxBuildHasher>,
     /// Present only for dynamic layouts; shared shapes pay one optional pointer.
     dictionary_order: Option<Box<DictionaryOrder>>,
 }
@@ -161,7 +171,10 @@ impl Shape {
             } else {
                 lookup.contains_key(&entry.atom)
             } {
-                return Err(ShapeError::DuplicateAtom(entry.atom));
+                // Entry keys arrive pre-validated at this boundary (callers
+                // unbrand or convert trusted atoms before constructing), so
+                // re-stamping the brand is unnecessary for the diagnostic.
+                return Err(ShapeError::DuplicateAtom(Atom::from_raw(entry.atom.raw())));
             }
             ordered.push(entry);
             if ordered.len() == 9 {
@@ -232,9 +245,12 @@ impl Shape {
 
     pub(crate) fn remove_dictionary_property(
         &mut self,
-        atom: Atom,
+        atom: AtomIdx,
     ) -> Result<ShapeEntry, ShapeError> {
-        let index = self.find(atom).ok_or(ShapeError::MissingAtom(atom))? as usize;
+        let index = self
+            .find(atom)
+            .ok_or(ShapeError::MissingAtom(Atom::from_raw(atom.raw())))?
+            as usize;
         self.dictionary_order
             .as_mut()
             .expect("dictionary removal requires dictionary metadata")
@@ -267,7 +283,7 @@ impl Shape {
 
     /// Find a property and return its parallel payload-slot index.
     #[must_use]
-    pub fn find(&self, atom: Atom) -> Option<u32> {
+    pub fn find(&self, atom: AtomIdx) -> Option<u32> {
         if self.entries.len() <= 8 {
             self.entries
                 .iter()
@@ -284,12 +300,12 @@ impl Shape {
     /// non-index string or symbol again places it at the end of its own-key
     /// category, as required by ECMAScript and QuickJS.
     #[cfg(test)]
-    pub fn derive_add(&self, atom: Atom, flags: PropertyFlags) -> Result<Self, ShapeError> {
+    pub fn derive_add(&self, atom: AtomIdx, flags: PropertyFlags) -> Result<Self, ShapeError> {
         if atom.is_null() {
             return Err(ShapeError::NullAtom);
         }
         if self.find(atom).is_some() {
-            return Err(ShapeError::DuplicateAtom(atom));
+            return Err(ShapeError::DuplicateAtom(Atom::from_raw(atom.raw())));
         }
 
         let index = self.unique_append_index(atom)?;
@@ -305,17 +321,17 @@ impl Shape {
     /// reaching this mutation boundary. Keeping spare `Vec` capacity makes a
     /// long sequence of unique-object additions amortized linear while shared
     /// shapes continue to use immutable transitions.
-    pub(crate) fn unique_append_index(&self, atom: Atom) -> Result<u32, ShapeError> {
+    pub(crate) fn unique_append_index(&self, atom: AtomIdx) -> Result<u32, ShapeError> {
         if atom.is_null() {
             return Err(ShapeError::NullAtom);
         }
         if self.find(atom).is_some() {
-            return Err(ShapeError::DuplicateAtom(atom));
+            return Err(ShapeError::DuplicateAtom(Atom::from_raw(atom.raw())));
         }
         u32::try_from(self.entries.len()).map_err(|_| ShapeError::PropertyIndexOverflow)
     }
 
-    pub(crate) fn append_unique_property(&mut self, atom: Atom, flags: PropertyFlags, index: u32) {
+    pub(crate) fn append_unique_property(&mut self, atom: AtomIdx, flags: PropertyFlags, index: u32) {
         debug_assert_eq!(usize::try_from(index), Ok(self.entries.len()));
         debug_assert!(!atom.is_null() && self.find(atom).is_none());
         self.entries.push(ShapeEntry { atom, flags });
@@ -338,12 +354,15 @@ impl Shape {
     ///
     /// Replacement preserves insertion order and payload-slot position.
     #[cfg(test)]
-    pub fn derive_replace(&self, atom: Atom, flags: PropertyFlags) -> Result<Self, ShapeError> {
+    pub fn derive_replace(&self, atom: AtomIdx, flags: PropertyFlags) -> Result<Self, ShapeError> {
         if atom.is_null() {
             return Err(ShapeError::NullAtom);
         }
-        let index = usize::try_from(self.find(atom).ok_or(ShapeError::MissingAtom(atom))?)
-            .map_err(|_| ShapeError::PropertyIndexOverflow)?;
+        let index = usize::try_from(
+            self.find(atom)
+                .ok_or(ShapeError::MissingAtom(Atom::from_raw(atom.raw())))?,
+        )
+        .map_err(|_| ShapeError::PropertyIndexOverflow)?;
         let mut entries = self.entries.to_vec();
         entries[index].flags = flags;
         Ok(Self {
@@ -360,12 +379,15 @@ impl Shape {
     /// Payload slots after the removed property shift left, so the lookup table
     /// is rebuilt by the validated constructor.
     #[cfg(test)]
-    pub fn derive_delete(&self, atom: Atom) -> Result<Self, ShapeError> {
+    pub fn derive_delete(&self, atom: AtomIdx) -> Result<Self, ShapeError> {
         if atom.is_null() {
             return Err(ShapeError::NullAtom);
         }
-        let index = usize::try_from(self.find(atom).ok_or(ShapeError::MissingAtom(atom))?)
-            .map_err(|_| ShapeError::PropertyIndexOverflow)?;
+        let index = usize::try_from(
+            self.find(atom)
+                .ok_or(ShapeError::MissingAtom(Atom::from_raw(atom.raw())))?,
+        )
+        .map_err(|_| ShapeError::PropertyIndexOverflow)?;
         if self.is_dictionary() {
             let mut result = self.clone();
             result.remove_dictionary_property(atom)?;
@@ -381,8 +403,9 @@ impl Shape {
     ///
     /// Array-index strings come first in ascending numeric order, followed by
     /// all other strings in insertion order, then symbols in insertion order.
-    /// Private names are internal and are omitted.  Every atom is validated
-    /// against `atoms`, but this metadata-level operation does not retain it.
+    /// Private names are internal and are omitted.  Every stored key index is
+    /// fully re-validated (branded) against `atoms` at this public exit, but
+    /// this metadata-level operation does not retain it.
     ///
     /// # Errors
     ///
@@ -395,15 +418,18 @@ impl Shape {
 
         for (insertion_index, slot) in self.ordered_indices().enumerate() {
             let entry = &self.entries[slot];
-            match atoms.property_key_kind(entry.atom)? {
+            // Public exit boundary: the stored unbranded index gets the full
+            // brand (generation/table-ID) check before leaving the shape.
+            let atom = atoms.brand(entry.atom)?;
+            match atoms.property_key_kind(atom)? {
                 PropertyKeyKind::String => {
-                    if let Some(array_index) = atoms.array_index(entry.atom)? {
-                        indices.push((array_index, insertion_index, entry.atom));
+                    if let Some(array_index) = atoms.array_index(atom)? {
+                        indices.push((array_index, insertion_index, atom));
                     } else {
-                        strings.push(entry.atom);
+                        strings.push(atom);
                     }
                 }
-                PropertyKeyKind::Symbol => symbols.push(entry.atom),
+                PropertyKeyKind::Symbol => symbols.push(atom),
                 PropertyKeyKind::Private => {}
             }
         }
@@ -429,18 +455,20 @@ mod tests {
 
     const DEFAULT_DATA: PropertyFlags = PropertyFlags::data(true, true, true);
 
-    fn entry(atom: Atom) -> ShapeEntry {
+    fn entry(atom: AtomIdx) -> ShapeEntry {
         ShapeEntry {
             atom,
             flags: DEFAULT_DATA,
         }
     }
 
+    fn immediate(value: u32) -> AtomIdx {
+        AtomIdx::from_immediate_integer(value).unwrap()
+    }
+
     #[test]
     fn small_shape_lookup_allocates_only_above_eight_entries() {
-        let atoms = (1..=9)
-            .map(|n| Atom::from_immediate_integer(n).unwrap())
-            .collect::<Vec<_>>();
+        let atoms = (1..=9).map(immediate).collect::<Vec<_>>();
         let small = Shape::new(None, atoms[..8].iter().copied().map(entry)).unwrap();
         assert_eq!(small.lookup.capacity(), 0);
         for (index, atom) in atoms[..8].iter().enumerate() {
@@ -455,22 +483,22 @@ mod tests {
 
     #[test]
     fn constructor_builds_lookup_and_rejects_invalid_entries() {
-        let first = Atom::from_immediate_integer(1).unwrap();
-        let second = Atom::from_immediate_integer(2).unwrap();
+        let first = immediate(1);
+        let second = immediate(2);
         let shape = Shape::new(None, [entry(first), entry(second)]).unwrap();
 
         assert_eq!(shape.entries(), &[entry(first), entry(second)]);
         assert_eq!(shape.find(first), Some(0));
         assert_eq!(shape.find(second), Some(1));
-        assert_eq!(shape.find(Atom::from_immediate_integer(3).unwrap()), None);
+        assert_eq!(shape.find(immediate(3)), None);
         assert!(shape.prototype().is_none());
 
         assert!(matches!(
             Shape::new(None, [entry(first), entry(first)]),
-            Err(ShapeError::DuplicateAtom(atom)) if atom == first
+            Err(ShapeError::DuplicateAtom(atom)) if atom.raw() == first.raw()
         ));
         assert!(matches!(
-            Shape::new(None, [entry(Atom::NULL)]),
+            Shape::new(None, [entry(AtomIdx::NULL)]),
             Err(ShapeError::NullAtom)
         ));
     }
@@ -478,8 +506,8 @@ mod tests {
     #[test]
     fn transitions_preserve_or_update_insertion_positions() {
         let mut atoms = AtomTable::new();
-        let alpha = atoms.intern("alpha").unwrap();
-        let beta = atoms.intern("beta").unwrap();
+        let alpha = AtomIdx::from_raw(atoms.intern("alpha").unwrap().raw());
+        let beta = AtomIdx::from_raw(atoms.intern("beta").unwrap().raw());
         let shape = Shape::new(None, [entry(alpha), entry(beta)]).unwrap();
 
         let accessor = PropertyFlags::accessor(false, true);
@@ -496,31 +524,35 @@ mod tests {
 
         assert!(matches!(
             readded.derive_add(alpha, DEFAULT_DATA),
-            Err(ShapeError::DuplicateAtom(atom)) if atom == alpha
+            Err(ShapeError::DuplicateAtom(atom)) if atom.raw() == alpha.raw()
         ));
-        let missing = atoms.intern("missing").unwrap();
+        let missing = AtomIdx::from_raw(atoms.intern("missing").unwrap().raw());
         assert!(matches!(
             readded.derive_replace(missing, DEFAULT_DATA),
-            Err(ShapeError::MissingAtom(atom)) if atom == missing
+            Err(ShapeError::MissingAtom(atom)) if atom.raw() == missing.raw()
         ));
         assert!(matches!(
             readded.derive_delete(missing),
-            Err(ShapeError::MissingAtom(atom)) if atom == missing
+            Err(ShapeError::MissingAtom(atom)) if atom.raw() == missing.raw()
         ));
     }
 
     #[test]
     fn own_keys_follow_array_string_symbol_order_and_hide_private_names() {
         let mut atoms = AtomTable::new();
-        let beta = atoms.intern("beta").unwrap();
-        let index_10 = atoms.intern("10").unwrap();
-        let symbol_a = atoms.new_symbol(Some("a")).unwrap();
-        let index_2 = atoms.intern("2").unwrap();
-        let noncanonical_index = atoms.intern("01").unwrap();
-        let private = atoms.new_private_symbol(Some("hidden")).unwrap();
-        let global_symbol = atoms.intern_global_symbol("shared").unwrap();
-        let largest_index = atoms.intern("4294967294").unwrap();
-        let excluded_index = atoms.intern("4294967295").unwrap();
+        let key = |atoms: &mut AtomTable, text: &str| {
+            AtomIdx::from_raw(atoms.intern(text).unwrap().raw())
+        };
+        let beta = key(&mut atoms, "beta");
+        let index_10 = key(&mut atoms, "10");
+        let symbol_a = AtomIdx::from_raw(atoms.new_symbol(Some("a")).unwrap().raw());
+        let index_2 = key(&mut atoms, "2");
+        let noncanonical_index = key(&mut atoms, "01");
+        let private = AtomIdx::from_raw(atoms.new_private_symbol(Some("hidden")).unwrap().raw());
+        let global_symbol =
+            AtomIdx::from_raw(atoms.intern_global_symbol("shared").unwrap().raw());
+        let largest_index = key(&mut atoms, "4294967294");
+        let excluded_index = key(&mut atoms, "4294967295");
 
         let shape = Shape::new(
             None,
@@ -539,17 +571,18 @@ mod tests {
         )
         .unwrap();
 
+        let branded = |index: AtomIdx| atoms.brand(index).unwrap();
         assert_eq!(
             shape.ordered_own_keys(&atoms).unwrap(),
             vec![
-                index_2,
-                index_10,
-                largest_index,
-                beta,
-                noncanonical_index,
-                excluded_index,
-                symbol_a,
-                global_symbol,
+                branded(index_2),
+                branded(index_10),
+                branded(largest_index),
+                branded(beta),
+                branded(noncanonical_index),
+                branded(excluded_index),
+                branded(symbol_a),
+                branded(global_symbol),
             ]
         );
     }
@@ -557,8 +590,8 @@ mod tests {
     #[test]
     fn delete_then_readd_moves_non_index_key_to_category_end() {
         let mut atoms = AtomTable::new();
-        let first = atoms.intern("first").unwrap();
-        let second = atoms.intern("second").unwrap();
+        let first = AtomIdx::from_raw(atoms.intern("first").unwrap().raw());
+        let second = AtomIdx::from_raw(atoms.intern("second").unwrap().raw());
         let shape = Shape::new(None, [entry(first), entry(second)]).unwrap();
         let changed = shape
             .derive_delete(first)
@@ -566,20 +599,27 @@ mod tests {
             .derive_add(first, DEFAULT_DATA)
             .unwrap();
 
-        assert_eq!(changed.ordered_own_keys(&atoms).unwrap(), [second, first]);
-        assert_eq!(shape.ordered_own_keys(&atoms).unwrap(), [first, second]);
+        let branded = |index: AtomIdx| atoms.brand(index).unwrap();
+        assert_eq!(
+            changed.ordered_own_keys(&atoms).unwrap(),
+            [branded(second), branded(first)]
+        );
+        assert_eq!(
+            shape.ordered_own_keys(&atoms).unwrap(),
+            [branded(first), branded(second)]
+        );
     }
 
     #[test]
     fn own_key_snapshot_validates_the_runtime_local_atom_table() {
         let mut owner = AtomTable::new();
         let foreign = AtomTable::new();
-        let key = owner.intern("owner-only").unwrap();
+        let key = AtomIdx::from_raw(owner.intern("owner-only").unwrap().raw());
         let shape = Shape::new(None, [entry(key)]).unwrap();
 
         assert!(matches!(
             shape.ordered_own_keys(&foreign),
-            Err(AtomError::UnknownAtom(atom)) if atom == key
+            Err(AtomError::UnknownAtom(atom)) if atom.raw() == key.raw()
         ));
     }
 }

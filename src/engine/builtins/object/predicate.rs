@@ -117,7 +117,7 @@ impl PredicateStep {
             };
             let Some(callable) = callable else {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         realm,
                         crate::engine::api::error::NativeErrorKind::Type,
                         "not a function",

@@ -103,7 +103,7 @@ impl Runtime {
         if sloppy_legacy_get {
             return Ok(Completion::Return(Value::Undefined));
         }
-        Ok(Completion::Throw(self.new_native_error(
+        Ok(Completion::Throw(self.new_native_error_jsvalue(
             realm,
             NativeErrorKind::Type,
             "invalid property access",

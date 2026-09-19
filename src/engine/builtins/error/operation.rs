@@ -119,7 +119,7 @@ impl ErrorStep {
                 };
                 let Value::Object(object) = this_value else {
                     return Ok(Self::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
                     )));
                 };
                 resume.object = Some(object.clone());

@@ -110,7 +110,7 @@ impl HelperResumeStep {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "not an Iterator Helper",
@@ -121,7 +121,7 @@ impl HelperResumeStep {
         };
         if state.executing {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "cannot invoke a running iterator",

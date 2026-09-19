@@ -157,7 +157,7 @@ impl FromSyncStep {
         let (iterator, cached_next) = match state {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
-                let reason = runtime.new_native_error(
+                let reason = runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "not an Async-from-Sync Iterator",
@@ -291,7 +291,7 @@ impl FromSyncResume {
                             )
                         }
                         GeneratorResumeKind::Next => {
-                            let reason = runtime.new_native_error(
+                            let reason = runtime.new_native_error_jsvalue(
                                 realm,
                                 NativeErrorKind::Type,
                                 "not a function",
@@ -322,7 +322,7 @@ impl FromSyncResume {
             }
             Phase::Result(state) => {
                 let Value::Object(result) = value else {
-                    let reason = runtime.new_native_error(
+                    let reason = runtime.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "iterator must return an object",
@@ -403,7 +403,7 @@ impl FromSyncResume {
                 ))))
             }
             Phase::MissingThrow(capability) => {
-                let reason = runtime.new_native_error(
+                let reason = runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "throw is not a method",

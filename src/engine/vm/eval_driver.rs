@@ -12,7 +12,7 @@ use crate::engine::{
     api::{Error, runtime::Runtime},
     builtins::DirectEvalPreparation,
     code::function::metadata::EvalBindingSource,
-    value::{Value, conversion::NativeConversion},
+    value::{JsValue, Value, conversion::NativeConversion},
 };
 
 #[inline(never)]
@@ -29,7 +29,7 @@ pub(super) fn step(
         .slots
         .peek(&frame.window, usize::from(arguments))?;
     if !runtime
-        .is_original_eval(realm, function)
+        .is_original_eval_jsvalue(realm, function)
         .map_err(runtime_error_to_vm_error)?
     {
         return super::driver::enter_call(runtime, execution, id, arguments, false, false);
@@ -46,7 +46,7 @@ pub(super) fn step(
     };
     Ok(CallStep::Complete(Completion::Throw(
         runtime
-            .new_native_error_from_error(realm, kind, &error)
+            .new_native_error_from_error_jsvalue(realm, kind, &error)
             .map_err(runtime_error_to_vm_error)?,
     )))
 }
@@ -62,15 +62,20 @@ fn prepare_and_enter(
     let can_push = execution.frames.can_push();
     let frame = execution.frames.current_mut(id)?;
     let realm = frame.executable.realm;
+    // `input` stays a public root: the direct-eval preparation consumes the
+    // public invocation form, and the rare-cell cache is a public-root island.
     let input = if let Some(values) = &frame.cold.eval_arguments {
         values.first().cloned().unwrap_or(Value::Undefined)
     } else if arguments == 0 {
         Value::Undefined
     } else {
-        execution
-            .slots
-            .peek(&frame.window, usize::from(arguments) - 1)?
-            .clone()
+        runtime
+            .root_value(
+                execution
+                    .slots
+                    .peek(&frame.window, usize::from(arguments) - 1)?,
+            )
+            .map_err(runtime_error_to_vm_error)?
     };
     let string = matches!(input, Value::String(_));
     let this_value = if !string {
@@ -83,22 +88,44 @@ fn prepare_and_enter(
     {
         value.clone()
     } else if frame.executable.metadata.strict
-        || matches!(frame.cold.input.this_value, Value::Object(_))
+        || matches!(frame.cold.input.this_value, JsValue::Object(_))
     {
         frame.cold.input.this_value.clone()
-    } else if matches!(frame.cold.input.this_value, Value::Null | Value::Undefined) {
-        Value::Object(frame.cold.input.callee_global(runtime, realm)?.clone())
+    } else if matches!(frame.cold.input.this_value, JsValue::Null | JsValue::Undefined) {
+        let id = frame.cold.input.callee_global(runtime, realm)?.object_id();
+        runtime
+            .retain_object_handle(id)
+            .map_err(runtime_error_to_vm_error)?;
+        JsValue::Object(id)
     } else {
         let value = match runtime
-            .native_to_object(realm, frame.cold.input.this_value.clone())
+            .native_to_object_jsvalue(
+                realm,
+                runtime
+                    .dup_jsvalue(&frame.cold.input.this_value)
+                    .map_err(runtime_error_to_vm_error)?,
+            )
             .map_err(runtime_error_to_vm_error)?
         {
-            NativeConversion::Value(object) => Value::Object(object),
+            NativeConversion::Value(object) => {
+                let id = object.object_id();
+                runtime
+                    .retain_object_handle(id)
+                    .map_err(runtime_error_to_vm_error)?;
+                JsValue::Object(id)
+            }
             NativeConversion::Throw(value) => {
+                let value = runtime
+                    .into_jsvalue(value)
+                    .map_err(runtime_error_to_vm_error)?;
                 return Ok(CallStep::Complete(Completion::Throw(value)));
             }
         };
-        frame.cold.normalized_this = Some(value.clone());
+        frame.cold.normalized_this = Some(
+            runtime
+                .root_value(&value)
+                .map_err(runtime_error_to_vm_error)?,
+        );
         value
     };
     let prepared = if string {
@@ -131,7 +158,6 @@ fn prepare_and_enter(
         input,
         environment,
         this_value,
-        new_target: frame.cold.input.new_target.clone(),
         caller_strict: frame.executable.metadata.strict,
     };
     let prepared = runtime
@@ -227,10 +253,13 @@ pub(super) fn apply(
     let can_push = execution.frames.can_push();
     let frame = execution.frames.current_mut(id)?;
     let realm = frame.executable.realm;
-    let Value::Object(array) = execution.slots.peek(&frame.window, 0)? else {
+    let array = runtime
+        .root_value(execution.slots.peek(&frame.window, 0)?)
+        .map_err(runtime_error_to_vm_error)?;
+    let Value::Object(array) = array else {
         return Ok(CallStep::Complete(Completion::Throw(
             runtime
-                .new_native_error(
+                .new_native_error_jsvalue(
                     realm,
                     crate::engine::api::error::NativeErrorKind::Type,
                     "not a object",
@@ -239,18 +268,21 @@ pub(super) fn apply(
         )));
     };
     let Some(values) = runtime
-        .prepare_fast_array_arguments(realm, array)
+        .prepare_fast_array_arguments(realm, &array)
         .map_err(runtime_error_to_vm_error)?
     else {
         return Ok(CallStep::Bridge);
     };
+    // The fast-array snapshot stays public-rooted: the eval-arguments rare
+    // cell is a public-root island, and the apply request re-enters the
+    // internal convention at its boundary below.
     let mut values = match values {
         NativeConversion::Value(values) => values,
         NativeConversion::Throw(value) => return Ok(CallStep::Complete(Completion::Throw(value))),
     };
     let function = execution.slots.peek(&frame.window, 1)?;
     if runtime
-        .is_original_eval(realm, function)
+        .is_original_eval_jsvalue(realm, function)
         .map_err(runtime_error_to_vm_error)?
     {
         if frame.cold.eval_arguments.is_some() {
@@ -259,11 +291,11 @@ pub(super) fn apply(
         frame.cold.eval_arguments = Some(values);
         return step(runtime, execution, id, 1, environment);
     }
-    let Value::Object(function) = function else {
+    let JsValue::Object(function) = function else {
         return Ok(CallStep::Bridge);
     };
     let Some(mut callable) = runtime
-        .as_callable(function)
+        .as_callable_object(*function)
         .map_err(runtime_error_to_vm_error)?
     else {
         return Ok(CallStep::Bridge);
@@ -319,9 +351,15 @@ pub(super) fn apply(
     }
     let request = BytecodeCallRequest {
         callable,
-        receiver,
-        new_target: Value::Undefined,
-        arguments: values,
+        receiver: runtime
+            .unroot_value(&receiver)
+            .map_err(runtime_error_to_vm_error)?,
+        new_target: JsValue::Undefined,
+        arguments: values
+            .iter()
+            .map(|value| runtime.unroot_value(value))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(runtime_error_to_vm_error)?,
         bytecode,
         closure_slots,
         caller_realm: realm,

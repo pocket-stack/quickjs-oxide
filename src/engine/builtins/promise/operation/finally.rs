@@ -215,13 +215,28 @@ pub(super) fn resume(
         }),
         Phase::Resolved { settlement, kind } => {
             let raw = runtime.raw_property_value(&settlement)?;
-            let thunk = runtime.new_internal_promise_function(
+            // The internal callable retains its own copy edge inside the
+            // allocation, so the conversion's producer edge is released on
+            // every exit.
+            let conversion_edge = raw.conversion_node_edge();
+            let thunk = match runtime.new_internal_promise_function(
                 realm,
                 NativeFunctionId::PromiseFinallyThunk(kind),
                 0,
                 0,
                 InternalCallableData::PromiseFinallyThunk { value: raw },
-            )?;
+            ) {
+                Ok(thunk) => thunk,
+                Err(error) => {
+                    if let Some(edge) = conversion_edge {
+                        runtime.release_converted_node_edge(edge);
+                    }
+                    return Err(error);
+                }
+            };
+            if let Some(edge) = conversion_edge {
+                runtime.release_converted_node_edge(edge);
+            }
             drop(settlement);
             PromiseStep::invoke_then(
                 runtime,

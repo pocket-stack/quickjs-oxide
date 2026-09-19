@@ -30,6 +30,7 @@ use crate::engine::heap::{
     BytecodeConstant, HeapError, ObjectPayload, PrimitiveObjectData, PropertySlot, RawValue,
 };
 use crate::engine::object::shape::PropertyFlags;
+use crate::engine::atom::AtomIdx;
 use crate::engine::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
     OrdinaryPropertyDescriptor, PropertyKey, WellKnownSymbol,

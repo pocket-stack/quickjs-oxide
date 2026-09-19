@@ -156,7 +156,10 @@ fn dynamic_import_reuses_cycle_root_rejection_promise_and_tracker_history() {
         assert!(b.evaluation_promise.is_none());
         (cycle_a, cycle_b, a.evaluation_promise.unwrap())
     };
-    assert_ne!(cycle_a, cycle_b);
+    assert!(
+        cycle_a.cache != cycle_b.cache || cycle_a.module != cycle_b.module,
+        "cycle records must be distinct identities"
+    );
 
     let second = eval_dynamic_import(
         &mut context,

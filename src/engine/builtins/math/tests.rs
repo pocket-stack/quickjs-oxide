@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use super::*;
 use crate::engine::heap::RawValue;
 
@@ -255,7 +256,7 @@ fn global_math_is_realm_aware_and_materializes_only_on_get() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(global.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -292,7 +293,7 @@ fn global_math_is_realm_aware_and_materializes_only_on_get() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(first_global.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert!(matches!(
             object.slots.get(slot_index),
             Some(PropertySlot::Data(RawValue::Object(id))) if *id == first_math.object_id()

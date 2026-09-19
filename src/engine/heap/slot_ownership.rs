@@ -6,7 +6,7 @@
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::heap::{Heap, HeapError, RawId, SlotState};
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SlotReleaseReadiness {
@@ -26,14 +26,39 @@ impl Heap {
         self.slot_release_readiness(RawId::Object(object))
     }
 
+    /// Trusted hot-path release readiness for a live object held by an owning
+    /// root. Identical to [`Heap::slot_object_release_readiness`] except that
+    /// the generation check is omitted; a non-live slot still reports `Drain`
+    /// rather than aborting.
+    #[inline]
+    pub(crate) fn slot_object_release_readiness_fast(
+        &self,
+        object: super::ObjectId,
+    ) -> SlotReleaseReadiness {
+        if !self.zero_queue.is_empty() {
+            return SlotReleaseReadiness::Drain;
+        }
+        match &self.slots[object.index as usize].state {
+            SlotState::Live(node) if node.strong.get() > 1 => SlotReleaseReadiness::Ready,
+            SlotState::Live(node) if node.strong.get() == 1 => {
+                if self.zero_queue.len() == self.zero_queue.capacity() {
+                    SlotReleaseReadiness::QueueCapacity
+                } else {
+                    SlotReleaseReadiness::Drain
+                }
+            }
+            _ => SlotReleaseReadiness::Drain,
+        }
+    }
+
     fn slot_release_readiness(&self, id: RawId) -> Result<SlotReleaseReadiness, HeapError> {
         let index = self.validate_slot_identity(id)?;
         if !self.zero_queue.is_empty() {
             return Ok(SlotReleaseReadiness::Drain);
         }
         match &self.slots[index].state {
-            SlotState::Live(node) if node.strong > 1 => Ok(SlotReleaseReadiness::Ready),
-            SlotState::Live(node) if node.strong == 1 => {
+            SlotState::Live(node) if node.strong.get() > 1 => Ok(SlotReleaseReadiness::Ready),
+            SlotState::Live(node) if node.strong.get() == 1 => {
                 // release_raw_no_drain would push to this queue. Do not commit
                 // its decrement before deciding whether that push can allocate.
                 Ok(if self.zero_queue.len() == self.zero_queue.capacity() {
@@ -101,6 +126,43 @@ impl Runtime {
         }
     }
 
+    /// Internal-value form of [`Runtime::slot_value_release_readiness`].
+    /// Handles carry no runtime branding, so the domain checks disappear;
+    /// every heap-backed kind reports its node or atom slot readiness.
+    pub(crate) fn slot_value_release_readiness_jsvalue(
+        &self,
+        value: &JsValue,
+    ) -> Result<SlotReleaseReadiness, RuntimeError> {
+        match value {
+            JsValue::Undefined
+            | JsValue::Null
+            | JsValue::Bool(_)
+            | JsValue::Int(_)
+            | JsValue::Float(_) => return Ok(SlotReleaseReadiness::Ready),
+            JsValue::Object(_) | JsValue::Symbol(_) | JsValue::String(_) | JsValue::BigInt(_) => {}
+        }
+        if self.0.deferred_references.has_pending() {
+            return Ok(SlotReleaseReadiness::Deferred);
+        }
+        let Ok(state) = self.0.state.try_borrow_mut() else {
+            return Ok(SlotReleaseReadiness::Borrowed);
+        };
+        match value {
+            JsValue::Object(id) => Ok(state.heap.slot_release_readiness(RawId::Object(*id))?),
+            JsValue::String(id) => Ok(state.heap.slot_release_readiness(RawId::String(*id))?),
+            JsValue::BigInt(id) => Ok(state.heap.slot_release_readiness(RawId::BigInt(*id))?),
+            JsValue::Symbol(index) => {
+                let atom = state.atoms.brand(*index)?;
+                Ok(match state.atoms.resolve(atom)?.ref_count {
+                    None => SlotReleaseReadiness::Ready,
+                    Some(count) if count > 1 => SlotReleaseReadiness::Ready,
+                    Some(_) => SlotReleaseReadiness::PrimitiveStorage,
+                })
+            }
+            _ => unreachable!("primitive slots returned before borrowing runtime state"),
+        }
+    }
+
     /// Commit exactly one ordinary owning-root release after the no-drain
     /// proof. No callback or reference decrease can intervene between the
     /// preflight and Drop. Ready consumes the Value; every other outcome leaves
@@ -117,6 +179,26 @@ impl Runtime {
         );
         let old = std::mem::replace(value, Value::Undefined);
         drop(old);
+        Ok(true)
+    }
+
+    /// Internal-value form of [`Runtime::try_release_slot_value`]: on `Ready`
+    /// the value is replaced with `undefined` and its edges are released.
+    pub(crate) fn try_release_slot_value_jsvalue(
+        &self,
+        value: &mut JsValue,
+    ) -> Result<bool, RuntimeError> {
+        if self.slot_value_release_readiness_jsvalue(value)? != SlotReleaseReadiness::Ready {
+            return Ok(false);
+        }
+        #[cfg(feature = "profiling")]
+        crate::engine::api::profiling::record_owned_storage(
+            crate::engine::api::profiling::OwnedStorageEvent::HotRelease {
+                heap_root: matches!(value, JsValue::Object(_) | JsValue::Symbol(_)),
+            },
+        );
+        let old = std::mem::replace(value, JsValue::Undefined);
+        self.release_jsvalue(old)?;
         Ok(true)
     }
 }
@@ -387,7 +469,8 @@ mod tests {
             .heap
             .live_node_mut(id)
             .unwrap()
-            .strong = u32::MAX;
+            .strong
+            .set(u32::MAX);
         let result = root.try_clone();
         let count = runtime.0.state.borrow().heap.strong_count(id).unwrap();
         // Restore the actual owner count before assertions can unwind roots.
@@ -398,7 +481,8 @@ mod tests {
             .heap
             .live_node_mut(id)
             .unwrap()
-            .strong = 1;
+            .strong
+            .set(1);
         assert!(result.is_err());
         assert_eq!(count, u32::MAX);
         drop(root);

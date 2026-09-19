@@ -117,19 +117,23 @@ fn iterator_payload_mutations_retain_replacements_and_completion_keeps_edges() {
     heap.set_iterator_helper_running(helper, true).unwrap();
     heap.set_iterator_helper_done_and_running(helper, true, false)
         .unwrap();
-    assert_eq!(
-        heap.iterator_helper_state(helper).unwrap(),
-        IteratorHelperData {
-            source: replacement_source,
-            next: RawValue::Object(replacement_next),
-            callback: RawValue::Object(replacement_callback),
-            inner: Some(replacement_inner),
-            count: 7,
-            kind: IteratorHelperKind::FlatMap,
-            executing: false,
-            done: true,
-        }
+    let state = heap.iterator_helper_state(helper).unwrap();
+    assert_eq!(state.source, replacement_source);
+    assert!(
+        matches!(state.next, RawValue::Object(object) if object == replacement_next),
+        "next mismatch: {:?}",
+        state.next
     );
+    assert!(
+        matches!(state.callback, RawValue::Object(object) if object == replacement_callback),
+        "callback mismatch: {:?}",
+        state.callback
+    );
+    assert_eq!(state.inner, Some(replacement_inner));
+    assert_eq!(state.count, 7);
+    assert_eq!(state.kind, IteratorHelperKind::FlatMap);
+    assert!(!state.executing);
+    assert!(state.done);
     for edge in [
         replacement_source,
         replacement_next,
@@ -190,12 +194,12 @@ fn iterator_wrap_source_and_cached_next_are_owned_edges() {
         .unwrap();
     heap.set_iterator_wrap_next(wrapper, RawValue::Object(replacement_next))
         .unwrap();
-    assert_eq!(
-        heap.iterator_wrap_state(wrapper),
-        Ok((
-            RawValue::Object(replacement_source),
-            RawValue::Object(replacement_next)
-        ))
+    assert!(
+        matches!(
+            heap.iterator_wrap_state(wrapper),
+            Ok((RawValue::Object(source), RawValue::Object(next)))
+                if source == replacement_source && next == replacement_next
+        )
     );
     assert_eq!(heap.object_strong_count(source), Ok(1));
     assert_eq!(heap.object_strong_count(next), Ok(1));
@@ -206,7 +210,7 @@ fn iterator_wrap_source_and_cached_next_are_owned_edges() {
     assert_eq!(heap.object_strong_count(replacement_source), Ok(1));
     assert_eq!(heap.object_strong_count(replacement_next), Ok(1));
 
-    let symbol = Atom::from_immediate_integer(17).unwrap();
+    let symbol = AtomIdx::from_raw(Atom::from_immediate_integer(17).unwrap().raw());
     let symbol_wrapper = heap
         .allocate_object(ObjectData::iterator_wrap(
             shape,
@@ -221,7 +225,7 @@ fn iterator_wrap_source_and_cached_next_are_owned_edges() {
     assert_eq!(cleanup.atoms, vec![symbol]);
     heap.release_object(symbol_wrapper).unwrap();
 
-    let source_symbol = Atom::from_immediate_integer(19).unwrap();
+    let source_symbol = AtomIdx::from_raw(Atom::from_immediate_integer(19).unwrap().raw());
     let primitive_wrapper = heap
         .allocate_object(ObjectData::iterator_wrap(
             shape,
@@ -230,9 +234,11 @@ fn iterator_wrap_source_and_cached_next_are_owned_edges() {
             RawValue::Undefined,
         ))
         .unwrap();
-    assert_eq!(
-        heap.iterator_wrap_state(primitive_wrapper),
-        Ok((RawValue::Symbol(source_symbol), RawValue::Undefined))
+    assert!(
+        matches!(
+            heap.iterator_wrap_state(primitive_wrapper),
+            Ok((RawValue::Symbol(index), RawValue::Undefined)) if index == source_symbol
+        )
     );
     let cleanup = heap.release_object(primitive_wrapper).unwrap();
     assert_eq!(cleanup.atoms, vec![source_symbol]);
@@ -261,15 +267,17 @@ fn async_from_sync_iterator_owns_source_cached_next_and_symbol_atom() {
 
     assert_eq!(heap.object_strong_count(source), Ok(2));
     assert_eq!(heap.object_strong_count(next), Ok(2));
-    assert_eq!(
-        heap.async_from_sync_iterator_state(wrapper),
-        Ok((source, RawValue::Object(next)))
+    assert!(
+        matches!(
+            heap.async_from_sync_iterator_state(wrapper),
+            Ok((source, RawValue::Object(next_id))) if next_id == next
+        )
     );
     heap.release_object(wrapper).unwrap();
     assert_eq!(heap.object_strong_count(source), Ok(1));
     assert_eq!(heap.object_strong_count(next), Ok(1));
 
-    let symbol = Atom::from_immediate_integer(29).unwrap();
+    let symbol = AtomIdx::from_raw(Atom::from_immediate_integer(29).unwrap().raw());
     let symbol_wrapper = heap
         .allocate_object(ObjectData::async_from_sync_iterator(
             shape,
@@ -372,22 +380,20 @@ fn iterator_concat_releases_consumed_and_drained_edges_at_quickjs_boundaries() {
     for edge in [iterable_b, method_b] {
         assert_eq!(heap.object_strong_count(edge), Ok(2));
     }
-    assert_eq!(
-        heap.iterator_concat_state(concat).unwrap(),
-        IteratorConcatData {
-            items: vec![
-                None,
-                Some(IteratorConcatItem {
-                    iterable: iterable_b,
-                    method: RawValue::Object(method_b),
-                }),
-            ],
-            index: 1,
-            iterator: None,
-            next: RawValue::Undefined,
-            running: false,
-        }
+    let state = heap.iterator_concat_state(concat).unwrap();
+    assert_eq!(state.items.len(), 2);
+    assert!(state.items[0].is_none());
+    let second = state.items[1].as_ref().expect("second concat item");
+    assert_eq!(second.iterable, iterable_b);
+    assert!(
+        matches!(second.method, RawValue::Object(object) if object == method_b),
+        "method mismatch: {:?}",
+        second.method
     );
+    assert_eq!(state.index, 1);
+    assert_eq!(state.iterator, None);
+    assert!(matches!(state.next, RawValue::Undefined));
+    assert!(!state.running);
 
     heap.set_iterator_concat_iterator(concat, Some(active_b))
         .unwrap();
@@ -397,16 +403,13 @@ fn iterator_concat_releases_consumed_and_drained_edges_at_quickjs_boundaries() {
     for edge in [iterable_b, method_b, active_b, next_b] {
         assert_eq!(heap.object_strong_count(edge), Ok(1));
     }
-    assert_eq!(
-        heap.iterator_concat_state(concat).unwrap(),
-        IteratorConcatData {
-            items: vec![None, None],
-            index: 2,
-            iterator: None,
-            next: RawValue::Undefined,
-            running: false,
-        }
-    );
+    let state = heap.iterator_concat_state(concat).unwrap();
+    assert_eq!(state.items.len(), 2);
+    assert!(state.items.iter().all(|item| item.is_none()));
+    assert_eq!(state.index, 2);
+    assert_eq!(state.iterator, None);
+    assert!(matches!(state.next, RawValue::Undefined));
+    assert!(!state.running);
 
     heap.release_object(concat).unwrap();
     for object in [
@@ -468,18 +471,19 @@ fn iterator_intrinsics_attach_transactionally_and_form_a_collectable_realm_cycle
             "Iterator Helper prototype is not an ordinary child of the realm's Iterator prototype",
         ))
     );
-    assert_eq!(heap.context(realm).unwrap().iterator, None);
+    assert!(matches!(heap.context(realm).unwrap().iterator, None));
 
     heap.live_node_mut(RawId::Object(wrap_prototype))
         .unwrap()
-        .strong = u32::MAX;
+        .strong
+        .set(u32::MAX);
     assert_eq!(
         heap.attach_iterator_intrinsics(realm, iterator),
         Err(HeapError::Overflow {
             operation: "retaining outgoing heap edges",
         })
     );
-    assert_eq!(heap.context(realm).unwrap().iterator, None);
+    assert!(matches!(heap.context(realm).unwrap().iterator, None));
     assert_eq!(
         heap.object_strong_count(constructor),
         Ok(constructor_strong)
@@ -494,10 +498,17 @@ fn iterator_intrinsics_attach_transactionally_and_form_a_collectable_realm_cycle
     );
     heap.live_node_mut(RawId::Object(wrap_prototype))
         .unwrap()
-        .strong = wrap_strong;
+        .strong
+        .set(wrap_strong);
 
     heap.attach_iterator_intrinsics(realm, iterator).unwrap();
-    assert_eq!(heap.context(realm).unwrap().iterator, Some(iterator));
+    assert!(
+        matches!(heap.context(realm).unwrap().iterator, Some(attached)
+            if attached.constructor == iterator.constructor
+                && attached.concat_prototype == iterator.concat_prototype
+                && attached.helper_prototype == iterator.helper_prototype
+                && attached.wrap_prototype == iterator.wrap_prototype)
+    );
     assert_eq!(
         heap.object_strong_count(constructor),
         Ok(constructor_strong + 1)
@@ -649,7 +660,7 @@ fn regexp_fixture() -> RegExpFixture {
             Shape::new(
                 Some(prototype),
                 [ShapeEntry {
-                    atom: last_index,
+                    atom: AtomIdx::from_raw(last_index.raw()),
                     flags: PropertyFlags::data(true, false, false),
                 }],
             )
@@ -693,7 +704,8 @@ fn regexp_intrinsics_attach_transactionally_once_and_finalize_with_realm() {
         .heap
         .live_node_mut(RawId::Shape(fixture.object_shape))
         .unwrap()
-        .strong = u32::MAX;
+        .strong
+        .set(u32::MAX);
     assert_eq!(
         fixture
             .heap
@@ -702,7 +714,9 @@ fn regexp_intrinsics_attach_transactionally_once_and_finalize_with_realm() {
             operation: "retaining outgoing heap edges",
         })
     );
-    assert_eq!(fixture.heap.context(fixture.realm).unwrap().regexp, None);
+    assert!(
+        matches!(fixture.heap.context(fixture.realm).unwrap().regexp, None)
+    );
     assert_eq!(
         fixture.heap.object_strong_count(fixture.prototype).unwrap(),
         prototype_strong
@@ -725,15 +739,20 @@ fn regexp_intrinsics_attach_transactionally_once_and_finalize_with_realm() {
         .heap
         .live_node_mut(RawId::Shape(fixture.object_shape))
         .unwrap()
-        .strong = object_shape_strong;
+        .strong
+        .set(object_shape_strong);
 
     fixture
         .heap
         .attach_regexp_intrinsics(fixture.realm, realm_data, fixture.last_index)
         .unwrap();
-    assert_eq!(
-        fixture.heap.context(fixture.realm).unwrap().regexp,
-        Some(realm_data)
+    assert!(
+        matches!(fixture.heap.context(fixture.realm).unwrap().regexp, Some(attached)
+            if attached.prototype == realm_data.prototype
+                && attached.constructor == realm_data.constructor
+                && attached.string_iterator_prototype == realm_data.string_iterator_prototype
+                && attached.object_shape == realm_data.object_shape
+                && attached.result_shapes == realm_data.result_shapes)
     );
     assert_eq!(
         fixture.heap.object_strong_count(fixture.prototype).unwrap(),
@@ -901,7 +920,7 @@ fn regexp_intrinsics_reject_mismatched_constructor_prototype_and_shape() {
             Shape::new(
                 Some(fixture.root),
                 [ShapeEntry {
-                    atom: fixture.last_index,
+                    atom: AtomIdx::from_raw(fixture.last_index.raw()),
                     flags: PropertyFlags::data(true, false, false),
                 }],
             )
@@ -929,7 +948,7 @@ fn regexp_intrinsics_reject_mismatched_constructor_prototype_and_shape() {
             Shape::new(
                 Some(fixture.prototype),
                 [ShapeEntry {
-                    atom: fixture.last_index,
+                    atom: AtomIdx::from_raw(fixture.last_index.raw()),
                     flags: DATA_FLAGS,
                 }],
             )
@@ -958,7 +977,9 @@ fn regexp_intrinsics_reject_mismatched_constructor_prototype_and_shape() {
             .attach_regexp_intrinsics(fixture.realm, realm_data, wrong_atom)
             .is_err()
     );
-    assert_eq!(fixture.heap.context(fixture.realm).unwrap().regexp, None);
+    assert!(
+        matches!(fixture.heap.context(fixture.realm).unwrap().regexp, None)
+    );
     fixture.dispose();
 }
 
@@ -1153,7 +1174,7 @@ fn object_slot_replacement_rejects_private_name_payloads() {
             vec![PropertySlot::Data(RawValue::Undefined)],
         ))
         .unwrap();
-    let private = Atom::from_raw(91);
+    let private = AtomIdx::from_raw(91);
 
     assert_eq!(
         heap.replace_object_slot(object, 0, PropertySlot::Data(RawValue::Private(private)),),
@@ -1267,12 +1288,14 @@ fn forged_cross_kind_handle_reports_wrong_kind() {
         generation: shape.generation,
     };
 
-    assert_eq!(
-        heap.object(forged),
-        Err(HeapError::WrongKind {
-            expected: HeapNodeKind::Object,
-            actual: HeapNodeKind::Shape,
-        })
+    assert!(
+        matches!(
+            heap.object(forged),
+            Err(HeapError::WrongKind {
+                expected: HeapNodeKind::Object,
+                actual: HeapNodeKind::Shape,
+            })
+        )
     );
     heap.release_shape(shape).unwrap();
 }
@@ -1322,7 +1345,10 @@ fn property_slot_transaction_retains_before_publish_and_marks_cleanup_failures()
             vec![PropertySlot::Data(RawValue::Undefined)],
         ))
         .unwrap();
-    heap.live_node_mut(RawId::Object(target)).unwrap().strong = u32::MAX;
+    heap.live_node_mut(RawId::Object(target))
+        .unwrap()
+        .strong
+        .set(u32::MAX);
     let failure = heap
         .replace_object_slot_with_status(object, 0, PropertySlot::Data(RawValue::Object(target)))
         .err()
@@ -1333,10 +1359,16 @@ fn property_slot_transaction_retains_before_publish_and_marks_cleanup_failures()
         PropertySlot::Data(RawValue::Int(7))
     ));
     assert_eq!(heap.object_strong_count(target), Ok(u32::MAX));
-    heap.live_node_mut(RawId::Object(target)).unwrap().strong = 1;
+    heap.live_node_mut(RawId::Object(target))
+        .unwrap()
+        .strong
+        .set(1);
     heap.replace_object_slot(object, 0, PropertySlot::Data(RawValue::Object(target)))
         .unwrap();
-    heap.live_node_mut(RawId::Object(target)).unwrap().strong = 0;
+    heap.live_node_mut(RawId::Object(target))
+        .unwrap()
+        .strong
+        .set(0);
     let failure = heap
         .replace_object_slot_with_status(object, 0, PropertySlot::Data(RawValue::Int(42)))
         .err()
@@ -1346,7 +1378,10 @@ fn property_slot_transaction_retains_before_publish_and_marks_cleanup_failures()
         heap.object(object).unwrap().slots[0],
         PropertySlot::Data(RawValue::Int(42))
     ));
-    heap.live_node_mut(RawId::Object(target)).unwrap().strong = 1;
+    heap.live_node_mut(RawId::Object(target))
+        .unwrap()
+        .strong
+        .set(1);
     heap.release_object(target).unwrap();
     heap.release_object(object).unwrap();
     heap.release_shape(shape).unwrap();
@@ -1376,29 +1411,32 @@ fn property_slot_transaction_keeps_new_symbol_owned_after_post_publish_failure()
     {
         let mut state = runtime.0.state.borrow_mut();
         let symbol = state.atoms.new_symbol(Some("replacement")).unwrap();
+        let symbol_index = AtomIdx::from_raw(symbol.raw());
         state
             .heap
             .live_node_mut(RawId::Object(old.object_id()))
             .unwrap()
-            .strong = 0;
+            .strong
+            .set(0);
         assert!(
             state
                 .replace_property_slot(
                     object.object_id(),
                     0,
-                    PropertySlot::Data(RawValue::Symbol(symbol))
+                    PropertySlot::Data(RawValue::Symbol(symbol_index))
                 )
                 .is_err()
         );
         assert_eq!(state.atoms.resolve(symbol).unwrap().ref_count, Some(2));
         assert!(
-            matches!(state.heap.object(object.object_id()).unwrap().slots[0], PropertySlot::Data(RawValue::Symbol(atom)) if atom == symbol)
+            matches!(state.heap.object(object.object_id()).unwrap().slots[0], PropertySlot::Data(RawValue::Symbol(index)) if index == symbol_index)
         );
         state
             .heap
             .live_node_mut(RawId::Object(old.object_id()))
             .unwrap()
-            .strong = 1;
+            .strong
+            .set(1);
         state.atoms.release(symbol).unwrap();
     }
     drop(object);

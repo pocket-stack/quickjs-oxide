@@ -1039,7 +1039,7 @@ impl Runtime {
         string_limit: usize,
     ) -> Result<Completion, RuntimeError> {
         if !(0..=2_147_483_647).contains(&count) {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid repeat count",
@@ -1050,14 +1050,14 @@ impl Runtime {
         let repeated = match source.repeat_with_limit(count, string_limit) {
             Ok(value) => value,
             Err(JsStringError::TooLong) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Range,
                     "invalid string length",
                 )?));
             }
             Err(JsStringError::OutOfMemory) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "out of memory",
@@ -1130,14 +1130,14 @@ impl Runtime {
         ) {
             Ok(value) => value,
             Err(JsStringError::TooLong) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Range,
                     "invalid string length",
                 )?));
             }
             Err(JsStringError::OutOfMemory) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "out of memory",
@@ -1183,7 +1183,7 @@ impl Runtime {
         let trimmed = match source.trim_whitespace(trim_start, trim_end) {
             Ok(value) => value,
             Err(JsStringError::OutOfMemory) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "out of memory",
@@ -1248,7 +1248,7 @@ impl Runtime {
                     JsStringError::TooLong => "string too long",
                     JsStringError::OutOfMemory => "out of memory",
                 };
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     message,
@@ -1313,7 +1313,7 @@ impl Runtime {
                     JsStringError::TooLong => "string too long",
                     JsStringError::OutOfMemory => "out of memory",
                 };
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     message,
@@ -1359,7 +1359,7 @@ impl Runtime {
         ) {
             Ok(value) => value,
             Err(JsStringError::OutOfMemory) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "out of memory",
@@ -1377,7 +1377,7 @@ impl Runtime {
         ) {
             Ok(value) => value,
             Err(JsStringError::OutOfMemory) => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "out of memory",
@@ -1457,7 +1457,7 @@ impl Runtime {
                     JsStringError::TooLong => "string too long",
                     JsStringError::OutOfMemory => "out of memory",
                 };
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     message,

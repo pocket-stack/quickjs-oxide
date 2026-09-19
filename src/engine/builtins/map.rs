@@ -396,18 +396,27 @@ impl Runtime {
         key: &Value,
     ) -> Result<Option<(usize, RawValue)>, RuntimeError> {
         let raw_key = self.raw_property_value(key)?;
+        // Lookup only: the conversion's producer edge is not stored anywhere.
+        let conversion_edge = raw_key.conversion_node_edge();
         let state = self.0.state.borrow();
-        let heap = &state.heap;
-        let Some(index) = heap.map_find_record(map.object_id(), &raw_key)? else {
-            return Ok(None);
-        };
-        let value = heap
-            .map_records(map.object_id())?
-            .get(index)
-            .expect("indexed Map record exists")
-            .value
-            .clone();
-        Ok(Some((index, value)))
+        let lookup = (|| {
+            let heap = &state.heap;
+            let Some(index) = heap.map_find_record(map.object_id(), &raw_key)? else {
+                return Ok(None);
+            };
+            let value = heap
+                .map_records(map.object_id())?
+                .get(index)
+                .expect("indexed Map record exists")
+                .value
+                .clone();
+            Ok(Some((index, value)))
+        })();
+        drop(state);
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
+        }
+        lookup
     }
 
     pub(in crate::engine::builtins) fn set_map_record(
@@ -421,6 +430,9 @@ impl Runtime {
         let key = Self::normalized_map_key(key);
         let raw_key = self.raw_property_value(&key)?;
         let raw_value = self.raw_property_value(&value)?;
+        // The record retains its own copy edges inside the heap transaction,
+        // so the conversions' producer edges are released on every exit.
+        let conversion_edges = [raw_key.conversion_node_edge(), raw_value.conversion_node_edge()];
         let mut state = self.0.state.borrow_mut();
         let existing = state.heap.map_find_record(map.object_id(), &raw_key)?;
         let retained = if existing.is_some() {
@@ -441,11 +453,18 @@ impl Runtime {
             Ok(cleanup) => cleanup,
             Err(error) => {
                 state.release_atoms(retained)?;
+                drop(state);
+                for edge in conversion_edges.into_iter().flatten() {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error.into());
             }
         };
         state.apply_cleanup(cleanup)?;
         drop(state);
+        for edge in conversion_edges.into_iter().flatten() {
+            self.release_converted_node_edge(edge);
+        }
         drop(key);
         drop(value);
         Ok(())
@@ -686,7 +705,7 @@ impl Runtime {
         };
         let Value::Object(iterator) = this_value else {
             return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                self.new_native_error(
+                self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "Map Iterator object expected",
@@ -703,7 +722,7 @@ impl Runtime {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
                 return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                    self.new_native_error(
+                    self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "Map Iterator object expected",

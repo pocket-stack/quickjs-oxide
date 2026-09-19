@@ -1450,7 +1450,7 @@ impl Heap {
         }
         let mut newly_zero = 0usize;
         for (&edge, &removed) in &counts {
-            let strong = self.live_node(edge)?.strong;
+            let strong = self.live_node(edge)?.strong.get();
             let remaining = strong.checked_sub(removed).ok_or(HeapError::Underflow {
                 kind: edge.kind(),
                 index: edge.index(),

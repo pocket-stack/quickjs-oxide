@@ -1,12 +1,12 @@
-use crate::engine::value::Value;
+use crate::engine::value::JsValue;
 
-/// Private JavaScript control completion. A thrown value remains a rooted
-/// ordinary [`Value`]; no exception sentinel is exposed through the public
+/// Private JavaScript control completion. A thrown value remains an owned
+/// internal [`JsValue`]; no exception sentinel is exposed through the public
 /// value representation.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum Completion {
-    Return(Value),
-    Throw(Value),
+    Return(JsValue),
+    Throw(JsValue),
 }
 
 /// The suspension sites used by QuickJS generator and async-function bytecode.
@@ -34,11 +34,11 @@ pub(crate) enum VmSuspendKind {
 /// exception: it is raised through the activation's normal unwind machinery,
 /// while `yield*` receives value + magic 2 so the compiled delegation loop can
 /// invoke the delegate's `throw` method.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum VmResume {
-    Next(Value),
-    Return(Value),
-    Throw(Value),
+    Next(JsValue),
+    Return(JsValue),
+    Throw(JsValue),
 }
 
 /// Result of QuickJS `OP_define_class` at the VM/runtime boundary.
@@ -46,13 +46,13 @@ pub(crate) enum VmResume {
 /// A successful definition replaces the two input operands with two freshly
 /// published outputs. JavaScript-visible failures stay typed as thrown values
 /// so an enclosing bytecode catch region can handle them normally.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum DefineClassOutcome {
     Defined {
-        constructor: Value,
-        prototype: Value,
+        constructor: JsValue,
+        prototype: JsValue,
     },
-    Throw(Value),
+    Throw(JsValue),
 }
 
 /// ECMAScript ToPrimitive hint crossing the VM/runtime host boundary.

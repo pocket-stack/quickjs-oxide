@@ -116,6 +116,12 @@ impl Heap {
         let mut buffers = storage("array_buffer_bytes", 0, 0, 1);
         let mut shared_buffers = logical("shared_array_buffer_wrappers", 0);
         shared_buffers.basis = "wrapper-count-only; shared backing bytes unavailable";
+        let mut string_nodes = logical("string_nodes", 0);
+        string_nodes.basis =
+            "node-count-only; payloads are Rc-owned outside the arena accounting";
+        let mut bigint_nodes = logical("bigint_nodes", 0);
+        bigint_nodes.basis =
+            "node-count-only; payloads are Rc-owned outside the arena accounting";
         let mut code = storage("bytecode_instructions", 0, 0, 1);
         code.basis = "deduplicated-Rc-slice-inline-bytes; excludes Rc headers and nested operands";
         let mut seen_code = HashSet::new();
@@ -191,6 +197,12 @@ impl Heap {
                             keys.iter().filter(|atom| atom.is_null()).count();
                     }
                 }
+                NodeData::String(_) => {
+                    *string_nodes.count.as_mut().unwrap() += 1;
+                }
+                NodeData::BigInt(_) => {
+                    *bigint_nodes.count.as_mut().unwrap() += 1;
+                }
                 _ => {}
             }
         }
@@ -200,6 +212,8 @@ impl Heap {
             elements,
             buffers,
             shared_buffers,
+            string_nodes,
+            bigint_nodes,
             code,
             property_keys,
             executable_projections,

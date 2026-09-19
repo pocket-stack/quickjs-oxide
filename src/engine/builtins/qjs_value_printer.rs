@@ -8,7 +8,7 @@ use crate::engine::api::error::{Error, ErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
-use crate::engine::atom::{Atom, AtomSpelling};
+use crate::engine::atom::{Atom, AtomIdx, AtomSpelling};
 use crate::engine::builtins as intrinsics;
 use crate::engine::builtins::native::PromiseResolvingKind;
 use crate::engine::code::function::metadata::FunctionKind;
@@ -134,7 +134,12 @@ impl Runtime {
             stack_atom: stack.atom(),
         };
         let raw = self.raw_property_value(value)?;
-        printer.print_raw_value(&raw)
+        let printed = printer.print_raw_value(&raw);
+        // Diagnostic rendering never stores the converted value, so release
+        // the conversion's producer string/BigInt edge immediately.
+        self.release_converted_value_edge(&raw);
+        printed?;
+        Ok(())
     }
 }
 
@@ -148,13 +153,23 @@ impl QjsValuePrinter<'_, '_> {
             RawValue::Int(value) => self.push_ascii(&value.to_string()),
             RawValue::Float(value) => self.print_float(*value),
             RawValue::BigInt(value) => {
-                self.push_ascii(&value.to_string());
+                let text = {
+                    let state = self.runtime.0.state.borrow();
+                    state.heap.bigint(*value)?.to_string()
+                };
+                self.push_ascii(&text);
                 self.output.push(b'n');
             }
-            RawValue::String(value) => self.print_string(value),
-            RawValue::Symbol(atom) => {
+            RawValue::String(value) => {
+                let string = {
+                    let state = self.runtime.0.state.borrow();
+                    state.heap.string(*value)?.clone()
+                };
+                self.print_string(&string);
+            }
+            RawValue::Symbol(index) => {
                 self.push_ascii("Symbol(");
-                self.print_atom(*atom)?;
+                self.print_atom(self.brand_atom(*index)?)?;
                 self.output.push(b')');
             }
             RawValue::Object(object) => self.print_object(*object)?,
@@ -256,6 +271,12 @@ impl QjsValuePrinter<'_, '_> {
         let mut buffer = [0_u8; 4];
         self.output
             .extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+    }
+
+    /// Brand one internal atom index arriving on a `RawValue` boundary before
+    /// resolving its spelling.
+    fn brand_atom(&self, index: AtomIdx) -> Result<Atom, RuntimeError> {
+        Ok(self.runtime.0.state.borrow().atoms.brand(index)?)
     }
 
     fn print_atom(&mut self, atom: Atom) -> Result<(), RuntimeError> {
@@ -718,7 +739,7 @@ impl QjsValuePrinter<'_, '_> {
             if let Some(fast_len) = arguments_fast_len {
                 if state
                     .atoms
-                    .array_index(entry.atom)?
+                    .array_index(state.atoms.brand(entry.atom)?)?
                     .is_some_and(|index| index < fast_len)
                 {
                     // QuickJS keeps the fast Arguments prefix in shape slots,
@@ -744,7 +765,7 @@ impl QjsValuePrinter<'_, '_> {
                 PropertySlot::AutoInit(_) => PrintablePropertyValue::AutoInit,
             };
             properties.push(PrintableProperty {
-                atom: entry.atom,
+                atom: state.atoms.brand(entry.atom)?,
                 value,
             });
         }
@@ -760,7 +781,7 @@ impl QjsValuePrinter<'_, '_> {
             ObjectPayload::RawJson => ("Object", PrintableBody::Ordinary),
             ObjectPayload::Array { dense } => {
                 let length = shape
-                    .find(self.length_atom)
+                    .find(AtomIdx::from_raw(self.length_atom.raw()))
                     .and_then(|index| object_data.slots.get(index as usize))
                     .and_then(|slot| match slot {
                         PropertySlot::Data(RawValue::Int(value)) => Some(*value as u32),

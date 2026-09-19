@@ -202,7 +202,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.snapshot_buffer_access(buffer.object_id())?.state;
         if current.detached {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",
@@ -215,7 +215,7 @@ impl Runtime {
                     .is_none_or(|end| end > current.byte_length)
             });
         if bounds_are_invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid byteOffset or byteLength",
@@ -250,7 +250,7 @@ impl Runtime {
 
         let buffer = self.snapshot_buffer_access(view.buffer)?.state;
         let Some(byte_length) = data_view_in_bounds_byte_length(view, buffer) else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached or resized",
@@ -1068,7 +1068,7 @@ impl DataViewConstructorResume {
             .state;
         if initial.detached {
             return Ok(DataViewConstructorStep::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     "ArrayBuffer is detached",
@@ -1077,7 +1077,7 @@ impl DataViewConstructorResume {
         }
         if offset > u64::from(initial.byte_length) {
             return Ok(DataViewConstructorStep::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Range,
                     "invalid byteOffset",
@@ -1136,7 +1136,7 @@ impl DataViewConstructorResume {
             DataViewConstructorPhase::Length { offset, available } => {
                 if value > u64::from(available) {
                     return Ok(DataViewConstructorStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Range,
                             "invalid byteLength",

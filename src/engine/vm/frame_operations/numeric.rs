@@ -25,8 +25,8 @@ impl NumericProgress {
 pub(in crate::engine::vm) fn commit_output(
     execution: &mut RunningExecution,
     id: FrameId,
-    value: crate::engine::value::Value,
-    previous: Option<crate::engine::value::Value>,
+    value: crate::engine::value::JsValue,
+    previous: Option<crate::engine::value::JsValue>,
     _depth: usize,
 ) -> Result<(), Error> {
     let frame = execution.frames.current_mut(id)?;
@@ -54,7 +54,7 @@ pub(in crate::engine::vm) fn try_complete_primitive(
     id: FrameId,
     kind: NumericKind,
 ) -> Result<Option<NumericProgress>, Error> {
-    use crate::engine::value::Value;
+    use crate::engine::value::JsValue;
     let frame = execution.frames.current_mut(id)?;
     let realm = frame.executable.realm;
     let depth = execution.slots.depth(&frame.window);
@@ -64,7 +64,7 @@ pub(in crate::engine::vm) fn try_complete_primitive(
         // A malformed stack declines untouched: the canonical outer entry must
         // still pop RHS before reporting a missing LHS.
         for offset in 0..if kind.unary() { 1 } else { 2 } {
-            if matches!(slots.peek(offset), Err(_) | Ok(Value::Object(_))) {
+            if matches!(slots.peek(offset), Err(_) | Ok(JsValue::Object(_))) {
                 return Ok(None);
             }
         }
@@ -79,7 +79,7 @@ pub(in crate::engine::vm) fn try_complete_primitive(
         }
     };
     if !kind.primitive_arithmetic() {
-        return match NumericStep::start(kind, left, right) {
+        return match NumericStep::start(runtime, kind, left, right) {
             Ok(step) => crate::engine::vm::proxy_get_driver::start_numeric(
                 runtime, execution, id, step, depth,
             )
@@ -88,7 +88,9 @@ pub(in crate::engine::vm) fn try_complete_primitive(
                 .map(|step| Some(NumericProgress::Deferred(step))),
         };
     }
-    let output = match crate::engine::vm::numeric::operation::primitive_output(kind, left, right) {
+    let output = match crate::engine::vm::numeric::operation::primitive_output(
+        runtime, kind, left, right,
+    ) {
         Ok(output) => output,
         Err(error) => {
             return crate::engine::vm::property_driver::throw_error(runtime, realm, error)
@@ -131,7 +133,7 @@ pub(in crate::engine::vm) fn complete(
         let right = execution.slots.pop(&mut frame.window)?;
         (execution.slots.pop(&mut frame.window)?, Some(right))
     };
-    let result = match NumericStep::start(kind, left, right) {
+    let result = match NumericStep::start(runtime, kind, left, right) {
         Ok(step) => {
             crate::engine::vm::proxy_get_driver::start_numeric(runtime, execution, id, step, depth)?
         }

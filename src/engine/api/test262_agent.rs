@@ -642,7 +642,7 @@ impl Runtime {
         realm: ContextId,
         message: &str,
     ) -> Result<Completion, RuntimeError> {
-        Ok(Completion::Throw(self.new_native_error(
+        Ok(Completion::Throw(self.new_native_error_jsvalue(
             realm,
             NativeErrorKind::Type,
             message,

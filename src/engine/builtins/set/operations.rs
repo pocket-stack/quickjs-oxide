@@ -116,7 +116,7 @@ impl SetStep {
                 "undefined"
             };
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     &format!("cannot read property 'size' of {base}"),
@@ -264,7 +264,7 @@ impl SetResume {
         };
         let Some(callable) = callable else {
             return Ok(SetStep::Complete(Completion::Throw(
-                runtime.new_native_error(self.0.realm, NativeErrorKind::Type, "not a function")?,
+                runtime.new_native_error_jsvalue(self.0.realm, NativeErrorKind::Type, "not a function")?,
             )));
         };
         self.0.phase = Phase::NextCall;
@@ -308,7 +308,7 @@ impl SetResume {
                 let name = if has { "has" } else { "keys" };
                 if matches!(value, Value::Undefined) {
                     return Ok(SetStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             &format!(".{name} is undefined"),
@@ -321,7 +321,7 @@ impl SetResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(SetStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             &format!(".{name} is not a function"),
@@ -345,7 +345,7 @@ impl SetResume {
                         "undefined"
                     };
                     return Ok(SetStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             &format!("cannot read property 'next' of {base}"),
@@ -426,7 +426,7 @@ impl SetResume {
         };
         if size.is_nan() {
             return Ok(SetStep::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     ".size is not a number",
@@ -442,7 +442,7 @@ impl SetResume {
         };
         if size < 0 {
             return Ok(SetStep::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Range,
                     ".size must be positive",

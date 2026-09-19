@@ -122,7 +122,7 @@ impl Runtime {
         let target = match result {
             Completion::Return(Value::Object(value)) => value,
             Completion::Return(_) => {
-                return Ok(NativeConversion::Throw(self.new_native_error(
+                return Ok(NativeConversion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "not a TypedArray",
@@ -131,7 +131,7 @@ impl Runtime {
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         let Some(_) = self.typed_array_snapshot_if_branded(&target)? else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
+            return Ok(NativeConversion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "not a TypedArray",

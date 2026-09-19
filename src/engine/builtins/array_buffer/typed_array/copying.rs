@@ -45,7 +45,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.typed_array_state(&source)?;
         if current.out_of_bounds || index < 0 || index >= i64::from(current.length) {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid array index",
@@ -257,7 +257,7 @@ impl TypedWithStep {
         let initial = runtime.typed_array_state(&source)?;
         if initial.out_of_bounds {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "ArrayBuffer is detached",

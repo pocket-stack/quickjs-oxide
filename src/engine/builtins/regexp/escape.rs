@@ -84,7 +84,7 @@ impl Runtime {
             .first()
             .ok_or(RuntimeError::Invariant("RegExp.escape argv was not padded"))?;
         let Value::String(source) = argument else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "not a string",

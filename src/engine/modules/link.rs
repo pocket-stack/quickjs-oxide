@@ -174,7 +174,10 @@ impl LinkResume {
                             cache: frame.module.cache,
                             module: member,
                         };
-                        if runtime.module_record(member)?.link_status != ModuleLinkStatus::Linking {
+                        if !matches!(
+                            runtime.module_record(member)?.link_status,
+                            ModuleLinkStatus::Linking
+                        ) {
                             return Err(RuntimeError::Invariant(
                                 "module link SCC contained a non-linking member",
                             ));
@@ -207,7 +210,10 @@ impl LinkResume {
             }
         }
 
-        if runtime.module_record(frame.module)?.link_status == ModuleLinkStatus::Linking {
+        if matches!(
+            runtime.module_record(frame.module)?.link_status,
+            ModuleLinkStatus::Linking
+        ) {
             let dependency_ancestor = dfs
                 .entries
                 .get(&frame.module.module)
@@ -262,7 +268,7 @@ impl Drop for LinkResume {
             if self
                 .runtime
                 .module_record(member)
-                .is_ok_and(|record| record.link_status == ModuleLinkStatus::Linking)
+                .is_ok_and(|record| matches!(record.link_status, ModuleLinkStatus::Linking))
             {
                 let _ = self
                     .runtime

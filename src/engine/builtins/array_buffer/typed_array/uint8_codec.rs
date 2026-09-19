@@ -122,7 +122,7 @@ impl Runtime {
         };
         let progress = decode_hex(&source, &mut output);
         if progress.invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Syntax,
                 "invalid hex string",
@@ -180,7 +180,7 @@ impl Runtime {
         let progress = self
             .with_buffer_range_mut(&access, start, length, |target| decode_hex(&source, target))?;
         if progress.invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Syntax,
                 "invalid hex string",
@@ -227,7 +227,7 @@ impl Runtime {
             "Uint8Array.toHex output length overflowed usize",
         ))?;
         if output_length > JsString::MAX_LEN {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "output too large",
@@ -369,7 +369,7 @@ impl Runtime {
         };
         let progress = decode_base64(&source, &mut output, alphabet, last_chunk);
         if progress.invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Syntax,
                 "invalid base64 string",
@@ -402,7 +402,7 @@ impl Runtime {
             decode_base64(&source, target, alphabet, last_chunk)
         })?;
         if progress.invalid {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Syntax,
                 "invalid base64 string",
@@ -431,7 +431,7 @@ impl Runtime {
                 "Uint8Array.toBase64 output length overflowed usize",
             ))?;
         if output_length > JsString::MAX_LEN {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "output too large",

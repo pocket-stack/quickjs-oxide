@@ -101,7 +101,7 @@ pub(super) fn error(
     message: &'static str,
 ) -> Result<PromiseStep, RuntimeError> {
     Ok(PromiseStep::Complete(Completion::Throw(
-        runtime.new_native_error(
+        runtime.new_native_error_jsvalue(
             realm,
             crate::engine::api::error::NativeErrorKind::Type,
             message,

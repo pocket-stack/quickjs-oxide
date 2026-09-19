@@ -39,7 +39,11 @@ impl Runtime {
             closure_slots,
         )?;
         let metadata = entry.executable.metadata;
-        let module_link = metadata.is_module && entry.cold.input.this_value == Value::Bool(true);
+        let module_link = metadata.is_module
+            && matches!(
+                entry.cold.input.this_value,
+                crate::engine::value::JsValue::Bool(true)
+            );
         if metadata.function_kind == FunctionKind::Async && !module_link {
             return self.start_async_bytecode_callable(caller_realm, entry);
         }

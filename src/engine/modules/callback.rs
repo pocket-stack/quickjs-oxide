@@ -52,6 +52,14 @@ enum Mode {
     },
     DynamicSettled,
 }
+
+/// Balance the boundary conversion's producer edge exactly once. `None` after
+/// the first call marks the edge as already transferred or released.
+fn release_conversion_probe(runtime: &Runtime, probe: &mut Option<RawValue>) {
+    if let Some(probe) = probe.take() {
+        runtime.release_converted_value_edge(&probe);
+    }
+}
 pub(crate) struct CallbackResume {
     runtime: Runtime,
     realm: ContextId,
@@ -232,10 +240,20 @@ impl CallbackStep {
     ) -> Result<Self, RuntimeError> {
         runtime.validate_value_domain(&reason, "async module rejection")?;
         let raw = runtime.raw_property_value(&reason)?;
+        // Clone duplicates only the handle; the probe keeps the producer edge
+        // accountable until the first error record stores the value.
+        let raw_probe = raw.clone();
+        let root = match runtime.root_module(module) {
+            Ok(root) => root,
+            Err(error) => {
+                runtime.release_converted_value_edge(&raw_probe);
+                return Err(error);
+            }
+        };
         Box::new(CallbackResume {
             runtime: runtime.clone(),
             realm,
-            root: runtime.root_module(module)?,
+            root,
             mode: Mode::Reject {
                 reason,
                 raw,
@@ -361,16 +379,28 @@ impl CallbackResume {
                 pending,
                 parents,
             } => {
+                // The conversion minted at `CallbackStep::reject` carries one
+                // producer edge. The first published record retains its own
+                // copy edge, after which the producer edge is released once;
+                // every exit before that publication releases it immediately.
+                let mut conversion_probe = Some(raw.clone());
                 while let Some(id) = pending.pop() {
                     let current = RawModuleRef {
                         cache: self.root.raw.cache,
                         module: id,
                     };
-                    let record = self.runtime.module_record(current)?;
+                    let record = match self.runtime.module_record(current) {
+                        Ok(record) => record,
+                        Err(error) => {
+                            release_conversion_probe(&self.runtime, &mut conversion_probe);
+                            return Err(error);
+                        }
+                    };
                     match record.evaluation {
                         ModuleEvaluationState::Errored(_) => continue,
                         ModuleEvaluationState::EvaluatingAsync => {}
                         _ => {
+                            release_conversion_probe(&self.runtime, &mut conversion_probe);
                             return Err(RuntimeError::Invariant(
                                 "async module rejection reached an inactive ancestor",
                             ));
@@ -380,7 +410,14 @@ impl CallbackResume {
                     let mut state = self.runtime.0.state.borrow_mut();
                     let retained_atoms = match raw {
                         RawValue::Symbol(atom) => {
-                            Runtime::retain_module_atoms(&mut state, vec![*atom])?
+                            match Runtime::retain_module_atoms(&mut state, vec![*atom]) {
+                                Ok(atoms) => atoms,
+                                Err(error) => {
+                                    drop(state);
+                                    release_conversion_probe(&self.runtime, &mut conversion_probe);
+                                    return Err(error);
+                                }
+                            }
                         }
                         _ => Vec::new(),
                     };
@@ -388,10 +425,16 @@ impl CallbackResume {
                         .heap
                         .publish_loaded_module_async_error(current, raw.clone())
                     {
-                        state.release_atoms(retained_atoms)?;
+                        let release_result = state.release_atom_indices(retained_atoms);
+                        drop(state);
+                        release_conversion_probe(&self.runtime, &mut conversion_probe);
+                        release_result?;
                         return Err(error.into());
                     }
                     drop(state);
+                    // The record retained its own copy edge; the producer
+                    // edge is no longer needed.
+                    release_conversion_probe(&self.runtime, &mut conversion_probe);
                     // Publish this node, settle it, then visit parents in reference order.
                     if let Some(callable) = self
                         .runtime
@@ -406,6 +449,9 @@ impl CallbackResume {
                     }
                     pending.extend(next_parents.into_iter().rev());
                 }
+                // Every ancestor was already errored: no record consumed the
+                // value, so its producer edge dies with this walk.
+                release_conversion_probe(&self.runtime, &mut conversion_probe);
                 Ok(CallbackStep::Complete(Completion::Return(Value::Undefined)))
             }
         }

@@ -137,7 +137,7 @@ impl CreateResume {
         _reply: Completion,
     ) -> Result<CreateStep, RuntimeError> {
         Ok(CreateStep::Complete(Completion::Throw(
-            runtime.new_native_error(self.0.realm, NativeErrorKind::Range, "must be positive")?,
+            runtime.new_native_error_jsvalue(self.0.realm, NativeErrorKind::Range, "must be positive")?,
         )))
     }
     pub(crate) fn resume(

@@ -141,7 +141,7 @@ impl IterationStep {
             };
             let Some(callback) = callback else {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                    runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
                 )));
             };
             Some(callback)
@@ -167,7 +167,7 @@ impl IterationStep {
                 "undefined"
             };
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     &format!("cannot read property 'Symbol.iterator' of {base}"),
@@ -220,7 +220,7 @@ impl IterationResume {
         if !matches!(self.0.kind, IterationKind::Entries) && self.0.index >= self.0.limit {
             return Ok(IterationStep::Close {
                 iterator: self.iterator()?,
-                completion: Completion::Throw(runtime.new_native_error(
+                completion: Completion::Throw(runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     "too many elements",
@@ -256,7 +256,7 @@ impl IterationResume {
         match self.0.kind {
             IterationKind::Entries => {
                 let Value::Object(item) = value else {
-                    let value = runtime.new_native_error(
+                    let value = runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "not an object",
@@ -306,7 +306,7 @@ impl IterationResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(IterationStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "value is not iterable",
@@ -324,7 +324,7 @@ impl IterationResume {
             Phase::Iterator => {
                 let Value::Object(iterator) = value else {
                     return Ok(IterationStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not an object",

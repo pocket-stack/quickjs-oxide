@@ -1,9 +1,10 @@
 //! Promote a location-cache hit without draining runtime cleanup or invoking JS.
+use crate::engine::atom::AtomIdx;
 use super::{LinkedNativeSelection, linked_field_atom};
 use crate::engine::api::{runtime::Runtime, runtime_error::RuntimeError};
 use crate::engine::code::runtime::PublishedFunctionSnapshot;
 use crate::engine::heap::{ObjectPayload, RawValue, SlotReleaseReadiness};
-use crate::engine::value::Value;
+use crate::engine::value::JsValue;
 
 impl Runtime {
     /// A miss only records a location and leaves the canonical read untouched.
@@ -11,13 +12,13 @@ impl Runtime {
     /// it never caches a value or outlives the result's ordinary slot owner.
     pub(crate) fn try_property_ic_read_owned(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &PublishedFunctionSnapshot,
         pc: usize,
         key_index: u32,
         keep_receiver: bool,
         native: &mut Option<LinkedNativeSelection>,
-    ) -> Result<Option<Value>, RuntimeError> {
+    ) -> Result<Option<JsValue>, RuntimeError> {
         let Some(atom) = linked_field_atom(self, executable, key_index) else {
             return Ok(None);
         };
@@ -34,8 +35,7 @@ impl Runtime {
             return Ok(None);
         }
         let receiver = match base {
-            Value::Object(object) if object.belongs_to(self) => object.object_id(),
-            Value::Object(_) => return Ok(None),
+            JsValue::Object(object) => *object,
             _ => {
                 cache.miss(
                     &state.heap,
@@ -90,12 +90,13 @@ impl Runtime {
         } else {
             None
         };
-        // String/BigInt clone their backing owner; Object/Symbol retain checks
-        // overflow before changing the count. No public value conversion below
-        // can fail after the sentinel exclusion above.
+        // Every heap-backed kind retains one new edge; the internal-value
+        // conversion below cannot fail after the sentinel exclusion above.
         state.retain_raw_root(&raw)?;
         drop(state);
-        let value = self.take_owned_raw_value(raw)?;
+        let value = JsValue::from_raw(raw).ok_or(RuntimeError::Invariant(
+            "internal value sentinel occupied a cached property slot",
+        ))?;
         *native = selected.map(|(function, data)| LinkedNativeSelection {
             runtime: self.clone(),
             function,
@@ -105,32 +106,134 @@ impl Runtime {
         crate::engine::api::profiling::record_owned_execution_event("property_ic.hit");
         Ok(Some(value))
     }
+
+    /// Trusted shared-borrow data-property read.
+    ///
+    /// Covers the location-cache hit for a live receiver without a mutable
+    /// state borrow or fallible plumbing. Symbols need an atom-table retain
+    /// (S1b) and every non-data or non-cached case declines with `None`, so the
+    /// caller keeps its canonical `try_property_ic_read_owned` fallback. A
+    /// declined read claims no owner.
+    #[inline]
+    pub(crate) fn property_ic_read_fast(
+        &self,
+        base: &JsValue,
+        executable: &PublishedFunctionSnapshot,
+        pc: usize,
+        key_index: u32,
+        keep_receiver: bool,
+        native: &mut Option<LinkedNativeSelection>,
+    ) -> Option<JsValue> {
+        let atom = linked_field_atom(self, executable, key_index)?;
+        let cache = executable.property_read_ic.site(pc)?;
+        if !keep_receiver && self.0.deferred_references.has_pending() {
+            return None;
+        }
+        let state = self.0.state.try_borrow().ok()?;
+        if !keep_receiver && state.heap.has_pending_zero_cleanup() {
+            return None;
+        }
+        let receiver = match base {
+            JsValue::Object(object) => *object,
+            _ => {
+                cache.miss(
+                    &state.heap,
+                    &state.atoms,
+                    self.domain_id(),
+                    executable.realm,
+                    None,
+                    atom,
+                );
+                return None;
+            }
+        };
+        if !keep_receiver
+            && state.heap.slot_object_release_readiness_fast(receiver)
+                != SlotReleaseReadiness::Ready
+        {
+            return None;
+        }
+        let Some(raw) = cache.read(&state.heap, self.domain_id(), executable.realm, receiver)
+        else {
+            cache.miss(
+                &state.heap,
+                &state.atoms,
+                self.domain_id(),
+                executable.realm,
+                Some(receiver),
+                atom,
+            );
+            return None;
+        };
+        match raw {
+            RawValue::Object(function) => {
+                let selected = if keep_receiver {
+                    let object = state.heap.object_fast(*function);
+                    match &object.payload {
+                        ObjectPayload::NativeFunction { data, .. } => {
+                            data.realm.and_then(|realm| {
+                                (data.operation().is_some() && state.heap.context(realm).is_ok())
+                                    .then_some((*function, *data))
+                            })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                state.heap.retain_object_fast(*function);
+                *native = selected.map(|(function, data)| LinkedNativeSelection {
+                    runtime: self.clone(),
+                    function,
+                    data,
+                });
+                Some(JsValue::Object(*function))
+            }
+            RawValue::String(id) => {
+                state.heap.retain_string_shared(*id).ok()?;
+                Some(JsValue::String(*id))
+            }
+            RawValue::BigInt(id) => {
+                state.heap.retain_bigint_shared(*id).ok()?;
+                Some(JsValue::BigInt(*id))
+            }
+            RawValue::Symbol(index) => {
+                state.atoms.retain_index_shared(*index).ok()?;
+                Some(JsValue::Symbol(*index))
+            }
+            RawValue::Undefined => Some(JsValue::Undefined),
+            RawValue::Null => Some(JsValue::Null),
+            RawValue::Bool(value) => Some(JsValue::Bool(*value)),
+            RawValue::Int(value) => Some(JsValue::Int(*value)),
+            RawValue::Float(value) => Some(JsValue::Float(*value)),
+            RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception => None,
+        }
+    }
 }
 
 impl Runtime {
     pub(crate) fn try_property_ic_write_owned(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &PublishedFunctionSnapshot,
         pc: usize,
         key: u32,
-        value: &Value,
+        value: &JsValue,
     ) -> Result<bool, RuntimeError> {
         let Some(atom) = linked_field_atom(self, executable, key) else {
             return Ok(false);
         };
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return Ok(false);
         };
-        if !object.belongs_to(self) {
-            return Ok(false);
-        }
         let Some(cache) = executable.property_read_ic.write_site(pc) else {
             return Ok(false);
         };
-        let raw = self.raw_property_value(value)?;
+        // The borrowed value already carries its edges; the stored copy is
+        // retained transactionally below, so no producer edge is created.
+        let raw = value.as_raw();
         let mut state = self.0.state.borrow_mut();
-        let id = object.object_id();
+        let id = *object;
         let slot = match cache.slot(&state.heap, self.domain_id(), executable.realm, id) {
             Some(slot) => slot,
             None => {
@@ -144,6 +247,8 @@ impl Runtime {
                 );
                 let Some(slot) = cache.slot(&state.heap, self.domain_id(), executable.realm, id)
                 else {
+                    drop(state);
+                    self.release_converted_value_edge(&conversion_probe);
                     return Ok(false);
                 };
                 slot
@@ -151,7 +256,13 @@ impl Runtime {
         };
         // Input owners remain rooted; retain the new value before releasing the
         // old edge. The caller has ended RunSlots and published the current PC.
-        state.replace_property_slot(id, slot, crate::engine::heap::PropertySlot::Data(raw))?;
+        let replaced =
+            state.replace_property_slot(id, slot, crate::engine::heap::PropertySlot::Data(raw));
+        drop(state);
+        // The slot retained its own copy edge on success; a rejected
+        // replacement kept nothing. Balance the producer edge either way.
+        self.release_converted_value_edge(&conversion_probe);
+        replaced?;
         #[cfg(feature = "profiling")]
         crate::engine::api::profiling::record_owned_execution_event("property_write_ic.hit");
         Ok(true)
@@ -159,32 +270,48 @@ impl Runtime {
 
     pub(crate) fn try_dense_array_write_owned(
         &self,
-        base: &Value,
+        base: &JsValue,
         index: u32,
-        value: &Value,
+        value: &JsValue,
     ) -> Result<bool, RuntimeError> {
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return Ok(false);
         };
-        if !object.belongs_to(self) {
-            return Ok(false);
-        }
-        let raw = self.raw_property_value(value)?;
+        // The borrowed value already carries its edges; the stored copy is
+        // retained transactionally below, so no producer edge is created.
+        let raw = value.as_raw();
         let mut state = self.0.state.borrow_mut();
-        let data = state.heap.object(object.object_id())?;
-        if data.kind != crate::engine::heap::ObjectKind::Array
+        let data = match state.heap.object(*object) {
+            Ok(data) => data,
+            Err(error) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error.into());
+            }
+        };
+        if !matches!(data.kind, crate::engine::heap::ObjectKind::Array)
             || data.dense_array_value(index).is_none()
         {
             return Ok(false);
         }
-        let atoms = state.retain_raw_value_atoms([&raw])?;
-        match state
-            .heap
-            .replace_array_dense_value(object.object_id(), index, raw)
-        {
-            Ok(cleanup) => state.apply_cleanup(cleanup)?,
+        let atoms = match state.retain_raw_value_atoms([&raw]) {
+            Ok(atoms) => atoms,
             Err(error) => {
-                state.release_atoms(atoms)?;
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error);
+            }
+        };
+        let appended = state
+            .heap
+            .replace_array_dense_value(*object, index, raw);
+        match appended {
+            Ok(cleanup) => {
+                state.apply_cleanup(cleanup)?;
+            }
+            Err(error) => {
+                let released = state.release_atoms(atoms);
+                released?;
                 return Err(error.into());
             }
         }
@@ -193,31 +320,38 @@ impl Runtime {
 
     pub(crate) fn try_define_field_owned(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &PublishedFunctionSnapshot,
         key: u32,
-        value: &Value,
+        value: &JsValue,
     ) -> Result<bool, RuntimeError> {
         let Some(atom) = linked_field_atom(self, executable, key) else {
             return Ok(false);
         };
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return Ok(false);
         };
-        if !object.belongs_to(self) {
-            return Ok(false);
-        }
-        let raw = self.raw_property_value(value)?;
+        // The borrowed value already carries its edges; the stored copy is
+        // retained transactionally below, so no producer edge is created.
+        let raw = value.as_raw();
         let mut state = self.0.state.borrow_mut();
-        let data = state.heap.object(object.object_id())?;
-        if !super::is_ordinary(data)
-            || !data.extensible
-            || state.heap.shape(data.shape)?.find(atom).is_some()
-        {
+        let data = match state.heap.object(*object) {
+            Ok(data) => data,
+            Err(error) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error.into());
+            }
+        };
+        let shape_has_atom = state
+            .heap
+            .shape(data.shape)
+            .map(|shape| shape.find(AtomIdx::from_raw(atom.raw())).is_some())?;
+        if !super::is_ordinary(data) || !data.extensible || shape_has_atom {
             return Ok(false);
         }
         state.store_selected_property_slot(
-            object.object_id(),
+            *object,
             atom,
             crate::engine::object::shape::PropertyFlags::data(true, true, true),
             crate::engine::heap::PropertySlot::Data(raw),
@@ -228,23 +362,20 @@ impl Runtime {
 
     pub(crate) fn try_delete_own_data(
         &self,
-        base: &Value,
+        base: &JsValue,
         key: &crate::engine::object::PropertyKey,
     ) -> Result<Option<bool>, RuntimeError> {
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return Ok(None);
         };
-        if !object.belongs_to(self) {
-            return Ok(None);
-        }
         {
             let state = self.0.state.borrow();
-            let data = state.heap.object(object.object_id())?;
+            let data = state.heap.object(*object)?;
             if !super::is_ordinary(data) {
                 return Ok(None);
             }
             let shape = state.heap.shape(data.shape)?;
-            let Some(slot) = shape.find(key.atom()) else {
+            let Some(slot) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                 return Ok(Some(true));
             };
             if !shape.entries()[slot as usize].flags.configurable
@@ -256,57 +387,52 @@ impl Runtime {
                 return Ok(None);
             }
         }
-        self.delete_property(object, key).map(Some)
+        let object = crate::engine::object::ObjectRef::from_borrowed_handle(self.clone(), *object)?;
+        self.delete_property(&object, key).map(Some)
     }
 }
 
 impl Runtime {
-    pub(crate) fn try_dense_array_kept_read(&self, base: &Value, index: u32) -> Option<Value> {
-        let Value::Object(object) = base else {
+    pub(crate) fn try_dense_array_kept_read(&self, base: &JsValue, index: u32) -> Option<JsValue> {
+        let JsValue::Object(object) = base else {
             return None;
         };
-        if !object.belongs_to(self) {
-            return None;
-        }
         let state = self.0.state.borrow();
-        let data = state.heap.object(object.object_id()).ok()?;
-        if data.kind != crate::engine::heap::ObjectKind::Array {
+        let data = state.heap.object(*object).ok()?;
+        if !matches!(data.kind, crate::engine::heap::ObjectKind::Array) {
             return None;
         }
-        super::immediate_value(data.dense_array_value(index)?)
+        super::immediate_value_jsvalue(data.dense_array_value(index)?)
     }
 }
 
 impl Runtime {
     pub(crate) fn try_property_ic_write_scalar(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &PublishedFunctionSnapshot,
         pc: usize,
         key: u32,
-        value: &Value,
+        value: &JsValue,
     ) -> Result<bool, RuntimeError> {
         if !matches!(
             value,
-            Value::Undefined | Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
-        ) || self.slot_value_release_readiness(base)? != SlotReleaseReadiness::Ready
+            JsValue::Undefined | JsValue::Null | JsValue::Bool(_) | JsValue::Int(_) | JsValue::Float(_)
+        ) || self.slot_value_release_readiness_jsvalue(base)? != SlotReleaseReadiness::Ready
         {
             return Ok(false);
         }
         let Some(atom) = linked_field_atom(self, executable, key) else {
             return Ok(false);
         };
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return Ok(false);
         };
-        if !object.belongs_to(self) {
-            return Ok(false);
-        }
         let Some(cache) = executable.property_read_ic.write_site(pc) else {
             return Ok(false);
         };
         let mut state = self.0.state.borrow_mut();
-        let id = object.object_id();
+        let id = *object;
         let slot = match cache.slot(&state.heap, self.domain_id(), executable.realm, id) {
             Some(slot) => slot,
             None => {
@@ -332,7 +458,9 @@ impl Runtime {
         if super::immediate_value(old).is_none() {
             return Ok(false);
         }
-        let raw = self.raw_property_value(value)?;
+        // `value` was matched to a scalar above, so this id copy allocates
+        // nothing and never takes the state borrow the caller still holds.
+        let raw = value.as_raw();
         state.replace_property_slot(id, slot, crate::engine::heap::PropertySlot::Data(raw))?;
         #[cfg(feature = "profiling")]
         crate::engine::api::profiling::record_owned_execution_event("property_write_ic.hit");
@@ -343,14 +471,14 @@ impl Runtime {
 impl Runtime {
     pub(crate) fn try_dense_array_write_scalar(
         &self,
-        base: &Value,
+        base: &JsValue,
         index: u32,
-        value: &Value,
+        value: &JsValue,
     ) -> Result<bool, RuntimeError> {
         if !matches!(
             value,
-            Value::Undefined | Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
-        ) || self.slot_value_release_readiness(base)? != SlotReleaseReadiness::Ready
+            JsValue::Undefined | JsValue::Null | JsValue::Bool(_) | JsValue::Int(_) | JsValue::Float(_)
+        ) || self.slot_value_release_readiness_jsvalue(base)? != SlotReleaseReadiness::Ready
         {
             return Ok(false);
         }

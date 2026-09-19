@@ -10,6 +10,9 @@ use crate::engine::value::bigint::JsBigInt;
 mod primitive;
 pub use primitive::*;
 
+pub(crate) mod js_value;
+pub(crate) use js_value::JsValue;
+
 #[derive(Clone, Debug)]
 pub enum Value {
     Undefined,

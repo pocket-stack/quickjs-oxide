@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::builtins::native::NativeCProto;
 use crate::engine::heap::{AutoInitProperty, PropertySlot};
 use crate::engine::object::shape::PropertyFlags;
@@ -20,9 +21,9 @@ fn string_split_is_a_pinned_generic_autoinit_between_search_and_substring() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(prototype.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let search = usize::try_from(shape.find(search_key.atom()).unwrap()).unwrap();
-        let split = usize::try_from(shape.find(split_key.atom()).unwrap()).unwrap();
-        let substring = usize::try_from(shape.find(substring.atom()).unwrap()).unwrap();
+        let search = usize::try_from(shape.find(AtomIdx::from_raw(search_key.atom().raw())).unwrap()).unwrap();
+        let split = usize::try_from(shape.find(AtomIdx::from_raw(split_key.atom().raw())).unwrap()).unwrap();
+        let substring = usize::try_from(shape.find(AtomIdx::from_raw(substring.atom().raw())).unwrap()).unwrap();
         assert_eq!(split, search + 1);
         assert_eq!(substring, split + 1);
         assert_eq!(

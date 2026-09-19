@@ -1074,15 +1074,17 @@ fn referenced_failed_parsing_identity_is_aborted_without_quickjs_aba() {
         .compile_module_with_filename("globalThis.__parseCacheSafeRetry = 42;", "outer.js")
         .unwrap();
     assert_eq!(retry.raw.module.0, 3);
-    assert_eq!(
-        runtime
-            .0
-            .state
-            .borrow()
-            .heap
-            .first_loaded_module(context.realm, &JsString::from_static("outer.js"))
-            .unwrap(),
-        Some(retry.raw)
+    assert!(
+        matches!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .first_loaded_module(context.realm, &JsString::from_static("outer.js"))
+                .unwrap(),
+            Some(found) if found.cache == retry.raw.cache && found.module == retry.raw.module
+        )
     );
     assert_eq!(
         context.link_module(&probe),

@@ -85,7 +85,7 @@ impl RegExpMatchStep {
         };
         let Value::Object(regexp) = this_value else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         Ok(Self::make_primitive(
@@ -272,7 +272,7 @@ impl RegExpMatchResume {
                 let empty = matched.is_empty();
                 let Some(next) = state.count.checked_add(1) else {
                     return Ok(RegExpMatchStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Range,
                             "invalid array length",

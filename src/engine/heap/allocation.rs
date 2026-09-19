@@ -129,6 +129,34 @@ impl Heap {
         Ok(id)
     }
 
+    /// Allocate and publish a string node owning one `JsString` payload.
+    ///
+    /// The caller owns one returned string reference and must eventually call
+    /// [`Heap::release_string`].  String nodes have no outgoing heap edges, so
+    /// publication cannot fail after the slot is reserved.
+    pub fn allocate_string(&mut self, value: JsString) -> Result<StringId, HeapError> {
+        let (index, generation) = self.reserve(HeapNodeKind::String)?;
+        if let Err(error) = self.publish(index, NodeData::String(value)) {
+            self.abort_initializing(index)?;
+            return Err(error);
+        }
+        Ok(StringId { index, generation })
+    }
+
+    /// Allocate and publish a BigInt node owning one `JsBigInt` payload.
+    ///
+    /// The caller owns one returned BigInt reference and must eventually call
+    /// [`Heap::release_bigint`].  BigInt nodes have no outgoing heap edges, so
+    /// publication cannot fail after the slot is reserved.
+    pub fn allocate_bigint(&mut self, value: JsBigInt) -> Result<BigIntId, HeapError> {
+        let (index, generation) = self.reserve(HeapNodeKind::BigInt)?;
+        if let Err(error) = self.publish(index, NodeData::BigInt(value)) {
+            self.abort_initializing(index)?;
+            return Err(error);
+        }
+        Ok(BigIntId { index, generation })
+    }
+
     /// Allocate and publish a realm/context node, retaining all realm roots.
     /// Symbol atoms in `intrinsics` transfer to the node on success.
     pub fn allocate_context(&mut self, context: ContextData) -> Result<ContextId, HeapError> {

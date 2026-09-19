@@ -1,7 +1,7 @@
 use super::*;
 
 /// ECMAScript-visible state of one genuine Promise object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 pub enum PromiseState {
     Pending,
     Fulfilled,
@@ -9,7 +9,7 @@ pub enum PromiseState {
 }
 
 /// Which settlement path owns a Promise reaction record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum PromiseReactionKind {
     Fulfill,
     Reject,
@@ -21,14 +21,14 @@ pub enum PromiseReactionKind {
 /// reaction keeps both callables alive until it is detached or its owning
 /// Promise is finalized. The result Promise itself is returned synchronously
 /// from `then`; QuickJS does not retain it as a separate reaction edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct PromiseCapabilityData {
     pub resolve: ObjectId,
     pub reject: ObjectId,
 }
 
 /// One `PerformPromiseThen` reaction retained by a pending Promise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct PromiseReaction {
     pub kind: PromiseReactionKind,
     pub handler: Option<ObjectId>,
@@ -42,7 +42,7 @@ pub struct PromiseReaction {
 /// `result` is `undefined` while pending.  Reaction vectors are kept separate
 /// to preserve QuickJS's fulfill/reject list order, while each record also
 /// carries its kind so queued jobs remain self-describing after detachment.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PromiseData {
     pub state: PromiseState,
     pub result: RawValue,
@@ -52,7 +52,7 @@ pub struct PromiseData {
 }
 
 /// Mutable edge capture owned by an internal NewPromiseCapability executor.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct PromiseCapabilityExecutorData {
     pub resolve: Option<RawValue>,
     pub reject: Option<RawValue>,

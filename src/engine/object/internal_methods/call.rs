@@ -55,7 +55,7 @@ struct Search {
 
 fn overflow(runtime: &Runtime, realm: ContextId) -> Result<ProxyCallStep, RuntimeError> {
     Ok(ProxyCallStep::Complete(Completion::Throw(
-        runtime.new_native_error(realm, NativeErrorKind::Internal, "stack overflow")?,
+        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Internal, "stack overflow")?,
     )))
 }
 
@@ -138,7 +138,7 @@ impl ProxyCallResume {
         // Pinned callability validation occurs after the observable trap Get.
         if !rooted.data.is_callable {
             return Ok(ProxyCallStep::Complete(Completion::Throw(
-                runtime.new_native_error(search.realm, NativeErrorKind::Type, "not a function")?,
+                runtime.new_native_error_jsvalue(search.realm, NativeErrorKind::Type, "not a function")?,
             )));
         }
         let (target, receiver, arguments) = if matches!(method, Value::Undefined | Value::Null) {
@@ -158,7 +158,7 @@ impl ProxyCallResume {
                 Ok(method) => method,
                 Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Type => {
                     return Ok(ProxyCallStep::Complete(Completion::Throw(
-                        runtime.new_native_error_from_error(
+                        runtime.new_native_error_from_error_jsvalue(
                             search.realm,
                             NativeErrorKind::Type,
                             &error,

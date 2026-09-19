@@ -80,7 +80,9 @@ fn dependency_evaluation_exception_is_cached_on_every_active_ancestor() {
     let first = module_evaluation_promise(&mut context, &module);
     let first_snapshot = promise_snapshot(&runtime, &first);
     assert_eq!(first_snapshot.state, PromiseState::Rejected);
-    assert_eq!(first_snapshot.result, RawValue::Int(42));
+    assert!(
+        matches!(first_snapshot.result, RawValue::Int(42))
+    );
     let second = module_evaluation_promise(&mut context, &module);
     assert_eq!(first.object_id(), second.object_id());
     assert_script_true(
@@ -123,7 +125,9 @@ fn cyclic_evaluation_exception_is_cached_on_the_complete_active_scc() {
     let first = module_evaluation_promise(&mut context, &module);
     let first_snapshot = promise_snapshot(&runtime, &first);
     assert_eq!(first_snapshot.state, PromiseState::Rejected);
-    assert_eq!(first_snapshot.result, RawValue::Int(42));
+    assert!(
+        matches!(first_snapshot.result, RawValue::Int(42))
+    );
     let second = module_evaluation_promise(&mut context, &module);
     assert_eq!(first.object_id(), second.object_id());
     for _ in 0..2 {

@@ -14,7 +14,7 @@ use super::match_protocol::advance_string_index;
 use crate::engine::api::error::NativeErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 use crate::engine::builtins::native::NativeFunctionId;
 
 use super::super::replacement::{
@@ -78,7 +78,7 @@ impl Runtime {
             return Ok(None);
         }
         let shape = state.heap.shape(object.shape)?;
-        let Some(last_index_slot) = shape.find(last_index.atom()) else {
+        let Some(last_index_slot) = shape.find(AtomIdx::from_raw(last_index.atom().raw())) else {
             return Ok(None);
         };
         let last_index_slot = usize::try_from(last_index_slot)
@@ -170,14 +170,14 @@ impl Runtime {
                 ) {
                     Ok(value) => value,
                     Err(ExecError::OutOfMemory) => {
-                        return Ok(Completion::Throw(self.new_native_error(
+                        return Ok(Completion::Throw(self.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             "out of memory in regexp execution",
                         )?));
                     }
                     Err(ExecError::Interrupted) => {
-                        return Ok(Completion::Throw(self.new_native_error(
+                        return Ok(Completion::Throw(self.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             "interrupted",
@@ -326,7 +326,7 @@ fn raw_regexp_property_slot(
             return Ok(None);
         }
         let shape = heap.shape(object.shape)?;
-        if let Some(index) = shape.find(atom) {
+        if let Some(index) = shape.find(AtomIdx::from_raw(atom.raw())) {
             let index = usize::try_from(index)
                 .map_err(|_| RuntimeError::Invariant("shape index does not fit usize"))?;
             return object
@@ -495,7 +495,7 @@ impl RegExpReplaceStep {
         };
         let Value::Object(regexp) = regexp else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         let mut input = arguments
@@ -614,7 +614,7 @@ impl RegExpReplaceResume {
         message: &str,
     ) -> Result<ReplaceAction, RuntimeError> {
         Ok(ReplaceAction::Complete(Completion::Throw(
-            runtime.new_native_error(self.0.realm, kind, message)?,
+            runtime.new_native_error_jsvalue(self.0.realm, kind, message)?,
         )))
     }
     fn primitive(

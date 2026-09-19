@@ -2,7 +2,7 @@ use super::*;
 
 /// Non-owning unresolved-global location. Every use checks realm, atom and the
 /// generational shape identity/revision; it never retains an old property value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct GlobalLocation {
     pub realm: ContextId,
     pub atom: crate::engine::atom::Atom,
@@ -19,7 +19,7 @@ pub(super) struct GlobalLocation {
 /// current value.  The root returned by [`Heap::allocate_var_ref`] is intended
 /// to be the active frame's ownership.  Function-object closure slots retain
 /// the same identity and therefore keep the cell alive after frame teardown.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct VarRefData {
     pub value: RawValue,
 

@@ -122,6 +122,65 @@ impl fmt::Debug for FunctionBytecodeId {
     }
 }
 
+/// Stable identity of a string node until that slot is reclaimed.
+///
+/// String nodes own one `Rc<StringRepr>` payload (the public `JsString`) and
+/// have no outgoing heap edges.  A value slot holding a `StringId` owns one
+/// edge to this node; reading the payload clones the inner `Rc`, so string
+/// identity (`ptr_eq`) semantics survive arena indirection unchanged.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StringId {
+    pub(in crate::engine::heap) index: u32,
+    pub(in crate::engine::heap) generation: u32,
+}
+
+impl StringId {
+    /// Arena index, intended for diagnostics and serialized debug traces only.
+    #[must_use]
+    #[cfg(test)]
+    pub const fn debug_index(self) -> u32 {
+        self.index
+    }
+
+    /// Slot generation, intended for diagnostics and serialized debug traces.
+    #[must_use]
+    #[cfg(test)]
+    pub const fn debug_generation(self) -> u32 {
+        self.generation
+    }
+}
+
+impl fmt::Debug for StringId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StringId")
+            .field("index", &self.index)
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
+/// Stable identity of a BigInt node until that slot is reclaimed.
+///
+/// BigInt nodes own one `JsBigInt` payload and have no outgoing heap edges.
+/// As with strings, value slots holding a `BigIntId` own one edge, and reading
+/// the payload hands out a clone of the payload itself.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BigIntId {
+    pub(in crate::engine::heap) index: u32,
+    pub(in crate::engine::heap) generation: u32,
+}
+
+impl fmt::Debug for BigIntId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BigIntId")
+            .field("index", &self.index)
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
 /// Runtime heap node category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HeapNodeKind {
@@ -130,6 +189,8 @@ pub enum HeapNodeKind {
     VarRef,
     Context,
     FunctionBytecode,
+    String,
+    BigInt,
 }
 
 /// Failure of a checked heap ownership operation.
@@ -193,24 +254,30 @@ impl Error for HeapError {}
 
 /// Heap-internal value payload.
 ///
-/// `Clone` duplicates raw payload bytes and primitive backing stores; it does
-/// **not** retain an object edge.  Owned clones may enter the heap only through
-/// checked methods such as [`Heap::allocate_object`] and
+/// `Clone` copies the raw payload and duplicates nothing: heap-backed kinds
+/// are generational handles (string/BigInt nodes, unbranded atom indices,
+/// object slots), so an owned clone enters the heap only through checked
+/// methods such as [`Heap::allocate_object`] and
 /// [`Heap::replace_object_slot`], which retain their edges transactionally.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// There is deliberately no `PartialEq`: handle equality is *not* content
+/// equality for strings and BigInts.  Key comparison goes through
+/// `value::collection_key` (id fast path plus content fallback with heap
+/// access); identity comparison uses explicit handle equality.
+#[derive(Clone, Debug)]
 pub enum RawValue {
     Undefined,
     Null,
     Bool(bool),
     Int(i32),
     Float(f64),
-    BigInt(JsBigInt),
-    String(JsString),
-    Symbol(Atom),
+    BigInt(BigIntId),
+    String(StringId),
+    Symbol(AtomIdx),
     /// Heap-internal class-private identity. This owns one private-atom
     /// reference exactly like `Symbol`, but it is not an ECMAScript Value and
     /// must never cross `Runtime::root_raw_value` or enter ordinary storage.
-    Private(Atom),
+    Private(AtomIdx),
     Object(ObjectId),
     Uninitialized,
     #[cfg_attr(
@@ -221,6 +288,35 @@ pub enum RawValue {
         )
     )]
     Exception,
+}
+
+const _: () = assert!(std::mem::size_of::<RawValue>() <= 16);
+
+impl RawValue {
+    /// The one producer-owned heap edge carried by a value produced at a
+    /// boundary conversion (`Runtime::raw_property_value` and friends):
+    /// a freshly allocated string or BigInt node.
+    ///
+    /// Transactional store paths retain their own edge for the stored copy,
+    /// so the caller releases this producer edge once the store has
+    /// succeeded (or immediately when the value is never stored).
+    #[must_use]
+    pub(crate) fn conversion_node_edge(&self) -> Option<RawId> {
+        match self {
+            Self::String(id) => Some(RawId::String(*id)),
+            Self::BigInt(id) => Some(RawId::BigInt(*id)),
+            Self::Undefined
+            | Self::Null
+            | Self::Bool(_)
+            | Self::Int(_)
+            | Self::Float(_)
+            | Self::Symbol(_)
+            | Self::Private(_)
+            | Self::Object(_)
+            | Self::Uninitialized
+            | Self::Exception => None,
+        }
+    }
 }
 
 /// Append-only identity of one module record in a Context-owned loaded-module

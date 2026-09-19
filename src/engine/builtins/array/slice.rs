@@ -354,7 +354,7 @@ impl SliceResume {
             self.0.new_length = (self.0.length - self.0.count).saturating_add(self.0.items);
             if self.0.new_length > (1_u64 << 53) - 1 {
                 return Ok(SliceStep::complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         if matches!(self.0.kind, SliceKind::ToSpliced) {
@@ -531,7 +531,7 @@ impl SliceResume {
             Phase::Delete => {
                 if !value {
                     return Ok(SliceStep::complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "could not delete property",

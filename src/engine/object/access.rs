@@ -1,7 +1,7 @@
 use crate::engine::api::error::{ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 use crate::engine::builtins::native::PrimitiveKind;
 use crate::engine::heap::runtime::RuntimeState;
 
@@ -86,15 +86,25 @@ impl Runtime {
             && let Ok(index) = usize::try_from(index)
             && let Some(unit) = string.code_unit_at(index)
         {
-            return Ok(OrdinaryRead::Complete(Some(Value::String(
-                JsString::from_code_unit(unit),
-            ))));
+            // A fresh string payload is a genuine creation point: publish it
+            // as one owned arena node.
+            let id = self
+                .0
+                .state
+                .borrow_mut()
+                .heap
+                .allocate_string(JsString::from_code_unit(unit))?;
+            return Ok(OrdinaryRead::Complete(Some(
+                crate::engine::value::JsValue::String(id),
+            )));
         }
         let length = self.pinned_property_key(crate::engine::atom::pinned::PinnedAtom::Length)?;
         if key == &length {
             let length = i32::try_from(string.len())
-                .map(Value::Int)
-                .unwrap_or_else(|_| Value::number(string.len() as f64));
+                .map(crate::engine::value::JsValue::Int)
+                .unwrap_or_else(|_| {
+                    crate::engine::value::JsValue::Float(string.len() as f64)
+                });
             return Ok(OrdinaryRead::Complete(Some(length)));
         }
         let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::String)?;
@@ -120,6 +130,28 @@ impl Runtime {
     ) -> Result<OrdinaryRead, RuntimeError> {
         self.prepare_value_property_read_selected(realm, receiver, key, None)
     }
+    /// Internal-value receiver form: the slow-path read roots the receiver
+    /// once for accessor/prototype Call selection.
+    pub(crate) fn prepare_value_property_read_selected_jsvalue(
+        &self,
+        realm: ContextId,
+        receiver: &crate::engine::value::JsValue,
+        key: &PropertyKey,
+        native: Option<&mut Option<crate::engine::object::LinkedNativeSelection>>,
+    ) -> Result<OrdinaryRead, RuntimeError> {
+        let receiver_root = self.root_value(receiver)?;
+        self.prepare_value_property_read_selected(realm, &receiver_root, key, native)
+    }
+
+    pub(crate) fn prepare_value_property_read_borrowed_jsvalue(
+        &self,
+        realm: ContextId,
+        receiver: &crate::engine::value::JsValue,
+        key: &PropertyKey,
+    ) -> Result<OrdinaryRead, RuntimeError> {
+        self.prepare_value_property_read_selected_jsvalue(realm, receiver, key, None)
+    }
+
     pub(crate) fn prepare_value_property_read_selected(
         &self,
         realm: ContextId,
@@ -235,7 +267,7 @@ pub(crate) fn raw_string_property_on_object(
 ) -> Result<RawStringProperty, RuntimeError> {
     let object = state.heap.object(object)?;
     let shape = state.heap.shape(object.shape)?;
-    let Some(index) = shape.find(atom) else {
+    let Some(index) = shape.find(AtomIdx::from_raw(atom.raw())) else {
         return Ok(RawStringProperty::Missing);
     };
     let slot = object
@@ -245,10 +277,14 @@ pub(crate) fn raw_string_property_on_object(
             "backtrace name shape has no parallel property slot",
         ))?;
     Ok(match slot {
-        PropertySlot::Data(RawValue::String(value)) if value.is_flat() => {
-            RawStringProperty::String(value.clone())
+        PropertySlot::Data(RawValue::String(value)) => {
+            let string = state.heap.string(*value)?;
+            if string.is_flat() {
+                RawStringProperty::String(string.clone())
+            } else {
+                RawStringProperty::Other
+            }
         }
-        PropertySlot::Data(RawValue::String(_)) => RawStringProperty::Other,
         PropertySlot::Data(_)
         | PropertySlot::VarRef(_)
         | PropertySlot::Accessor { .. }

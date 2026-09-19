@@ -347,7 +347,9 @@ fn shared_tla_completion_executes_cross_linked_parents_in_callback_realm() {
     );
     let parent_snapshot = promise_snapshot(&runtime, &parent_promise);
     assert_eq!(parent_snapshot.state, PromiseState::Rejected);
-    assert_eq!(parent_snapshot.result, RawValue::Int(42));
+    assert!(
+        matches!(parent_snapshot.result, RawValue::Int(42))
+    );
     assert_eq!(
         promise_snapshot(&runtime, &async_parent_promise).state,
         PromiseState::Fulfilled

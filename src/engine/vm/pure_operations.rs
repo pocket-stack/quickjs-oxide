@@ -50,17 +50,14 @@ fn canonical_typeof_string(runtime: &Runtime, spelling: &'static str) -> Result<
         .map_err(|error| runtime_error_to_vm_error(error.into()))
 }
 
-pub(super) fn type_of(runtime: &Runtime, value: &Value) -> Result<JsString, Error> {
-    let Value::Object(object) = value else {
+pub(super) fn type_of(runtime: &Runtime, value: &JsValue) -> Result<JsString, Error> {
+    let JsValue::Object(object) = value else {
         return canonical_typeof_string(runtime, value.type_of());
     };
-    if !object.belongs_to(runtime) {
-        return Err(Error::internal("typeof operand belongs to another runtime"));
-    }
     let state = runtime.0.state.borrow();
     let object = state
         .heap
-        .object(object.object_id())
+        .object(*object)
         .map_err(|error| Error::internal(error.to_string()))?;
     if object.is_html_dda {
         drop(state);
@@ -125,36 +122,45 @@ pub(super) fn create_regexp(
         }
         None => return Err(Error::internal("constant index is out of bounds")),
     };
-    runtime
+    let object = runtime
         .new_compiled_regexp_literal(realm, pattern, program)
-        .map(|object| Completion::Return(Value::Object(object)))
-        .map_err(runtime_error_to_vm_error)
+        .map_err(runtime_error_to_vm_error)?;
+    let id = object.object_id();
+    runtime
+        .retain_object_handle(id)
+        .map_err(runtime_error_to_vm_error)?;
+    Ok(Completion::Return(JsValue::Object(id)))
 }
 
 pub(super) fn set_object_prototype(
     runtime: &Runtime,
-    object: Value,
-    prototype: Value,
+    object: JsValue,
+    prototype: JsValue,
 ) -> Result<Completion, Error> {
-    let Value::Object(object) = object else {
+    let JsValue::Object(object) = object else {
         return Err(Error::internal(
             "object-literal prototype target was not an Object",
         ));
     };
     let prototype = match prototype {
-        Value::Object(prototype) => Some(prototype),
-        Value::Null => None,
+        JsValue::Object(prototype) => Some(
+            crate::engine::object::ObjectRef::from_borrowed_handle(runtime.clone(), prototype)
+                .map_err(runtime_error_to_vm_error)?,
+        ),
+        JsValue::Null => None,
         // Pinned QuickJS `OP_set_proto` consumes every primitive without
         // changing the fresh literal.
-        _ => return Ok(Completion::Return(Value::Undefined)),
+        _ => return Ok(Completion::Return(JsValue::Undefined)),
     };
+    let object = crate::engine::object::ObjectRef::from_borrowed_handle(runtime.clone(), object)
+        .map_err(runtime_error_to_vm_error)?;
     let changed = runtime
         .set_prototype_of(&object, prototype.as_ref())
         .map_err(runtime_error_to_vm_error)?;
     if !changed {
         return Err(Error::new(ErrorKind::Type, "prototype is immutable"));
     }
-    Ok(Completion::Return(Value::Undefined))
+    Ok(Completion::Return(JsValue::Undefined))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,7 +217,7 @@ pub(super) fn step(
                 return Err(error);
             };
             let value = runtime
-                .new_native_error_from_error(realm, kind, &error)
+                .new_native_error_from_error_jsvalue(realm, kind, &error)
                 .map_err(runtime_error_to_vm_error)?;
             Ok(CallStep::Complete(Completion::Throw(value)))
         }
@@ -233,17 +239,19 @@ fn perform(
             #[cfg(feature = "profiling")]
             crate::engine::api::profiling::record_owned_storage(
                 crate::engine::api::profiling::OwnedStorageEvent::Copy {
-                    heap_root: matches!(value, Value::Object(_) | Value::Symbol(_)),
+                    heap_root: matches!(value, JsValue::Object(_) | JsValue::Symbol(_)),
                 },
             );
             value
         }
         P::IteratorCheckObject => {
-            super::iterator_support::check_result_object(slots.peek(&frame.window, 0)?)?;
+            super::iterator_support::check_result_object_jsvalue(slots.peek(&frame.window, 0)?)?;
             return Ok(None);
         }
         P::IteratorMissingThrow => return Err(super::iterator_support::missing_throw()),
-        P::AtomValue(value) => Value::String(JsString::from_fresh_decimal_u32(value)),
+        P::AtomValue(value) => runtime
+            .allocate_string_node(JsString::from_fresh_decimal_u32(value))
+            .map_err(runtime_error_to_vm_error)?,
         P::RegExp(index) => {
             match create_regexp(runtime, frame.executable.realm, &frame.executable, index)? {
                 Completion::Return(value) => value,
@@ -314,7 +322,9 @@ fn perform(
         P::SetPrototype => {
             let prototype = slots.pop(&mut frame.window)?;
             let object = slots.pop(&mut frame.window)?;
-            let retained = object.clone();
+            let retained = runtime
+                .dup_jsvalue(&object)
+                .map_err(runtime_error_to_vm_error)?;
             match set_object_prototype(runtime, object, prototype)? {
                 Completion::Return(_) => retained,
                 Completion::Throw(_) => {
@@ -327,7 +337,10 @@ fn perform(
         P::Branch { target, when } => {
             let value = slots.pop(&mut frame.window)?;
             let truthy = runtime
-                .value_to_boolean(&value)
+                .value_to_boolean_jsvalue(&value)
+                .map_err(runtime_error_to_vm_error)?;
+            runtime
+                .release_jsvalue(value)
                 .map_err(runtime_error_to_vm_error)?;
             return Ok((truthy == when).then_some(target as usize));
         }
@@ -338,29 +351,35 @@ fn perform(
         | P::TypeOfIsUndefined
         | P::TypeOfIsFunction => {
             let value = slots.pop(&mut frame.window)?;
-            match operation {
-                P::TypeOf => Value::String(type_of(runtime, &value)?),
+            let result = match operation {
+                P::TypeOf => runtime
+                    .allocate_string_node(type_of(runtime, &value)?)
+                    .map_err(runtime_error_to_vm_error)?,
                 P::IsUndefinedOrNull => {
-                    Value::Bool(matches!(value, Value::Null | Value::Undefined))
+                    JsValue::Bool(matches!(value, JsValue::Null | JsValue::Undefined))
                 }
-                P::IsUndefined => Value::Bool(matches!(value, Value::Undefined)),
-                P::IsNull => Value::Bool(matches!(value, Value::Null)),
-                P::TypeOfIsUndefined => Value::Bool(
-                    matches!(value, Value::Undefined)
+                P::IsUndefined => JsValue::Bool(matches!(value, JsValue::Undefined)),
+                P::IsNull => JsValue::Bool(matches!(value, JsValue::Null)),
+                P::TypeOfIsUndefined => JsValue::Bool(
+                    matches!(value, JsValue::Undefined)
                         || runtime
-                            .value_is_html_dda(&value)
+                            .value_is_html_dda_jsvalue(&value)
                             .map_err(runtime_error_to_vm_error)?,
                 ),
-                P::TypeOfIsFunction => Value::Bool(
+                P::TypeOfIsFunction => JsValue::Bool(
                     !runtime
-                        .value_is_html_dda(&value)
+                        .value_is_html_dda_jsvalue(&value)
                         .map_err(runtime_error_to_vm_error)?
                         && runtime
-                            .value_is_callable(&value)
+                            .value_is_callable_jsvalue(&value)
                             .map_err(runtime_error_to_vm_error)?,
                 ),
                 _ => unreachable!(),
-            }
+            };
+            runtime
+                .release_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
+            result
         }
     };
     slots.push(&mut frame.window, result)?;

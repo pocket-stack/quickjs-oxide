@@ -71,7 +71,7 @@ impl EvalScriptResume {
             match String::from_utf16(&source_units) {
                 Ok(source) => source,
                 Err(_) => {
-                    return Ok(EvalScriptStep::Complete(Completion::Throw(runtime.new_native_error(
+                    return Ok(EvalScriptStep::Complete(Completion::Throw(runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Internal,
                     "evalScript source containing a lone UTF-16 surrogate is not implemented",

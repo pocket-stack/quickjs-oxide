@@ -114,7 +114,7 @@ impl RegExpCompileStep {
         };
         let Some(_) = runtime.genuine_regexp(this_value)? else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "RegExp object expected")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "RegExp object expected")?,
             )));
         };
         let Value::Object(regexp) = this_value else {
@@ -131,7 +131,7 @@ impl RegExpCompileStep {
         if let Some(genuine) = runtime.genuine_regexp(pattern)? {
             if !matches!(flags, Value::Undefined) {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "flags must be undefined",

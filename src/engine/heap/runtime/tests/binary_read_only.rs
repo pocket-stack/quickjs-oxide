@@ -30,7 +30,10 @@ fn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error(
     let [BytecodeConstant::Value(RawValue::String(name))] = snapshot.constants.as_ref() else {
         panic!("raw49 name was not published as one verified String constant");
     };
-    assert_eq!(name, &JsString::from_static("x"));
+    assert_eq!(
+        runtime.0.state.borrow().heap.string(*name).unwrap(),
+        &JsString::from_static("x")
+    );
     drop(snapshot);
 
     assert_eq!(

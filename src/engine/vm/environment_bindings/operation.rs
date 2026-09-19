@@ -3,7 +3,7 @@ use crate::engine::{
     api::{ErrorKind, runtime::Runtime, runtime_error::RuntimeError},
     heap::ContextId,
     object::{ObjectRef, PropertyKey, WellKnownSymbol, operations::InternalSetResult},
-    value::{Value, conversion::NativeConversion},
+    value::{JsValue, Value, conversion::NativeConversion},
     vm::Completion,
 };
 
@@ -50,7 +50,7 @@ enum Phase {
     Put {
         object: ObjectRef,
         key: PropertyKey,
-        value: Value,
+        value: JsValue,
         strict: bool,
         reference: bool,
     },
@@ -70,12 +70,14 @@ enum Phase {
 }
 impl EnvironmentStep {
     pub(in crate::engine::vm) fn read(
+        runtime: &Runtime,
         realm: ContextId,
         object: ObjectRef,
         key: PropertyKey,
-        receiver: Value,
+        receiver: JsValue,
     ) -> Self {
         Self::request_read(
+            runtime,
             receiver,
             object,
             key,
@@ -126,7 +128,7 @@ impl EnvironmentStep {
         realm: ContextId,
         object: ObjectRef,
         key: PropertyKey,
-        value: Value,
+        value: JsValue,
         strict: bool,
         reference: bool,
     ) -> Self {
@@ -150,7 +152,7 @@ impl EnvironmentStep {
         realm: ContextId,
         object: ObjectRef,
         key: PropertyKey,
-        value: Value,
+        value: JsValue,
         strict: bool,
     ) -> Self {
         Self::request_set(
@@ -226,12 +228,17 @@ impl EnvironmentResume {
         match self.0.phase {
             Phase::Binding { object, key, with } => {
                 if !present || !with {
-                    return Ok(EnvironmentStep::Complete(Completion::Return(Value::Bool(
-                        present,
-                    ))));
+                    return Ok(EnvironmentStep::Complete(Completion::Return(
+                        JsValue::Bool(present),
+                    )));
                 }
                 Ok(EnvironmentStep::request_read(
-                    Value::Object(object.clone()),
+                    runtime,
+                    {
+                        let id = object.object_id();
+                        runtime.retain_object_handle(id)?;
+                        JsValue::Object(id)
+                    },
                     object,
                     PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Unscopables)),
                     EnvironmentResume(Box::new(EnvironmentResumeState {
@@ -253,11 +260,16 @@ impl EnvironmentResume {
                             .into());
                     }
                     return Ok(EnvironmentStep::Complete(Completion::Return(
-                        Value::Undefined,
+                        JsValue::Undefined,
                     )));
                 }
                 Ok(EnvironmentStep::request_read(
-                    Value::Object(object.clone()),
+                    runtime,
+                    {
+                        let id = object.object_id();
+                        runtime.retain_object_handle(id)?;
+                        JsValue::Object(id)
+                    },
                     object,
                     key,
                     EnvironmentResume(Box::new(EnvironmentResumeState {
@@ -300,24 +312,24 @@ impl EnvironmentResume {
                         runtime.write_var_ref(&root, value)?;
                     }
                     return Ok(EnvironmentStep::Complete(Completion::Return(
-                        Value::Undefined,
+                        JsValue::Undefined,
                     )));
                 }
                 Ok(EnvironmentStep::set(realm, object, key, value, strict))
             }
             Phase::Reference { object } => {
                 Ok(EnvironmentStep::Complete(Completion::Return(if present {
-                    Value::Object(object)
+                    JsValue::Object(object.object_id())
                 } else {
-                    Value::Undefined
+                    JsValue::Undefined
                 })))
             }
             Phase::DeleteGlobal { object, key } => Ok(if present {
                 EnvironmentStep::delete(realm, object, key)
             } else {
-                EnvironmentStep::Complete(Completion::Return(Value::Bool(true)))
+                EnvironmentStep::Complete(Completion::Return(JsValue::Bool(true)))
             }),
-            Phase::Boolean => Ok(EnvironmentStep::Complete(Completion::Return(Value::Bool(
+            Phase::Boolean => Ok(EnvironmentStep::Complete(Completion::Return(JsValue::Bool(
                 present,
             )))),
             _ => Err(RuntimeError::Invariant(
@@ -338,9 +350,10 @@ impl EnvironmentResume {
         };
         match self.0.phase {
             Phase::Unscopables { key } => Ok(match value {
-                Value::Object(object) => EnvironmentStep::request_read(
-                    Value::Object(object.clone()),
-                    object,
+                JsValue::Object(object) => EnvironmentStep::request_read(
+                    runtime,
+                    JsValue::Object(object),
+                    ObjectRef::from_borrowed_handle(runtime.clone(), object)?,
                     key,
                     EnvironmentResume(Box::new(EnvironmentResumeState {
                         pending_effect: EnvironmentStepPending::default(),
@@ -348,10 +361,10 @@ impl EnvironmentResume {
                         phase: Phase::Excluded,
                     })),
                 ),
-                _ => EnvironmentStep::Complete(Completion::Return(Value::Bool(true))),
+                _ => EnvironmentStep::Complete(Completion::Return(JsValue::Bool(true))),
             }),
-            Phase::Excluded => Ok(EnvironmentStep::Complete(Completion::Return(Value::Bool(
-                !runtime.value_to_boolean(&value)?,
+            Phase::Excluded => Ok(EnvironmentStep::Complete(Completion::Return(JsValue::Bool(
+                !runtime.value_to_boolean_jsvalue(&value)?,
             )))),
             Phase::Value => Ok(EnvironmentStep::Complete(Completion::Return(value))),
             _ => Err(RuntimeError::Invariant(
@@ -381,10 +394,10 @@ struct EnvironmentStepPending {
     has_key: Option<PropertyKey>,
     read_object: Option<ObjectRef>,
     read_key: Option<PropertyKey>,
-    read_receiver: Option<Value>,
+    read_receiver: Option<JsValue>,
     set_object: Option<ObjectRef>,
     set_key: Option<PropertyKey>,
-    set_value: Option<Value>,
+    set_value: Option<JsValue>,
     delete_object: Option<ObjectRef>,
     delete_key: Option<PropertyKey>,
 }
@@ -399,11 +412,14 @@ impl EnvironmentStep {
         Self::Has { resume }
     }
     pub(crate) fn request_read(
-        receiver: Value,
+        _runtime: &Runtime,
+        receiver: JsValue,
         object: ObjectRef,
         key: PropertyKey,
         mut resume: EnvironmentResume,
     ) -> Self {
+        // The receiver carries an owned edge: either the caller retained it
+        // above, or the completion value already owned its edge.
         resume.0.pending_effect.read_object = Some(object);
         resume.0.pending_effect.read_key = Some(key);
         resume.0.pending_effect.read_receiver = Some(receiver);
@@ -412,7 +428,7 @@ impl EnvironmentStep {
     pub(crate) fn request_set(
         object: ObjectRef,
         key: PropertyKey,
-        value: Value,
+        value: JsValue,
         mut resume: EnvironmentResume,
     ) -> Self {
         resume.0.pending_effect.set_object = Some(object);
@@ -459,7 +475,7 @@ impl EnvironmentResume {
             .take()
             .expect("EnvironmentStep Read key")
     }
-    pub(crate) fn take_read_receiver(&mut self) -> Value {
+    pub(crate) fn take_read_receiver(&mut self) -> JsValue {
         self.0
             .pending_effect
             .read_receiver
@@ -480,7 +496,7 @@ impl EnvironmentResume {
             .take()
             .expect("EnvironmentStep Set key")
     }
-    pub(crate) fn take_set_value(&mut self) -> Value {
+    pub(crate) fn take_set_value(&mut self) -> JsValue {
         self.0
             .pending_effect
             .set_value

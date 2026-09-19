@@ -32,6 +32,65 @@ impl Runtime {
         self.property_key_from_primitive(realm, value)
     }
 
+    /// Internal-value form of [`Runtime::native_to_property_key`].
+    pub(crate) fn native_to_property_key_jsvalue(
+        &self,
+        realm: ContextId,
+        value: crate::engine::value::JsValue,
+    ) -> Result<NativeConversion<PropertyKey>, RuntimeError> {
+        let value = if matches!(value, crate::engine::value::JsValue::Object(_)) {
+            match self.to_primitive_jsvalue(realm, value, ToPrimitiveHint::String)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => {
+                    // The callback boundary throws public roots; hand the host
+                    // adapter its owned root back without a retain/release pair.
+                    return Ok(NativeConversion::Throw(self.root_value(&value)?));
+                }
+            }
+        } else {
+            value
+        };
+        self.property_key_from_primitive_jsvalue(realm, value)
+    }
+
+    /// Internal-value form of [`Runtime::property_key_from_primitive`].
+    pub(crate) fn property_key_from_primitive_jsvalue(
+        &self,
+        realm: ContextId,
+        value: crate::engine::value::JsValue,
+    ) -> Result<NativeConversion<PropertyKey>, RuntimeError> {
+        use crate::engine::value::JsValue;
+        if matches!(value, JsValue::Object(_)) {
+            return Err(RuntimeError::Invariant(
+                "property key conversion received an object",
+            ));
+        }
+        if let Some(key) = self.immediate_numeric_property_key_jsvalue(&value) {
+            return Ok(NativeConversion::Value(key));
+        }
+        if let JsValue::Symbol(index) = value {
+            let atom = self.0.state.borrow().atoms.brand(index)?;
+            return Ok(NativeConversion::Value(PropertyKey::from_borrowed_atom(
+                self.clone(),
+                atom,
+            )?));
+        }
+        let string = match crate::engine::vm::to_js_string_jsvalue(self, &value) {
+            Ok(string) => string,
+            Err(error) => {
+                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                    return Err(RuntimeError::Engine(error));
+                };
+                return Ok(NativeConversion::Throw(
+                    self.new_native_error_from_error(realm, kind, &error)?,
+                ));
+            }
+        };
+        Ok(NativeConversion::Value(
+            self.intern_property_key_js_string(&string)?,
+        ))
+    }
+
     /// Finish ToPropertyKey after the domain continuation has obtained a primitive.
     pub(crate) fn property_key_from_primitive(
         &self,
@@ -472,6 +531,22 @@ impl Runtime {
         value: Value,
         hint: ToPrimitiveHint,
     ) -> Result<Completion, RuntimeError> {
+        let step = primitive::PrimitiveResume::start(
+            self,
+            realm,
+            self.unroot_value(&value)?,
+            hint,
+        );
+        self.finish_primitive_steps(realm, step)
+    }
+
+    /// Internal-value form of [`Runtime::to_primitive`]: consumes the value.
+    pub(crate) fn to_primitive_jsvalue(
+        &self,
+        realm: ContextId,
+        value: crate::engine::value::JsValue,
+        hint: ToPrimitiveHint,
+    ) -> Result<Completion, RuntimeError> {
         let step = primitive::PrimitiveResume::start(self, realm, value, hint);
         self.finish_primitive_steps(realm, step)
     }
@@ -499,6 +574,39 @@ impl Runtime {
         let prototype = self.primitive_prototype_for_realm(realm, kind)?;
         Ok(NativeConversion::Value(
             self.new_primitive_object(&prototype, kind, value)?,
+        ))
+    }
+
+    /// Internal-value form of [`Runtime::native_to_object`]: consumes the value.
+    pub(crate) fn native_to_object_jsvalue(
+        &self,
+        realm: ContextId,
+        value: crate::engine::value::JsValue,
+    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
+        use crate::engine::value::JsValue;
+        let (kind, value) = match value {
+            JsValue::Object(object) => {
+                return Ok(NativeConversion::Value(ObjectRef::from_borrowed_handle(
+                    self.clone(),
+                    object,
+                )?));
+            }
+            JsValue::Undefined | JsValue::Null => {
+                return Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "cannot convert to object",
+                )?));
+            }
+            value @ JsValue::Bool(_) => (PrimitiveKind::Boolean, value),
+            value @ (JsValue::Int(_) | JsValue::Float(_)) => (PrimitiveKind::Number, value),
+            value @ JsValue::String(_) => (PrimitiveKind::String, value),
+            value @ JsValue::BigInt(_) => (PrimitiveKind::BigInt, value),
+            value @ JsValue::Symbol(_) => (PrimitiveKind::Symbol, value),
+        };
+        let prototype = self.primitive_prototype_for_realm(realm, kind)?;
+        Ok(NativeConversion::Value(
+            self.new_primitive_object_jsvalue(&prototype, kind, value)?,
         ))
     }
 }

@@ -30,9 +30,20 @@ impl Heap {
             NodeData::Shape(_)
             | NodeData::VarRef(_)
             | NodeData::Context(_)
-            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+            | NodeData::FunctionBytecode(_)
+            | NodeData::String(_)
+            | NodeData::BigInt(_) => Err(HeapError::Invariant(
                 "typed object lookup reached another node payload",
             )),
+        }
+    }
+
+    /// Trusted shared read for a live `ObjectId` held by an owning root.
+    #[inline]
+    pub(crate) fn object_fast(&self, id: ObjectId) -> &ObjectData {
+        match &self.live_node_fast(RawId::Object(id)).data {
+            NodeData::Object(object) => object,
+            _ => unreachable!("trusted object handle reached another node payload"),
         }
     }
 
@@ -111,9 +122,20 @@ impl Heap {
             NodeData::Object(_)
             | NodeData::VarRef(_)
             | NodeData::Context(_)
-            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+            | NodeData::FunctionBytecode(_)
+            | NodeData::String(_)
+            | NodeData::BigInt(_) => Err(HeapError::Invariant(
                 "typed shape lookup reached another node payload",
             )),
+        }
+    }
+
+    /// Trusted shared read for a live `ShapeId` reachable from a live object.
+    #[inline]
+    pub(crate) fn shape_fast(&self, id: ShapeId) -> &Shape {
+        match &self.live_node_fast(RawId::Shape(id)).data {
+            NodeData::Shape(shape) => shape,
+            _ => unreachable!("trusted shape handle reached another node payload"),
         }
     }
 
@@ -129,7 +151,9 @@ impl Heap {
             NodeData::Object(_)
             | NodeData::VarRef(_)
             | NodeData::Context(_)
-            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+            | NodeData::FunctionBytecode(_)
+            | NodeData::String(_)
+            | NodeData::BigInt(_) => Err(HeapError::Invariant(
                 "typed mutable shape lookup reached another node payload",
             )),
         }
@@ -142,7 +166,9 @@ impl Heap {
             NodeData::Object(_)
             | NodeData::Shape(_)
             | NodeData::VarRef(_)
-            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+            | NodeData::FunctionBytecode(_)
+            | NodeData::String(_)
+            | NodeData::BigInt(_) => Err(HeapError::Invariant(
                 "typed context lookup reached another node payload",
             )),
         }
@@ -731,7 +757,7 @@ impl Heap {
         }
         let index =
             self.shape(shape_id)?
-                .unique_append_index(atom)
+                .unique_append_index(AtomIdx::from_raw(atom.raw()))
                 .map_err(|error| match error {
                     ShapeError::NullAtom => {
                         HeapError::Invariant("in-place property append used a null atom")
@@ -833,7 +859,7 @@ impl Heap {
             Ok(shape) => shape,
             Err(_) => unreachable!("authenticated unique shape disappeared before append"),
         };
-        shape.append_unique_property(atom, flags, index);
+        shape.append_unique_property(AtomIdx::from_raw(atom.raw()), flags, index);
         let object = match self.object_mut(id) {
             Ok(object) => object,
             Err(_) => unreachable!("authenticated object disappeared before slot append"),
@@ -1680,7 +1706,7 @@ impl Heap {
         }
         if let ObjectPayload::Promise(data) = &object.payload {
             if !is_promise_storable_value(&data.result)
-                || (data.state == PromiseState::Pending && data.result != RawValue::Undefined)
+                || (data.state == PromiseState::Pending && !matches!(data.result, RawValue::Undefined))
                 || (data.state != PromiseState::Pending
                     && (!data.fulfill_reactions.is_empty() || !data.reject_reactions.is_empty()))
                 || data
@@ -1960,7 +1986,7 @@ impl Heap {
                     ));
                 }
             }
-            records.validate()?;
+            records.validate(self)?;
         }
         if let ObjectPayload::MapIterator {
             object: source,
@@ -2005,7 +2031,7 @@ impl Heap {
                     ));
                 }
             }
-            records.validate()?;
+            records.validate(self)?;
         }
         if let ObjectPayload::SetIterator {
             object: source,

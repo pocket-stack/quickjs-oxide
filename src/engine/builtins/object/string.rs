@@ -113,7 +113,7 @@ impl ObjectStringStep {
                         "cannot read property 'toString' of undefined"
                     };
                     return Ok(Self::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, message)?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, message)?,
                     )));
                 }
                 Ok(Self::request_read(
@@ -156,7 +156,7 @@ impl ObjectStringResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(ObjectStringStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not a function",

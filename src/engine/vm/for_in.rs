@@ -141,7 +141,7 @@ impl Runtime {
             }
             if state
                 .atoms
-                .array_index(entry.atom)?
+                .array_index(state.atoms.brand(entry.atom)?)?
                 .is_some_and(|index| index < fast_len)
             {
                 continue;

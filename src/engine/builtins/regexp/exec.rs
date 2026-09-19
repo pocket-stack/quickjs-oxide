@@ -82,14 +82,14 @@ impl Runtime {
             match execution {
                 Ok(value) => value,
                 Err(ExecError::OutOfMemory) => {
-                    return Ok(Completion::Throw(self.new_native_error(
+                    return Ok(Completion::Throw(self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Internal,
                         "out of memory in regexp execution",
                     )?));
                 }
                 Err(ExecError::Interrupted) => {
-                    return Ok(Completion::Throw(self.new_native_error(
+                    return Ok(Completion::Throw(self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Internal,
                         "interrupted",
@@ -255,7 +255,7 @@ impl RegExpExecStep {
                 "undefined"
             };
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     &format!("cannot read property 'exec' of {base}"),
@@ -289,7 +289,7 @@ impl RegExpExecResume {
         if !matches!(&self.0.regexp, Value::Object(_))
             || runtime.genuine_regexp(&self.0.regexp)?.is_none()
         {
-            return Ok(self.complete(Completion::Throw(runtime.new_native_error(
+            return Ok(self.complete(Completion::Throw(runtime.new_native_error_jsvalue(
                 self.0.realm,
                 NativeErrorKind::Type,
                 "RegExp object expected",
@@ -331,7 +331,7 @@ impl RegExpExecResume {
                 };
                 let mut arguments = Vec::new();
                 if arguments.try_reserve_exact(1).is_err() {
-                    return Ok(self.complete(Completion::Throw(runtime.new_native_error(
+                    return Ok(self.complete(Completion::Throw(runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Internal,
                         "out of memory",
@@ -353,7 +353,7 @@ impl RegExpExecResume {
                 if matches!(value, Value::Object(_) | Value::Null) {
                     Ok(self.complete(Completion::Return(value)))
                 } else {
-                    Ok(self.complete(Completion::Throw(runtime.new_native_error(
+                    Ok(self.complete(Completion::Throw(runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "RegExp exec method must return an object or null",

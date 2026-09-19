@@ -5,7 +5,7 @@ use super::*;
 /// The eager consumers (`every`, `find`, `forEach`, and `some`) do not
 /// allocate a helper payload and therefore use [`IteratorConsumerKind`]
 /// instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum IteratorHelperKind {
     Drop,
     Filter,
@@ -15,7 +15,7 @@ pub enum IteratorHelperKind {
 }
 
 /// Eager operation selected by the shared Iterator consumer implementation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum IteratorConsumerKind {
     Every,
     Find,
@@ -24,7 +24,7 @@ pub enum IteratorConsumerKind {
 }
 
 /// Resume operation shared by Iterator Helper and Iterator Wrap prototypes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum IteratorResumeKind {
     Next,
     Return,
@@ -36,7 +36,7 @@ pub enum IteratorResumeKind {
 /// raw arena-owned values because property lookup can produce any ECMAScript
 /// value. QuickJS keeps all four edges alive until finalization even after
 /// `done` becomes true.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct IteratorHelperData {
     pub source: ObjectId,
     pub next: RawValue,
@@ -49,7 +49,7 @@ pub struct IteratorHelperData {
 }
 
 /// Hidden state of an Iterator created by `Iterator.from`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct IteratorWrapData {
     pub source: RawValue,
     pub next: RawValue,
@@ -60,7 +60,7 @@ pub struct IteratorWrapData {
 ///
 /// The source is known to be an object after `GetIterator`, while `next`
 /// remains an arbitrary cached ECMAScript value until the first call.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AsyncFromSyncIteratorData {
     pub sync_iterator: ObjectId,
     pub next: RawValue,
@@ -71,14 +71,14 @@ pub struct AsyncFromSyncIteratorData {
 /// Consumed slots become `None` so their edges can be released immediately,
 /// matching QuickJS's advancing finalizer boundary without shifting the
 /// remaining vector.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct IteratorConcatItem {
     pub iterable: ObjectId,
     pub method: RawValue,
 }
 
 /// Hidden state of the lazy iterator returned by `Iterator.concat`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct IteratorConcatData {
     pub items: Vec<Option<IteratorConcatItem>>,
     pub index: usize,
@@ -88,7 +88,7 @@ pub struct IteratorConcatData {
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::engine::heap) enum IteratorHelperRawValueField {
     Next,
     Callback,
@@ -158,10 +158,12 @@ pub(in crate::engine::heap) fn validate_iterator_wrap_data(
         .into_iter()
         .chain(raw_value_edges(&data.next))
     {
-        let RawId::Object(object) = edge else {
-            unreachable!("RawValue only owns object edges")
-        };
-        heap.object(object)?;
+        if !heap.is_live(edge) {
+            return Err(HeapError::Stale {
+                index: edge.index(),
+                generation: edge.generation(),
+            });
+        }
     }
     Ok(())
 }
@@ -209,10 +211,12 @@ pub(in crate::engine::heap) fn validate_iterator_concat_data(
         ));
     }
     for edge in raw_value_edges(&data.next) {
-        let RawId::Object(object) = edge else {
-            unreachable!("RawValue only owns object edges")
-        };
-        heap.object(object)?;
+        if !heap.is_live(edge) {
+            return Err(HeapError::Stale {
+                index: edge.index(),
+                generation: edge.generation(),
+            });
+        }
     }
     Ok(())
 }

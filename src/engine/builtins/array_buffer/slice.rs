@@ -240,7 +240,7 @@ impl BufferSliceResume {
                 }
                 let Value::Object(object) = value else {
                     return Ok(BufferSliceStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not an object",
@@ -275,7 +275,7 @@ impl BufferSliceResume {
                 let mut arguments = Vec::new();
                 if arguments.try_reserve_exact(1).is_err() {
                     return Ok(BufferSliceStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Internal,
                             "out of memory",
@@ -298,7 +298,7 @@ impl BufferSliceResume {
             Phase::Construct { start, count } => {
                 let Value::Object(target) = value else {
                     return Ok(BufferSliceStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             match self.0.kind {

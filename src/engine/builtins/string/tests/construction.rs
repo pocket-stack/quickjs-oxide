@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::builtins::ErrorKind;
 use crate::engine::heap::{AutoInitProperty, PropertySlot};
 use crate::engine::object::shape::PropertyFlags;
@@ -24,7 +25,7 @@ fn string_constructor_statics_remain_typed_autoinit_entries() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(string_constructor.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),

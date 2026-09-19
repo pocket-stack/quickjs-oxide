@@ -201,7 +201,7 @@ impl PropertyStep {
             },
             _ => {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                    runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
                 )));
             }
         };
@@ -844,7 +844,7 @@ impl PropertyResume {
                 ))))
             } else if !value {
                 Ok(PropertyStep::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "proxy preventExtensions handler returned false",
@@ -876,7 +876,7 @@ impl PropertyResume {
                 if accepted {
                     Completion::Return(Value::Object(self.0.object))
                 } else {
-                    Completion::Throw(runtime.new_native_error(
+                    Completion::Throw(runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "proxy preventExtensions handler returned false",

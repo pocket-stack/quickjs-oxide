@@ -579,7 +579,7 @@ impl StringifyResumeState {
         indent: JsString,
     ) -> JsonStringifyResult<StringifyStep> {
         if self.stack.iter().any(|ancestor| ancestor == &object) {
-            return Err(JsonStringifyFailure::Throw(runtime.new_native_error(
+            return Err(JsonStringifyFailure::Throw(runtime.new_native_error_jsvalue(
                 self.realm,
                 NativeErrorKind::Type,
                 "circular reference",

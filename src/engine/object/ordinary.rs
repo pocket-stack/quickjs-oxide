@@ -102,7 +102,19 @@ impl Runtime {
     ) -> Result<NativeConversion<Option<Value>>, RuntimeError> {
         use crate::engine::vm::Completion;
         match read {
-            OrdinaryRead::Complete(value) => Ok(NativeConversion::Value(value)),
+            OrdinaryRead::Complete(value) => {
+                // Boundary rooting: the internal value's edges are duplicated
+                // into the public root, then its own edges are released.
+                let value = match value {
+                    Some(value) => {
+                        let rooted = self.root_value(&value)?;
+                        self.release_jsvalue(value)?;
+                        Some(rooted)
+                    }
+                    None => None,
+                };
+                Ok(NativeConversion::Value(value))
+            }
             OrdinaryRead::Call { getter, receiver } => {
                 Ok(match self.call_internal(realm, &getter, receiver, &[])? {
                     Completion::Return(value) => NativeConversion::Value(Some(value)),
@@ -223,8 +235,10 @@ impl Runtime {
 }
 
 /// A rooted ordinary lookup result, ready for an explicit caller to consume.
+/// The completed data value travels as an internal value; accessor receivers
+/// stay public roots because host callbacks consume them.
 pub(crate) enum OrdinaryRead {
-    Complete(Option<Value>),
+    Complete(Option<crate::engine::value::JsValue>),
     Call {
         getter: crate::engine::object::CallableRef,
         receiver: Value,

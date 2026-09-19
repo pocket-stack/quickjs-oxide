@@ -40,7 +40,8 @@ pub(crate) fn link_constant_property_keys(
             keys.resize(index + 1, Atom::NULL);
         }
         if keys[index].is_null() {
-            let atom = state.atoms.intern_property_key_js_string(name)?;
+            let text = state.heap.string(*name)?.clone();
+            let atom = state.atoms.intern_property_key_js_string(&text)?;
             auxiliary_atoms.push(atom);
             keys[index] = atom;
         }
@@ -138,7 +139,9 @@ pub(crate) fn flatten_unlinked_tree(
                     .last_mut()
                     .expect("flatten frame remains present")
                     .constants
-                    .push(FlatConstant::Value(raw_unlinked_primitive(value.into())?)),
+                    .push(FlatConstant::Value(validate_unlinked_primitive(
+                        value.into(),
+                    )?)),
                 (None, false, Some(child)) => frames.push(FlattenFrame::new(child)),
                 (None, _, None)
                 | (Some(_), true, None)
@@ -176,17 +179,14 @@ pub(crate) fn flatten_unlinked_tree(
     }
 }
 
-fn raw_unlinked_primitive(value: Value) -> Result<RawValue, RuntimeError> {
+/// Primitive constants stay as public `Value` payloads through flattening;
+/// the publish transaction in `code::runtime` is their string/BigInt node
+/// creation point, so only the runtime-bound escape invariant is sealed here.
+fn validate_unlinked_primitive(value: Value) -> Result<Value, RuntimeError> {
     match value {
-        Value::Undefined => Ok(RawValue::Undefined),
-        Value::Null => Ok(RawValue::Null),
-        Value::Bool(value) => Ok(RawValue::Bool(value)),
-        Value::Int(value) => Ok(RawValue::Int(value)),
-        Value::Float(value) => Ok(RawValue::Float(value)),
-        Value::BigInt(value) => Ok(RawValue::BigInt(value)),
-        Value::String(value) => Ok(RawValue::String(value)),
         Value::Object(_) | Value::Symbol(_) => Err(RuntimeError::Invariant(
             "runtime-bound value escaped the unlinked constant invariant",
         )),
+        value => Ok(value),
     }
 }

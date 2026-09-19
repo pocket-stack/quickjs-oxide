@@ -13,11 +13,11 @@ use crate::engine::host::HostServices;
 
 use crate::engine::{builtins as intrinsics, jobs, modules as module};
 
-use crate::engine::atom::{Atom, AtomTable};
+use crate::engine::atom::{Atom, AtomIdx, AtomTable};
 use crate::engine::code::debug::DebugInfoMode;
 use crate::engine::heap::{
     ContextId, FunctionBytecodeId, Heap, HeapCleanup, ObjectId, PropertySlot, RawValue, ShapeId,
-    VarRefId,
+    StringId, BigIntId, VarRefId,
 };
 use crate::engine::object::WellKnownSymbol;
 use crate::engine::object::shape::{Shape, ShapeEntry};
@@ -67,7 +67,14 @@ pub(crate) enum DeferredRefOp {
     Context(ContextId),
     FunctionBytecode(FunctionBytecodeId),
     VarRef(VarRefId),
-    Atom(Atom),
+    String(StringId),
+    BigInt(BigIntId),
+    /// Shared-release pass deferred because the table was mutably borrowed:
+    /// decrement the counter, then remove the slot if it reached zero.
+    AtomRelease(Atom),
+    /// Slot removal for an atom whose counter already reached zero under a
+    /// shared borrow.
+    AtomRemove(Atom),
     ActiveFramePop {
         token: ActiveFrameToken,
         depth: usize,
@@ -167,7 +174,7 @@ impl RuntimeState {
 
     pub(crate) fn apply_committed_cleanup(&mut self, cleanup: HeapCleanup) {
         self.unlink_finalized_shapes(cleanup.finalized_shape_ids);
-        self.release_atoms(cleanup.atoms)
+        self.release_atom_indices(cleanup.atoms)
             .expect("committed heap cleanup atom release failed");
     }
 
@@ -180,18 +187,30 @@ impl RuntimeState {
                     .expect("committed pending-exception object release failed");
                 self.apply_committed_cleanup(cleanup);
             }
-            RawValue::Symbol(atom) => {
+            RawValue::Symbol(index) => {
                 self.atoms
-                    .release(atom)
+                    .release_index(index)
                     .expect("committed pending-exception Symbol release failed");
+            }
+            RawValue::String(id) => {
+                let cleanup = self
+                    .heap
+                    .release_string(id)
+                    .expect("committed pending-exception string release failed");
+                self.apply_committed_cleanup(cleanup);
+            }
+            RawValue::BigInt(id) => {
+                let cleanup = self
+                    .heap
+                    .release_bigint(id)
+                    .expect("committed pending-exception bigint release failed");
+                self.apply_committed_cleanup(cleanup);
             }
             RawValue::Undefined
             | RawValue::Null
             | RawValue::Bool(_)
             | RawValue::Int(_)
-            | RawValue::Float(_)
-            | RawValue::BigInt(_)
-            | RawValue::String(_) => {}
+            | RawValue::Float(_) => {}
             RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception => {
                 unreachable!("internal value occupied committed pending-exception storage")
             }
@@ -201,9 +220,11 @@ impl RuntimeState {
     pub(crate) fn retain_raw_root(&mut self, value: &RawValue) -> Result<(), RuntimeError> {
         match value {
             RawValue::Object(object) => self.heap.retain_object(*object)?,
-            RawValue::Symbol(atom) => {
-                self.atoms.retain(*atom)?;
+            RawValue::Symbol(index) => {
+                self.atoms.retain_index(*index)?;
             }
+            RawValue::String(id) => self.heap.retain_string(*id)?,
+            RawValue::BigInt(id) => self.heap.retain_bigint(*id)?,
             RawValue::Private(_) => {
                 return Err(RuntimeError::Invariant(
                     "private-name identity cannot become a public runtime root",
@@ -213,9 +234,7 @@ impl RuntimeState {
             | RawValue::Null
             | RawValue::Bool(_)
             | RawValue::Int(_)
-            | RawValue::Float(_)
-            | RawValue::BigInt(_)
-            | RawValue::String(_) => {}
+            | RawValue::Float(_) => {}
             RawValue::Uninitialized | RawValue::Exception => {
                 return Err(RuntimeError::Invariant(
                     "internal value sentinel cannot become a runtime root",
@@ -231,8 +250,16 @@ impl RuntimeState {
                 let cleanup = self.heap.release_object(object)?;
                 self.apply_cleanup(cleanup)?;
             }
-            RawValue::Symbol(atom) => {
-                self.atoms.release(atom)?;
+            RawValue::Symbol(index) => {
+                self.atoms.release_index(index)?;
+            }
+            RawValue::String(id) => {
+                let cleanup = self.heap.release_string(id)?;
+                self.apply_cleanup(cleanup)?;
+            }
+            RawValue::BigInt(id) => {
+                let cleanup = self.heap.release_bigint(id)?;
+                self.apply_cleanup(cleanup)?;
             }
             RawValue::Private(_) => {
                 return Err(RuntimeError::Invariant(
@@ -243,9 +270,7 @@ impl RuntimeState {
             | RawValue::Null
             | RawValue::Bool(_)
             | RawValue::Int(_)
-            | RawValue::Float(_)
-            | RawValue::BigInt(_)
-            | RawValue::String(_) => {}
+            | RawValue::Float(_) => {}
             RawValue::Uninitialized | RawValue::Exception => {
                 return Err(RuntimeError::Invariant(
                     "internal value sentinel occupied a runtime root",
@@ -358,15 +383,13 @@ impl RuntimeState {
     ) -> Result<Vec<Atom>, RuntimeError> {
         let mut retained_atoms = Vec::with_capacity(entries.len());
         for entry in entries {
-            if let Err(error) = self.atoms.resolve(entry.atom) {
+            // Shape entries hold unbranded indices under the retain invariant;
+            // the index operation itself validates the slot before counting.
+            if let Err(error) = self.atoms.retain_index(entry.atom) {
                 self.release_atoms(retained_atoms)?;
                 return Err(error.into());
             }
-            if let Err(error) = self.atoms.retain(entry.atom) {
-                self.release_atoms(retained_atoms)?;
-                return Err(error.into());
-            }
-            retained_atoms.push(entry.atom);
+            retained_atoms.push(Atom::from_raw(entry.atom.raw()));
         }
 
         Ok(retained_atoms)
@@ -376,20 +399,22 @@ impl RuntimeState {
         &mut self,
         slots: &[PropertySlot],
     ) -> Result<Vec<Atom>, RuntimeError> {
-        let atoms = slots
+        let indices = slots
             .iter()
             .filter_map(|slot| match slot {
-                PropertySlot::Data(RawValue::Symbol(atom) | RawValue::Private(atom)) => Some(*atom),
+                PropertySlot::Data(RawValue::Symbol(index) | RawValue::Private(index)) => {
+                    Some(*index)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let mut retained = Vec::with_capacity(atoms.len());
-        for atom in atoms {
-            if let Err(error) = self.atoms.retain(atom) {
+        let mut retained = Vec::with_capacity(indices.len());
+        for index in indices {
+            if let Err(error) = self.atoms.retain_index(index) {
                 self.release_atoms(retained)?;
                 return Err(error.into());
             }
-            retained.push(atom);
+            retained.push(crate::engine::atom::Atom::from_raw(index.raw()));
         }
         Ok(retained)
     }
@@ -398,17 +423,17 @@ impl RuntimeState {
         &mut self,
         values: impl IntoIterator<Item = &'a RawValue>,
     ) -> Result<Vec<Atom>, RuntimeError> {
-        let atoms = values.into_iter().filter_map(|value| match value {
-            RawValue::Symbol(atom) | RawValue::Private(atom) => Some(*atom),
+        let indices = values.into_iter().filter_map(|value| match value {
+            RawValue::Symbol(index) | RawValue::Private(index) => Some(*index),
             _ => None,
         });
         let mut retained = Vec::new();
-        for atom in atoms {
-            if let Err(error) = self.atoms.retain(atom) {
+        for index in indices {
+            if let Err(error) = self.atoms.retain_index(index) {
                 self.release_atoms(retained)?;
                 return Err(error.into());
             }
-            retained.push(atom);
+            retained.push(crate::engine::atom::Atom::from_raw(index.raw()));
         }
         Ok(retained)
     }
@@ -519,7 +544,7 @@ impl RuntimeState {
 
     pub(crate) fn apply_cleanup(&mut self, cleanup: HeapCleanup) -> Result<(), RuntimeError> {
         self.unlink_finalized_shapes(cleanup.finalized_shape_ids);
-        self.release_atoms(cleanup.atoms)
+        self.release_atom_indices(cleanup.atoms)
     }
 
     pub(crate) fn unlink_finalized_shapes(&mut self, shapes: impl IntoIterator<Item = ShapeId>) {
@@ -534,12 +559,31 @@ impl RuntimeState {
         }
     }
 
+    /// Release a rollback list produced by the `retain_*` helpers above.
+    ///
+    /// Those lists may carry unbranded `Atom::from_raw` reconstructions (the
+    /// helpers retain by unbranded index), so release goes through the index
+    /// operation — which re-validates the slot — rather than the branded
+    /// public [`AtomTable::release`].
     pub(crate) fn release_atoms(
         &mut self,
         atoms: impl IntoIterator<Item = Atom>,
     ) -> Result<(), RuntimeError> {
         for atom in atoms {
-            self.atoms.release(atom)?;
+            self.atoms.release_index(AtomIdx::from_raw(atom.raw()))?;
+        }
+        Ok(())
+    }
+
+    /// Release unbranded atom indices returned from heap cleanup.  Each index
+    /// was owned by the finalized node; the table validates the slot again on
+    /// the way out.
+    pub(crate) fn release_atom_indices(
+        &mut self,
+        indices: impl IntoIterator<Item = AtomIdx>,
+    ) -> Result<(), RuntimeError> {
+        for index in indices {
+            self.atoms.release_index(index)?;
         }
         Ok(())
     }
@@ -572,8 +616,8 @@ impl Drop for RuntimeInner {
             .run_gc_for_runtime_teardown()
             .map_err(RuntimeError::Heap)
             .and_then(|mut stats| {
-                let atoms = std::mem::take(&mut stats.cleanup.atoms);
-                state.release_atoms(atoms)
+                let atom_indices = std::mem::take(&mut stats.cleanup.atoms);
+                state.release_atom_indices(atom_indices)
             });
         debug_assert!(result.is_ok(), "runtime teardown failed: {result:?}");
         debug_assert_eq!(

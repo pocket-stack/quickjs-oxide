@@ -368,7 +368,7 @@ impl TypedIterationResume {
 }
 fn iteration_oom(runtime: &Runtime, realm: ContextId) -> Result<TypedIterationStep, RuntimeError> {
     Ok(TypedIterationStep::Complete(Completion::Throw(
-        runtime.new_native_error(realm, NativeErrorKind::Internal, "out of memory")?,
+        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Internal, "out of memory")?,
     )))
 }
 impl Runtime {

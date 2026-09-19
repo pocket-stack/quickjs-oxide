@@ -205,7 +205,7 @@ impl BuiltinPrototypeStep {
 }
 fn not_object(runtime: &Runtime, realm: ContextId) -> Result<BuiltinPrototypeStep, RuntimeError> {
     Ok(BuiltinPrototypeStep::Complete(Completion::Throw(
-        runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
     )))
 }
 impl BuiltinPrototypeResume {

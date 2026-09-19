@@ -149,7 +149,7 @@ impl NumericResume {
                 let radix = crate::engine::value::number::to_int32_sat(value);
                 if !(2..=36).contains(&radix) {
                     return Ok(NumericStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Range,
                             "radix must be between 2 and 36",
@@ -242,7 +242,7 @@ impl NumericResume {
         };
         Ok(NumericStep::Complete(match result {
             Ok(value) => Completion::Return(Value::BigInt(value)),
-            Err(_) => Completion::Throw(runtime.new_native_error(
+            Err(_) => Completion::Throw(runtime.new_native_error_jsvalue(
                 self.0.realm,
                 NativeErrorKind::Range,
                 "BigInt is too large to allocate",

@@ -88,7 +88,7 @@ impl DatePrototypeStep {
         if kind == DateNativeKind::ToPrimitive {
             let Value::Object(object) = this_value else {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                    runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
                 )));
             };
             let hint = match date_argument(arguments, 0)? {
@@ -106,7 +106,7 @@ impl DatePrototypeStep {
                 }
                 _ => {
                     return Ok(Self::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, "invalid hint")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "invalid hint")?,
                     )));
                 }
             };
@@ -285,7 +285,7 @@ impl DatePrototypeResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(DatePrototypeStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "object needs toISOString method",

@@ -53,7 +53,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.typed_array_state(&target)?;
         if current.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "out of bound",
@@ -110,7 +110,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.typed_array_state(&target)?;
         if current.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "out of bound",
@@ -153,7 +153,7 @@ impl Runtime {
         };
         let current = self.typed_array_state(target)?;
         if current.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached or resized",

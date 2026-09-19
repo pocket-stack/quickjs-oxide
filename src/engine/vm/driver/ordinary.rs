@@ -112,7 +112,7 @@ pub(super) fn enter_selected(
             let minimum = selected.minimum();
             let operation = selected.take_operation();
             let (arguments, receiver) =
-                transaction.take_native_call_operands(logical_depth, count, method)?;
+                transaction.take_native_call_operands(runtime, logical_depth, count, method)?;
             drop(transaction);
             if !execution.frames.can_push_with_continuations(0)
                 || runtime.host_stack_would_overflow()

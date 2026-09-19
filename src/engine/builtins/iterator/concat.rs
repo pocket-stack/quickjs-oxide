@@ -45,6 +45,13 @@ impl Runtime {
                 }))
             })
             .collect::<Result<Vec<_>, RuntimeError>>()?;
+        // The object retains its own copy edges inside the allocation, so the
+        // conversions' producer edges are released on every exit below.
+        let conversion_probes = items
+            .iter()
+            .flatten()
+            .map(|item| item.method.clone())
+            .collect::<Vec<_>>();
 
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
@@ -54,6 +61,10 @@ impl Runtime {
                 Err(error) => {
                     let cleanup = state.heap.release_shape(shape)?;
                     state.apply_cleanup(cleanup)?;
+                    drop(state);
+                    for probe in &conversion_probes {
+                        self.release_converted_value_edge(probe);
+                    }
                     return Err(error);
                 }
             };
@@ -67,12 +78,19 @@ impl Runtime {
                     state.release_atoms(retained_atoms)?;
                     let cleanup = state.heap.release_shape(shape)?;
                     state.apply_cleanup(cleanup)?;
+                    drop(state);
+                    for probe in &conversion_probes {
+                        self.release_converted_value_edge(probe);
+                    }
                     return Err(error.into());
                 }
             };
         let cleanup = state.heap.release_shape(shape)?;
         state.apply_cleanup(cleanup)?;
         drop(state);
+        for probe in &conversion_probes {
+            self.release_converted_value_edge(probe);
+        }
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 
@@ -127,16 +145,28 @@ impl Runtime {
         next: &Value,
     ) -> Result<(), RuntimeError> {
         let raw = self.raw_property_value(next)?;
+        // The record retains its own copy edge inside the heap transaction,
+        // so the conversion's producer edge is released on every exit.
+        let conversion_edge = raw.conversion_node_edge();
         let mut state = self.0.state.borrow_mut();
         let retained_atoms = state.retain_raw_value_atoms([&raw])?;
         let cleanup = match state.heap.set_iterator_concat_next(concat.object_id(), raw) {
             Ok(cleanup) => cleanup,
             Err(error) => {
                 state.release_atoms(retained_atoms)?;
+                drop(state);
+                if let Some(edge) = conversion_edge {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error.into());
             }
         };
-        state.apply_cleanup(cleanup)
+        state.apply_cleanup(cleanup)?;
+        drop(state);
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
+        }
+        Ok(())
     }
 
     fn advance_iterator_concat(&self, concat: &ObjectRef) -> Result<(), RuntimeError> {
@@ -325,7 +355,7 @@ impl ConcatStep {
         };
         if snapshot.running {
             return Ok(Self::Complete(NativeInvokeOutcome::Completion(
-                Completion::Throw(runtime.new_native_error(
+                Completion::Throw(runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "already running",
@@ -388,7 +418,7 @@ impl ConcatResume {
         };
         let Value::Object(current) = input else {
             return Ok(ConcatStep::Complete(NativeInvokeOutcome::Completion(
-                Completion::Throw(runtime.new_native_error(
+                Completion::Throw(runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "not an object",
@@ -550,7 +580,7 @@ impl ConcatResume {
             }
             ConcatPhase::Iterator => {
                 let Value::Object(iterator) = value else {
-                    let error = runtime.new_native_error(
+                    let error = runtime.new_native_error_jsvalue(
                         self.0.realm,
                         NativeErrorKind::Type,
                         "not an object",

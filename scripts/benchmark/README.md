@@ -69,6 +69,43 @@ runner verifies matching receipts when present. External engines without a
 receipt are identified by binary hash/version output; attach their compiler
 and build configuration separately when publishing comparisons.
 
+## Profile-guided optimization
+
+`pgo.py` builds a profile-guided CLI in three phases: an instrumented build, a
+training run, and an optimized build. It needs the rustup `llvm-tools`
+component for `llvm-profdata`:
+
+```sh
+rustup component add llvm-tools
+python3 scripts/benchmark/pgo.py --jobs 16 --v8-source ../js-engine-benchmark
+```
+
+By default every `scaling.py` case is trained at sizes 64 and 128, and the
+external v8-v7 suite is added when `--v8-source` points at an
+`js-engine-benchmark` checkout outside this repository. Training failures only
+shrink coverage: raw profiles are kept and merged anyway. The optimized binary
+is written under `--use-target` with a `qjs.build.json` receipt recording the
+merged profile hash, training load and compiler flags. `--skip-training`
+rebuilds from existing raw profiles. Ordinary release builds also take
+`lto = "fat"` and `codegen-units = 1` from `[profile.release]`; comparisons
+must use the same flags on both sides.
+
+Protocol for comparisons during staged performance work:
+
+- A fixed baseline is saved before the work starts: a release build with PGO
+  off and LTO off (`CARGO_PROFILE_RELEASE_LTO=off
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`); its full benchmark numbers are
+  recorded in the stage reports and serve as one of the fixed denominators.
+- Each stage is compared twice: against the previous stage and against the
+  saved baseline, always with identical flags on both sides (no PGO, no LTO).
+  Per-stage PGO retraining is **not** required.
+- Exception: stage E measures the build configuration itself and keeps its own
+  protocol. At the close of each major stage (A/B/D) a full-protocol check
+  (LTO+PGO, both sides retrained) is recommended but not mandatory: LTO
+  changes inlining and code layout, and can occasionally flip a no-LTO result.
+- Cross-protocol comparisons are accepted for cumulative, user-facing deltas;
+  label the build protocol of both sides.
+
 ## External V8 v7 suite
 
 ```sh

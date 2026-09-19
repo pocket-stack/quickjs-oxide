@@ -64,7 +64,7 @@ impl StringSplitStep {
         };
         if matches!(this_value, Value::Undefined | Value::Null) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "cannot convert to object",
@@ -146,13 +146,13 @@ impl StringSplitResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(StringSplitStep::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
                     )));
                 };
                 let mut arguments = Vec::new();
                 if arguments.try_reserve_exact(2).is_err() {
                     return Ok(StringSplitStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             "out of memory",

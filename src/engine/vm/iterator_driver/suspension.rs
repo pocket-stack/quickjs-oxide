@@ -6,7 +6,7 @@ use super::{
 use crate::engine::api::ErrorKind;
 use crate::engine::code::bytecode::IteratorCallKind;
 use crate::engine::object::{PropertyKey, WellKnownSymbol};
-use crate::engine::value::Value;
+use crate::engine::value::JsValue;
 use crate::engine::vm::{VmUnwindRegion, frame::Frame};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,8 +45,12 @@ pub(super) fn start(
             return drive(runtime, execution, pending, None);
         }
         Operation::Next | Operation::Call(_) => {
-            let iterator = execution.slots.peek(&frame.window, 3)?.clone();
-            let next = execution.slots.peek(&frame.window, 2)?.clone();
+            let iterator = runtime
+                .dup_jsvalue(execution.slots.peek(&frame.window, 3)?)
+                .map_err(runtime_error_to_vm_error)?;
+            let next = runtime
+                .dup_jsvalue(execution.slots.peek(&frame.window, 2)?)
+                .map_err(runtime_error_to_vm_error)?;
             let mode = if let Operation::Call(kind) = op {
                 Mode::Delegate(kind)
             } else {
@@ -58,7 +62,9 @@ pub(super) fn start(
             pending.argument = if matches!(op, Operation::Next) {
                 execution.slots.pop(&mut frame.window)?
             } else {
-                execution.slots.peek(&frame.window, 0)?.clone()
+                runtime
+                    .dup_jsvalue(execution.slots.peek(&frame.window, 0)?)
+                    .map_err(runtime_error_to_vm_error)?
             };
             pending
         }
@@ -90,7 +96,7 @@ pub(super) fn start(
             let mut pending = PendingIteratorState::new(frame, id, mode)?;
             if matches!(op, Operation::Parse) {
                 pending.iterator = execution.slots.pop(&mut frame.window)?;
-                if !matches!(pending.iterator, Value::Object(_)) {
+                if !matches!(pending.iterator, JsValue::Object(_)) {
                     pending.stage = Stage::Finish;
                     let error = super::materialize(
                         runtime,
@@ -100,8 +106,12 @@ pub(super) fn start(
                     return drive(runtime, execution, pending, Some(error));
                 }
             } else {
-                pending.iterator = execution.slots.peek(&frame.window, 1)?.clone();
-                pending.next = execution.slots.peek(&frame.window, 0)?.clone();
+                pending.iterator = runtime
+                    .dup_jsvalue(execution.slots.peek(&frame.window, 1)?)
+                    .map_err(runtime_error_to_vm_error)?;
+                pending.next = runtime
+                    .dup_jsvalue(execution.slots.peek(&frame.window, 0)?)
+                    .map_err(runtime_error_to_vm_error)?;
                 let Some(VmUnwindRegion::Iterator { enabled, .. }) = frame.cold.regions.last_mut()
                 else {
                     unreachable!()
@@ -114,8 +124,11 @@ pub(super) fn start(
     let action = match op {
         Operation::Next | Operation::AwaitNext => {
             pending.stage = Stage::ResumeResult;
+            let next = runtime
+                .dup_jsvalue(&pending.next)
+                .map_err(runtime_error_to_vm_error)?;
             let target = match runtime
-                .direct_call_target_from_value(pending.next.clone())
+                .direct_call_target_from_value(next)
                 .map_err(runtime_error_to_vm_error)
             {
                 Ok(target) => target,
@@ -125,11 +138,13 @@ pub(super) fn start(
                 }
             };
             let arguments = if matches!(op, Operation::Next) {
-                vec![std::mem::replace(&mut pending.argument, Value::Undefined)]
+                vec![std::mem::replace(&mut pending.argument, JsValue::Undefined)]
             } else {
                 Vec::new()
             };
-            let receiver = pending.iterator.clone();
+            let receiver = runtime
+                .dup_jsvalue(&pending.iterator)
+                .map_err(runtime_error_to_vm_error)?;
             return crate::engine::vm::proxy_get_driver::start_iterator_invoke(
                 runtime,
                 execution,
@@ -154,7 +169,9 @@ pub(super) fn start(
         }
         Operation::Start { .. } => unreachable!(),
     };
-    let receiver = pending.iterator.clone();
+    let receiver = runtime
+        .dup_jsvalue(&pending.iterator)
+        .map_err(runtime_error_to_vm_error)?;
     crate::engine::vm::proxy_get_driver::start_iterator_read(
         runtime,
         execution,
@@ -184,15 +201,17 @@ impl PendingIteratorState {
     pub(super) fn advance_suspension(
         &mut self,
         runtime: &Runtime,
-        value: Value,
+        value: JsValue,
     ) -> Result<Action, Error> {
         match self.stage {
             Stage::AsyncMethod => {
                 self.stage = Stage::Method;
-                if matches!(value, Value::Undefined | Value::Null) {
+                if matches!(value, JsValue::Undefined | JsValue::Null) {
                     self.sync_fallback = true;
                     Ok(Action::Read(
-                        self.iterable.clone(),
+                        runtime
+                            .dup_jsvalue(&self.iterable)
+                            .map_err(runtime_error_to_vm_error)?,
                         PropertyKey::from(runtime.well_known_symbol(WellKnownSymbol::Iterator)),
                     ))
                 } else {
@@ -200,12 +219,12 @@ impl PendingIteratorState {
                     self.stage = Stage::Iterator;
                     Ok(Action::Call(
                         method,
-                        std::mem::replace(&mut self.iterable, Value::Undefined),
+                        std::mem::replace(&mut self.iterable, JsValue::Undefined),
                     ))
                 }
             }
             Stage::DelegateMethod => {
-                if matches!(value, Value::Undefined | Value::Null) {
+                if matches!(value, JsValue::Undefined | JsValue::Null) {
                     self.done = true;
                     return Ok(Action::Finish);
                 }
@@ -219,9 +238,15 @@ impl PendingIteratorState {
                 let arguments = if kind == IteratorCallKind::ReturnWithoutValue {
                     Vec::new()
                 } else {
-                    vec![std::mem::replace(&mut self.argument, Value::Undefined)]
+                    vec![std::mem::replace(&mut self.argument, JsValue::Undefined)]
                 };
-                Ok(Action::Invoke(target, self.iterator.clone(), arguments))
+                Ok(Action::Invoke(
+                    target,
+                    runtime
+                        .dup_jsvalue(&self.iterator)
+                        .map_err(runtime_error_to_vm_error)?,
+                    arguments,
+                ))
             }
             Stage::ResumeResult | Stage::ValueProperty => {
                 self.yielded = value;
@@ -229,12 +254,14 @@ impl PendingIteratorState {
             }
             Stage::DoneProperty => {
                 self.done = runtime
-                    .value_to_boolean(&value)
+                    .value_to_boolean_jsvalue(&value)
                     .map_err(runtime_error_to_vm_error)?;
                 self.stage = Stage::ValueProperty;
                 // Unlike sync ForOfNext, value is read even when done is true.
                 Ok(Action::Read(
-                    self.iterator.clone(),
+                    runtime
+                        .dup_jsvalue(&self.iterator)
+                        .map_err(runtime_error_to_vm_error)?,
                     self.key(runtime, crate::engine::atom::pinned::PinnedAtom::Value)?,
                 ))
             }

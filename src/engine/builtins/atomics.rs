@@ -445,7 +445,7 @@ impl Runtime {
                 | Value::Object(_) => false,
             };
             if !valid {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "not an integral number",
@@ -503,7 +503,7 @@ impl Runtime {
         // QuickJS deliberately checks the host policy after every observable
         // conversion, even when the current memory value would be unequal.
         if !self.can_block() {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "cannot block in this thread",

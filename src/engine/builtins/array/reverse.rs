@@ -236,7 +236,7 @@ impl ReverseResume {
             Phase::LowerWrite | Phase::UpperWrite => {
                 if !value {
                     return Ok(ReverseStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "could not delete property",

@@ -11,11 +11,11 @@ use crate::engine::code::function::metadata::{ClosureVariable, ClosureVariableKi
 use crate::engine::heap::RawValue;
 use crate::engine::heap::roots::VarRefRoot;
 use crate::engine::object::{CallableRef, PrivateNameRef};
-use crate::engine::value::Value;
+use crate::engine::value::JsValue;
 use crate::engine::vm::exception::runtime_error_to_vm_error;
 
 pub(in crate::engine::vm) enum FrameBinding {
-    Direct(Value),
+    Direct(JsValue),
     Private(PrivateNameRef),
     PrivateCallable(CallableRef),
     Uninitialized,
@@ -32,6 +32,24 @@ pub(in crate::engine::vm) const fn is_private_callable_kind(kind: ClosureVariabl
     )
 }
 
+/// Release every owner a frame binding carried. Direct internal values take
+/// the deferred-release path; the rooted private/captured wrappers release
+/// through their own `Drop`.
+pub(in crate::engine::vm) fn release_frame_binding(
+    runtime: &Runtime,
+    binding: FrameBinding,
+) -> Result<(), Error> {
+    match binding {
+        FrameBinding::Direct(value) => {
+            runtime.release_jsvalue(value).map_err(runtime_error_to_vm_error)
+        }
+        FrameBinding::Private(_)
+        | FrameBinding::PrivateCallable(_)
+        | FrameBinding::Uninitialized
+        | FrameBinding::Captured(_) => Ok(()),
+    }
+}
+
 /// Read a freshly authenticated shared cell without creating any owner or
 /// operation boundary. Pending releases must take the canonical path because
 /// its RuntimeOperation drains them before observing the cell.
@@ -39,7 +57,7 @@ pub(in crate::engine::vm) const fn is_private_callable_kind(kind: ClosureVariabl
 pub(in crate::engine::vm) fn read_immediate_cell(
     runtime: &Runtime,
     root: &impl crate::engine::heap::roots::VarRefHandle,
-) -> Option<Value> {
+) -> Option<JsValue> {
     if !root.belongs_to(runtime) || runtime.0.deferred_references.has_pending() {
         return None;
     }
@@ -49,29 +67,37 @@ pub(in crate::engine::vm) fn read_immediate_cell(
         return None;
     }
     match &cell.value {
-        RawValue::Undefined => Some(Value::Undefined),
-        RawValue::Null => Some(Value::Null),
-        RawValue::Bool(value) => Some(Value::Bool(*value)),
-        RawValue::Int(value) => Some(Value::Int(*value)),
-        RawValue::Float(value) => Some(Value::Float(*value)),
+        RawValue::Undefined => Some(JsValue::Undefined),
+        RawValue::Null => Some(JsValue::Null),
+        RawValue::Bool(value) => Some(JsValue::Bool(*value)),
+        RawValue::Int(value) => Some(JsValue::Int(*value)),
+        RawValue::Float(value) => Some(JsValue::Float(*value)),
         _ => None,
     }
 }
 
 /// Keep the scalar read cheap; only a non-immediate miss attempts an owned
-/// read under the shared heap guard. The flag distinguishes profiling events.
+/// shared-borrow read. `None` declines to the ordinary binding path. The flag
+/// distinguishes profiling events; a trusted non-immediate read never fails,
+/// so a stale or sentinel cell panics instead of returning an error.
 #[inline]
 pub(in crate::engine::vm) fn read_run_cell(
     runtime: &Runtime,
     root: &impl crate::engine::heap::roots::VarRefHandle,
-) -> Result<Option<(Value, bool)>, Error> {
+) -> Option<(JsValue, bool)> {
     if let Some(value) = read_immediate_cell(runtime, root) {
-        return Ok(Some((value, false)));
+        return Some((value, false));
     }
+    if let Some(value) = runtime.read_owned_cell_fast(root) {
+        return Some((value, true));
+    }
+    // Cold decline: Symbols need an atom-table retain, and other cases fall
+    // back to the ordinary binding path when this returns `None`.
     runtime
         .try_read_owned_var_ref(root)
-        .map(|value| value.map(|value| (value, true)))
-        .map_err(runtime_error_to_vm_error)
+        .ok()
+        .flatten()
+        .map(|value| (value, true))
 }
 
 /// Commit only a no-owner immediate replacement. The caller first proves its
@@ -81,15 +107,15 @@ pub(in crate::engine::vm) fn read_run_cell(
 pub(in crate::engine::vm) fn try_write_immediate_cell(
     runtime: &Runtime,
     root: &impl crate::engine::heap::roots::VarRefHandle,
-    value: &Value,
+    value: &JsValue,
     expected: Option<(bool, bool, ClosureVariableKind)>,
 ) -> bool {
     let replacement = match value {
-        Value::Undefined => RawValue::Undefined,
-        Value::Null => RawValue::Null,
-        Value::Bool(value) => RawValue::Bool(*value),
-        Value::Int(value) => RawValue::Int(*value),
-        Value::Float(value) => RawValue::Float(*value),
+        JsValue::Undefined => RawValue::Undefined,
+        JsValue::Null => RawValue::Null,
+        JsValue::Bool(value) => RawValue::Bool(*value),
+        JsValue::Int(value) => RawValue::Int(*value),
+        JsValue::Float(value) => RawValue::Float(*value),
         _ => return false,
     };
     if !root.belongs_to(runtime) || runtime.0.deferred_references.has_pending() {
@@ -131,9 +157,11 @@ pub(crate) fn closure_view_matches_cell(
 pub(in crate::engine::vm) fn read_frame_binding(
     runtime: &Runtime,
     binding: &FrameBinding,
-) -> Result<Value, Error> {
+) -> Result<JsValue, Error> {
     match binding {
-        FrameBinding::Direct(value) => Ok(value.clone()),
+        FrameBinding::Direct(value) => runtime
+            .dup_jsvalue(value)
+            .map_err(|error| Error::internal(error.to_string())),
         FrameBinding::Private(_) | FrameBinding::PrivateCallable(_) => Err(Error::internal(
             "ordinary local read reached a private-element binding",
         )),
@@ -152,15 +180,21 @@ pub(in crate::engine::vm) fn capture_frame_binding(
     descriptor: ClosureVariable,
 ) -> Result<VarRefRoot, Error> {
     match binding {
-        FrameBinding::Direct(value) => {
+        FrameBinding::Direct(_) => {
             if descriptor.kind.is_private() {
                 return Err(Error::internal(
                     "private-name capture reached an ordinary frame value",
                 ));
             }
+            // Move the direct owner into the shared cell; `new_var_ref`
+            // consumes its edges and the capture replaces the binding.
+            let owned = std::mem::replace(binding, FrameBinding::Uninitialized);
+            let FrameBinding::Direct(value) = owned else {
+                unreachable!("direct binding authenticated before the move")
+            };
             let root = runtime
                 .new_var_ref(
-                    value.clone(),
+                    value,
                     descriptor.is_lexical,
                     descriptor.is_const,
                     descriptor.kind,
@@ -255,11 +289,16 @@ pub(in crate::engine::vm) fn close_frame_binding(
                 "captured private-element cell contains an incompatible value",
             ));
         }
-        raw => FrameBinding::Direct(
-            runtime
-                .root_raw_value(&raw)
-                .map_err(runtime_error_to_vm_error)?,
-        ),
+        raw => {
+            let value = JsValue::from_raw(raw).ok_or_else(|| {
+                Error::internal("captured cell contained an internal value sentinel")
+            })?;
+            FrameBinding::Direct(
+                runtime
+                    .dup_jsvalue(&value)
+                    .map_err(runtime_error_to_vm_error)?,
+            )
+        }
     };
     *binding = detached;
     Ok(())
@@ -272,7 +311,7 @@ pub(in crate::engine::vm) fn finish_derived_return(
     caller_realm: crate::engine::heap::ContextId,
     definition: crate::engine::code::function::metadata::VariableDefinition,
     binding: Option<&FrameBinding>,
-    value: Value,
+    value: JsValue,
 ) -> Result<crate::engine::vm::Completion, Error> {
     use crate::engine::api::error::NativeErrorKind;
     use crate::engine::vm::Completion;
@@ -285,11 +324,13 @@ pub(in crate::engine::vm) fn finish_derived_return(
         ));
     }
     match value {
-        value @ Value::Object(_) => Ok(Completion::Return(value)),
-        Value::Undefined => {
+        value @ JsValue::Object(_) => Ok(Completion::Return(value)),
+        JsValue::Undefined => {
             let binding = binding.ok_or_else(|| Error::internal("local index is out of bounds"))?;
             let this_value = match binding {
-                FrameBinding::Direct(value) => value.clone(),
+                FrameBinding::Direct(value) => runtime
+                    .dup_jsvalue(value)
+                    .map_err(runtime_error_to_vm_error)?,
                 FrameBinding::Private(_) | FrameBinding::PrivateCallable(_) => {
                     return Err(Error::internal(
                         "derived this local contains a private-element identity",
@@ -297,7 +338,7 @@ pub(in crate::engine::vm) fn finish_derived_return(
                 }
                 FrameBinding::Uninitialized => {
                     return runtime
-                        .new_native_error(
+                        .new_native_error_jsvalue(
                             caller_realm,
                             NativeErrorKind::Reference,
                             "this is not initialized",
@@ -311,7 +352,7 @@ pub(in crate::engine::vm) fn finish_derived_return(
                         .map_err(runtime_error_to_vm_error)?;
                     if matches!(raw, RawValue::Uninitialized) {
                         return runtime
-                            .new_native_error(
+                            .new_native_error_jsvalue(
                                 caller_realm,
                                 NativeErrorKind::Reference,
                                 "this is not initialized",
@@ -319,26 +360,34 @@ pub(in crate::engine::vm) fn finish_derived_return(
                             .map(Completion::Throw)
                             .map_err(runtime_error_to_vm_error);
                     }
+                    let value = JsValue::from_raw(raw).ok_or_else(|| {
+                        Error::internal("captured this cell held an internal value sentinel")
+                    })?;
                     runtime
-                        .root_raw_value(&raw)
+                        .dup_jsvalue(&value)
                         .map_err(runtime_error_to_vm_error)?
                 }
             };
-            if !matches!(this_value, Value::Object(_)) {
+            if !matches!(this_value, JsValue::Object(_)) {
                 return Err(Error::internal(
                     "initialized derived this binding did not contain an Object",
                 ));
             }
             Ok(Completion::Return(this_value))
         }
-        _ => runtime
-            .new_native_error(
-                caller_realm,
-                NativeErrorKind::Type,
-                "derived class constructor must return an object or undefined",
-            )
-            .map(Completion::Throw)
-            .map_err(runtime_error_to_vm_error),
+        _ => {
+            runtime
+                .release_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
+            runtime
+                .new_native_error_jsvalue(
+                    caller_realm,
+                    NativeErrorKind::Type,
+                    "derived class constructor must return an object or undefined",
+                )
+                .map(Completion::Throw)
+                .map_err(runtime_error_to_vm_error)
+        }
     }
 }
 
@@ -348,7 +397,7 @@ pub(in crate::engine::vm) fn initialize_derived_binding(
     runtime: &Runtime,
     definition: crate::engine::code::function::metadata::VariableDefinition,
     binding: Option<&FrameBinding>,
-    value: Value,
+    value: JsValue,
 ) -> Result<Option<FrameBinding>, Error> {
     use crate::engine::api::error::ErrorKind;
     if !definition.is_lexical
@@ -359,7 +408,7 @@ pub(in crate::engine::vm) fn initialize_derived_binding(
             "derived this initialization referenced a non-mutable lexical local",
         ));
     }
-    if !matches!(value, Value::Object(_)) {
+    if !matches!(value, JsValue::Object(_)) {
         return Err(Error::internal(
             "derived this initialization did not receive an Object",
         ));
@@ -484,7 +533,7 @@ pub(in crate::engine::vm) fn read_checked_closure(
     root: &impl crate::engine::heap::roots::VarRefHandle,
     descriptor: ClosureVariable,
     strip_variable_debug: bool,
-) -> Result<Value, Error> {
+) -> Result<JsValue, Error> {
     let raw = runtime
         .raw_var_ref_value(root)
         .map_err(runtime_error_to_vm_error)?;
@@ -496,8 +545,10 @@ pub(in crate::engine::vm) fn read_checked_closure(
             strip_variable_debug,
         )?);
     }
+    let value = JsValue::from_raw(raw)
+        .ok_or_else(|| Error::internal("captured cell held an internal value sentinel"))?;
     runtime
-        .root_raw_value(&raw)
+        .dup_jsvalue(&value)
         .map_err(runtime_error_to_vm_error)
 }
 
@@ -506,7 +557,7 @@ pub(in crate::engine::vm) fn write_checked_closure(
     root: &impl crate::engine::heap::roots::VarRefHandle,
     descriptor: ClosureVariable,
     strip_variable_debug: bool,
-    value: Value,
+    value: JsValue,
 ) -> Result<(), Error> {
     let (uninitialized, is_const) = {
         let state = runtime.0.state.borrow();
@@ -595,23 +646,20 @@ pub(in crate::engine::vm) fn initialize_local_binding(
     runtime: &Runtime,
     kind: ClosureVariableKind,
     binding: &mut FrameBinding,
-    value: Value,
+    value: JsValue,
 ) -> Result<(), Error> {
-    if kind == ClosureVariableKind::WithObject {
-        let Value::Object(object) = &value else {
-            return Err(Error::internal(
-                "with-object initialization did not receive an Object",
-            ));
-        };
-        if !object.belongs_to(runtime) {
-            return Err(Error::internal(
-                "with-object initialization received a cross-runtime Object",
-            ));
-        }
+    if kind == ClosureVariableKind::WithObject && !matches!(value, JsValue::Object(_)) {
+        return Err(Error::internal(
+            "with-object initialization did not receive an Object",
+        ));
     }
     match binding {
         FrameBinding::Direct(slot) => {
-            *slot = value;
+            // Overwrite releases the replaced owner and moves the new one in.
+            let previous = std::mem::replace(slot, value);
+            runtime
+                .release_jsvalue(previous)
+                .map_err(runtime_error_to_vm_error)?;
             Ok(())
         }
         FrameBinding::Private(_) | FrameBinding::PrivateCallable(_) => Err(Error::internal(
@@ -631,7 +679,7 @@ pub(in crate::engine::vm) fn initialize_derived_closure(
     runtime: &Runtime,
     root: &impl crate::engine::heap::roots::VarRefHandle,
     descriptor: ClosureVariable,
-    value: Value,
+    value: JsValue,
 ) -> Result<(), Error> {
     use crate::engine::api::error::ErrorKind;
     if !descriptor.is_lexical
@@ -642,7 +690,7 @@ pub(in crate::engine::vm) fn initialize_derived_closure(
             "derived this initialization referenced a non-mutable lexical closure",
         ));
     }
-    if !matches!(value, Value::Object(_)) {
+    if !matches!(value, JsValue::Object(_)) {
         return Err(Error::internal(
             "derived this initialization did not receive an Object",
         ));
@@ -816,16 +864,18 @@ mod immediate_cell_tests {
             None
         ));
         assert!(runtime.0.deferred_references.has_pending());
-        assert_eq!(
-            runtime
-                .0
-                .state
-                .borrow()
-                .heap
-                .var_ref(root.id())
-                .unwrap()
-                .value,
-            RawValue::Int(1)
+        assert!(
+            matches!(
+                runtime
+                    .0
+                    .state
+                    .borrow()
+                    .heap
+                    .var_ref(root.id())
+                    .unwrap()
+                    .value,
+                RawValue::Int(1)
+            )
         );
         runtime.drain_deferred_references().unwrap();
         assert!(try_write_immediate_cell(

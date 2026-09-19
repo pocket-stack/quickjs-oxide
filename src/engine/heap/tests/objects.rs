@@ -51,15 +51,11 @@ fn proxy_revocation_releases_only_the_one_shot_closure_capture() {
         .unwrap();
     assert_eq!(heap.object_strong_count(target), Ok(2));
     assert_eq!(heap.object_strong_count(handler), Ok(2));
-    assert_eq!(
-        heap.proxy_snapshot(proxy),
-        Ok(ProxyData {
-            target,
-            handler,
-            is_callable: false,
-            is_revoked: false,
-        })
-    );
+    let snapshot = heap.proxy_snapshot(proxy).unwrap();
+    assert_eq!(snapshot.target, target);
+    assert_eq!(snapshot.handler, handler);
+    assert!(!snapshot.is_callable);
+    assert!(!snapshot.is_revoked);
 
     let revoker = heap
         .allocate_object(ObjectData::bound_internal_native_function(
@@ -80,9 +76,11 @@ fn proxy_revocation_releases_only_the_one_shot_closure_capture() {
     assert!(heap.proxy_snapshot(proxy).unwrap().is_revoked);
     assert_eq!(heap.object_strong_count(target), Ok(2));
     assert_eq!(heap.object_strong_count(handler), Ok(2));
-    assert_eq!(
-        heap.native_internal_callable(revoker),
-        Ok(Some(InternalCallableData::ProxyRevoke { proxy: None }))
+    assert!(
+        matches!(
+            heap.native_internal_callable(revoker),
+            Ok(Some(InternalCallableData::ProxyRevoke { proxy: None }))
+        )
     );
 
     let (revoked_again, cleanup) = heap.revoke_proxy_from_callable(revoker).unwrap();
@@ -287,6 +285,7 @@ fn primitive_object_payload_category_is_structurally_validated() {
     assert_eq!(object_edges(string_data), vec![RawId::Shape(shape)]);
     assert_eq!(object_atoms(string_data).count(), 0);
 
+    let symbol_index = AtomIdx::from_raw(symbol_atom.raw());
     let symbol = heap
         .allocate_object(ObjectData::primitive(
             shape,
@@ -300,7 +299,10 @@ fn primitive_object_payload_category_is_structurally_validated() {
         ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) if atom == symbol_atom
     ));
     assert_eq!(object_edges(symbol_data), vec![RawId::Shape(shape)]);
-    assert_eq!(object_atoms(symbol_data).collect::<Vec<_>>(), [symbol_atom]);
+    assert_eq!(
+        object_atoms(symbol_data).collect::<Vec<_>>(),
+        [symbol_index]
+    );
 
     let bigint = heap
         .allocate_object(ObjectData::primitive(
@@ -320,7 +322,7 @@ fn primitive_object_payload_category_is_structurally_validated() {
 
     heap.release_object(bigint).unwrap();
     let symbol_cleanup = heap.release_object(symbol).unwrap();
-    assert_eq!(symbol_cleanup.atoms, [symbol_atom]);
+    assert_eq!(symbol_cleanup.atoms, [symbol_index]);
     let string_cleanup = heap.release_object(string).unwrap();
     assert!(string_cleanup.atoms.is_empty());
     heap.release_object(number).unwrap();
@@ -415,17 +417,21 @@ fn regexp_payload_is_branded_edge_free_and_structurally_validated() {
     let ordinary = heap
         .allocate_object(ObjectData::ordinary(shape, Vec::new()))
         .unwrap();
-    assert_eq!(
-        heap.regexp_data(ordinary),
-        Err(HeapError::Invariant(
-            "RegExp data requested for an object with the wrong class"
-        ))
+    assert!(
+        matches!(
+            heap.regexp_data(ordinary),
+            Err(HeapError::Invariant(
+                "RegExp data requested for an object with the wrong class"
+            ))
+        )
     );
-    assert_eq!(
-        heap.replace_regexp_data(ordinary, RegExpObjectData::Uninitialized),
-        Err(HeapError::Invariant(
-            "RegExp data update reached an object with the wrong class"
-        ))
+    assert!(
+        matches!(
+            heap.replace_regexp_data(ordinary, RegExpObjectData::Uninitialized),
+            Err(HeapError::Invariant(
+                "RegExp data update reached an object with the wrong class"
+            ))
+        )
     );
 
     heap.release_object(ordinary).unwrap();
@@ -455,7 +461,10 @@ fn compiled_regexp_payload_replacement_and_finalization_release_rc_leaves() {
             },
         )
         .unwrap();
-    assert_eq!(previous, RegExpObjectData::Uninitialized);
+    assert!(
+        matches!(previous, RegExpObjectData::Uninitialized),
+        "previous payload mismatch: {previous:?}"
+    );
     assert_eq!(Rc::strong_count(&program), 2);
     let RegExpObjectData::Compiled {
         pattern: stored_pattern,

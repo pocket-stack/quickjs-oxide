@@ -6,7 +6,7 @@ use super::*;
 /// `held_value` owns its ordinary object or Symbol edge until the registration
 /// is unregistered, finalized with its registry, or moved into a prepared
 /// finalization job by the ordered weak-object pass.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(in crate::engine::heap) struct FinalizationRegistryEntry {
     pub(in crate::engine::heap) target: WeakCollectionKey,
     pub(in crate::engine::heap) held_value: RawValue,
@@ -19,7 +19,7 @@ pub(in crate::engine::heap) struct FinalizationRegistryEntry {
 /// remain in registration order so token clearing, target clearing, and job
 /// preparation follow pinned QuickJS's single forward traversal.
 #[doc(hidden)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct FinalizationRegistryData {
     pub(in crate::engine::heap) callback: ObjectId,
     pub(in crate::engine::heap) realm: ContextId,
@@ -28,14 +28,14 @@ pub struct FinalizationRegistryData {
 
 /// One string-key entry captured by QuickJS's `JS_GPN_SET_ENUM` enumeration.
 /// `JsString` avoids storing runtime-owning `PropertyKey` roots in the heap.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ForInProperty {
     pub name: JsString,
     pub enumerable: bool,
 }
 
 /// Mutable state of one hidden for-in enumeration object.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ForInIteratorData {
     pub object: Option<ObjectId>,
     pub index: usize,
@@ -51,7 +51,7 @@ pub struct ForInIteratorData {
 /// One non-observable step selected from a hidden for-in iterator. The
 /// runtime performs live property/prototype operations only after the heap
 /// borrow used to advance the cursor has ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum ForInCandidate {
     Done,
     BaseComplete { object: ObjectId, fast_array: bool },

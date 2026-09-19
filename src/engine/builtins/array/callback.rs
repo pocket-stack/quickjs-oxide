@@ -312,7 +312,7 @@ impl CallbackResume {
                     Some(value) => value,
                     None => {
                         return Ok(CallbackStep::Complete(Completion::Throw(
-                            runtime.new_native_error(
+                            runtime.new_native_error_jsvalue(
                                 self.0.realm,
                                 NativeErrorKind::Type,
                                 "empty array",

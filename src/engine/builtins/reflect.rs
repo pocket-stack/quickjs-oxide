@@ -96,7 +96,7 @@ impl Runtime {
                     );
                 }
                 for (entry, slot) in shape.entries().iter().zip(&object_data.slots) {
-                    let Some(index) = state.atoms.array_index(entry.atom)? else {
+                    let Some(index) = state.atoms.array_index(state.atoms.brand(entry.atom)?)? else {
                         continue;
                     };
                     if index >= expected_len {

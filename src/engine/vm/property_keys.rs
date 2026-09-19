@@ -3,7 +3,45 @@ use crate::engine::api::{error::Error, runtime::Runtime};
 use crate::engine::object::PropertyKey;
 use crate::engine::value::Value;
 
-pub(super) fn canonical(runtime: &Runtime, value: &Value) -> Result<PropertyKey, Error> {
+pub(super) fn canonical(runtime: &Runtime, value: &crate::engine::value::JsValue) -> Result<PropertyKey, Error> {
+    if let Some(key) = runtime.immediate_numeric_property_key_jsvalue(value) {
+        return Ok(key);
+    }
+    match value {
+        crate::engine::value::JsValue::Symbol(index) => {
+            let atom = runtime
+                .0
+                .state
+                .borrow()
+                .atoms
+                .brand(*index)
+                .map_err(|error| Error::internal(error.to_string()))?;
+            return PropertyKey::from_borrowed_atom(runtime.clone(), atom)
+                .map_err(|error| Error::internal(error.to_string()));
+        }
+        crate::engine::value::JsValue::String(id) => {
+            let string = runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .string(*id)
+                .map_err(|error| Error::internal(error.to_string()))?
+                .clone();
+            return runtime
+                .intern_property_key_js_string(&string)
+                .map_err(|error| Error::internal(error.to_string()));
+        }
+        value => {
+            let rooted = runtime
+                .root_value(value)
+                .map_err(|error| Error::internal(error.to_string()))?;
+            canonical_rooted(runtime, &rooted)
+        }
+    }
+}
+
+fn canonical_rooted(runtime: &Runtime, value: &Value) -> Result<PropertyKey, Error> {
     if let Some(key) = runtime.immediate_numeric_property_key(value) {
         return Ok(key);
     }
@@ -81,7 +119,9 @@ pub(super) fn set_name(
                         "function-name opcode referenced a non-string constant",
                     ));
                 };
-                name.clone()
+                // The published bytecode node owns the constant-pool edge, so
+                // the trusted read clones the payload Rc without retaining.
+                runtime.0.state.borrow().heap.string_fast(*name).clone()
             }
             None => computed_name(runtime, execution.slots.peek(&frame.window, 1)?)?,
         };

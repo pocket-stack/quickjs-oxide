@@ -121,7 +121,7 @@ pub(super) fn step(
             };
             Ok(Some(super::Completion::Throw(
                 runtime
-                    .new_native_error_from_error(realm, kind, &error)
+                    .new_native_error_from_error_jsvalue(realm, kind, &error)
                     .map_err(runtime_error_to_vm_error)?,
             )))
         }

@@ -481,7 +481,7 @@ impl Runtime {
         let promise = match completion {
             Completion::Return(Value::Object(promise)) => promise,
             Completion::Return(_) => {
-                return Ok(NativeConversion::Throw(self.new_native_error(
+                return Ok(NativeConversion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "not an object",
@@ -496,7 +496,7 @@ impl Runtime {
             .heap
             .promise_capability_capture(executor.as_object().object_id())?;
         let (Some(resolve), Some(reject)) = (capture.resolve, capture.reject) else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
+            return Ok(NativeConversion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "resolving function is not callable",
@@ -664,7 +664,7 @@ impl Runtime {
             Ok(false) => {
                 state.release_atoms(retained)?;
                 drop(state);
-                Ok(Completion::Throw(self.new_native_error(
+                Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "resolving function already set",
@@ -704,6 +704,7 @@ impl Runtime {
             }
         };
         let raw = self.raw_property_value(&result)?;
+        let conversion_edge = raw.conversion_node_edge();
 
         // Prepare job-owned roots before detaching the Promise's reactions,
         // but do not publish the jobs yet. QuickJS exposes the settled state to
@@ -724,9 +725,9 @@ impl Runtime {
         let prepared_jobs = crate::engine::jobs::PreparedJobs::new(self, prepared_jobs);
         let settlement = (|| -> Result<(), RuntimeError> {
             let mut state_ref = self.0.state.borrow_mut();
-            let retained_atom = if let RawValue::Symbol(atom) = &raw {
-                state_ref.atoms.retain(*atom)?;
-                Some(*atom)
+            let retained_atom = if let RawValue::Symbol(index) = &raw {
+                state_ref.atoms.retain_index(*index)?;
+                Some(*index)
             } else {
                 None
             };
@@ -736,14 +737,20 @@ impl Runtime {
             {
                 Ok(cleanup) => cleanup,
                 Err(error) => {
-                    if let Some(atom) = retained_atom {
-                        state_ref.atoms.release(atom)?;
+                    if let Some(index) = retained_atom {
+                        state_ref.atoms.release_index(index)?;
                     }
                     return Err(error.into());
                 }
             };
             state_ref.apply_cleanup(cleanup)
         })();
+        // The settle transaction retained its own copy edge for a stored
+        // string/BigInt; on failure nothing was stored. Either way the
+        // conversion's producer edge is no longer needed.
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
+        }
         settlement?;
         if state == PromiseState::Rejected && !was_handled {
             self.notify_host_promise_rejection_tracker(

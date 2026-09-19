@@ -265,7 +265,7 @@ fn complete_get_invariant(
     };
     Ok(ProxyGetStep::Complete(
         if get_invariant_violation(&result, &descriptor) {
-            Completion::Throw(runtime.new_native_error(
+            Completion::Throw(runtime.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "proxy: inconsistent get",

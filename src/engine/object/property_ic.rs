@@ -3,7 +3,7 @@
 use std::cell::Cell;
 
 use crate::engine::api::{runtime::Runtime, runtime_error::RuntimeError};
-use crate::engine::atom::{Atom, AtomTable};
+use crate::engine::atom::{Atom, AtomIdx, AtomTable};
 use crate::engine::code::bytecode::Instruction;
 use crate::engine::heap::{ContextId, Heap, ObjectId, ObjectKind, PropertySlot, RawValue, ShapeId};
 use crate::engine::value::Value;
@@ -82,14 +82,14 @@ impl PropertyReadCache {
         if location.domain != domain || location.realm != realm {
             return None;
         }
-        let object = heap.object(receiver).ok()?;
+        let object = heap.object_fast(receiver);
         if !ordinary_receiver(object, location.numeric_key) {
             return None;
         }
         if object.shape != location.shape {
             return None;
         }
-        let shape = heap.shape(object.shape).ok()?;
+        let shape = heap.shape_fast(object.shape);
         if shape.layout_revision() != location.revision {
             return None;
         }
@@ -99,16 +99,11 @@ impl PropertyReadCache {
                 return None;
             }
             for _ in 0..location.depth {
-                let data = heap.object(holder).ok()?;
-                holder = heap.shape(data.shape).ok()?.prototype()?;
+                let data = heap.object_fast(holder);
+                holder = heap.shape_fast(data.shape).prototype()?;
             }
         }
-        match heap
-            .object(holder)
-            .ok()?
-            .slots
-            .get(location.slot as usize)?
-        {
+        match heap.object_fast(holder).slots.get(location.slot as usize)? {
             PropertySlot::Data(value) => Some(value),
             // VarRef/AutoInit can share data-shaped storage; never treat them
             // as immutable data, even if an internal slot writer changed kind.
@@ -291,7 +286,7 @@ fn locate(
             return None;
         }
         let shape = heap.shape(data.shape).ok()?;
-        if let Some(slot) = shape.find(atom) {
+        if let Some(slot) = shape.find(AtomIdx::from_raw(atom.raw())) {
             return matches!(data.slots.get(slot as usize), Some(PropertySlot::Data(_))).then_some(
                 Location {
                     domain,
@@ -330,7 +325,7 @@ impl PropertyWriteCache {
         if location.depth != 0 {
             return None;
         }
-        if heap.object(receiver).ok()?.kind == ObjectKind::Array && location.slot == 0 {
+        if matches!(heap.object(receiver).ok()?.kind, ObjectKind::Array) && location.slot == 0 {
             return None;
         }
         let shape = heap.shape(location.shape).ok()?;

@@ -82,7 +82,9 @@ fn cloned_module_handle_roots_compilation_and_first_link_realms() {
         assert_eq!(runtime.heap_counts().context_nodes, 2);
         let snapshot = module_evaluation_snapshot(&mut link_context, &surviving_handle);
         assert_eq!(snapshot.state, PromiseState::Fulfilled);
-        assert_eq!(snapshot.result, RawValue::Undefined);
+        assert!(
+            matches!(snapshot.result, RawValue::Undefined)
+        );
         assert_script_true(&mut link_context, "__rootedModuleRealm === 42");
     }
 
@@ -109,13 +111,17 @@ fn cross_linked_module_caches_do_not_leak_a_context_cycle() {
     second_context.execute_module(&first_module).unwrap();
     first_context.execute_module(&second_module).unwrap();
 
-    assert_eq!(
-        runtime.module_record(first_module.raw).unwrap().link_realm,
-        Some(RawModuleLinkRealm::Other(second_context.realm))
+    assert!(
+        matches!(
+            runtime.module_record(first_module.raw).unwrap().link_realm,
+            Some(RawModuleLinkRealm::Other(realm)) if realm == second_context.realm
+        )
     );
-    assert_eq!(
-        runtime.module_record(second_module.raw).unwrap().link_realm,
-        Some(RawModuleLinkRealm::Other(first_context.realm))
+    assert!(
+        matches!(
+            runtime.module_record(second_module.raw).unwrap().link_realm,
+            Some(RawModuleLinkRealm::Other(realm)) if realm == first_context.realm
+        )
     );
     assert_eq!(runtime.heap_counts().context_nodes, 2);
 

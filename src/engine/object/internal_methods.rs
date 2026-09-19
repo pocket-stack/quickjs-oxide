@@ -147,6 +147,28 @@ impl Runtime {
                 "not a function",
             )));
         };
+        self.direct_call_target_from_object(object)
+    }
+
+    /// Handle form of [`Runtime::direct_call_target_from_value`]; borrows the
+    /// object's edge and roots the classified capability only.
+    pub(crate) fn direct_call_target_from_jsvalue(
+        &self,
+        value: crate::engine::value::JsValue,
+    ) -> Result<DirectCallTarget, RuntimeError> {
+        let crate::engine::value::JsValue::Object(object) = value else {
+            return Err(RuntimeError::Engine(Error::new(
+                ErrorKind::Type,
+                "not a function",
+            )));
+        };
+        self.direct_call_target_from_object(object)
+    }
+
+    fn direct_call_target_from_object(
+        &self,
+        object: crate::engine::object::ObjectRef,
+    ) -> Result<DirectCallTarget, RuntimeError> {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("call target"));
         }

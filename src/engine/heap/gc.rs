@@ -6,14 +6,15 @@
 
 use super::Edges;
 use super::{
-    AsyncGeneratorRequestData, Atom, AutoInitProperty, BytecodeConstant, ContextData, ContextId,
-    FinalizationRegistryEntry, FunctionBytecodeData, FunctionBytecodeId, GeneratorActivationData,
-    GeneratorFrameBinding, Hash, HashMap, Heap, HeapError, InternalCallableData, NativeErrorKind,
-    Node, NodeData, ObjectData, ObjectId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
-    PromiseCapabilityData, PromiseReaction, PropertySlot, RawId, RawModuleEvaluationState,
-    RawModuleLinkRealm, RawModuleNamespaceState, RawModuleRecord, RawModuleRecordBody, RawValue,
-    Shape, ShapeId, SlotState, TypedArrayElementKind, VarRefData, VarRefId, VecDeque,
-    WeakCollectionKey, is_map_storable_value,
+    AsyncGeneratorRequestData, AtomIdx, AutoInitProperty, BytecodeConstant, ContextData,
+    ContextId, FinalizationRegistryEntry, FunctionBytecodeData, FunctionBytecodeId,
+    GeneratorActivationData, GeneratorFrameBinding, Hash, HashMap, Heap, HeapError,
+    InternalCallableData, NativeErrorKind, Node, NodeData, ObjectData, ObjectId, ObjectPayload,
+    PrimitiveKind, PrimitiveObjectData, PromiseCapabilityData, PromiseReaction, PropertySlot,
+    RawId, RawModuleEvaluationState, RawModuleLinkRealm, RawModuleNamespaceState,
+    RawModuleRecord, RawModuleRecordBody, RawValue, Shape, ShapeId, SlotState, StringId, BigIntId,
+    TypedArrayElementKind, VarRefData, VarRefId, VecDeque, WeakCollectionKey,
+    is_map_storable_value,
 };
 
 /// Resources finalized by a release, mutation, or collection operation.
@@ -24,10 +25,16 @@ pub struct HeapCleanup {
     pub finalized_var_refs: usize,
     pub finalized_contexts: usize,
     pub finalized_function_bytecodes: usize,
+    pub finalized_strings: usize,
+    pub finalized_bigints: usize,
     /// Finalized shape identities for O(1) weak-cache unlinking.
     pub finalized_shape_ids: Vec<ShapeId>,
     /// Owned non-GC atom edges detached from shapes and symbol values.
-    pub atoms: Vec<Atom>,
+    ///
+    /// These carry unbranded [`AtomIdx`] values: finalization runs inside the
+    /// arena without `AtomTable` access, and the runtime releases each index
+    /// through the table's validated index path when applying the cleanup.
+    pub atoms: Vec<AtomIdx>,
 }
 
 impl HeapCleanup {
@@ -45,6 +52,12 @@ impl HeapCleanup {
         self.finalized_function_bytecodes = self
             .finalized_function_bytecodes
             .saturating_add(other.finalized_function_bytecodes);
+        self.finalized_strings = self
+            .finalized_strings
+            .saturating_add(other.finalized_strings);
+        self.finalized_bigints = self
+            .finalized_bigints
+            .saturating_add(other.finalized_bigints);
         self.finalized_shape_ids
             .append(&mut other.finalized_shape_ids);
         self.atoms.append(&mut other.atoms);
@@ -69,8 +82,8 @@ pub struct GcStats {
 /// [`HeapCleanup::atoms`] for the caller to release after collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WeakSymbolGcEvent {
-    IsLive(Atom),
-    Release(Atom),
+    IsLive(AtomIdx),
+    Release(AtomIdx),
 }
 
 /// Whether an internal collection performs QuickJS's ordered weak-object
@@ -87,7 +100,7 @@ enum WeakObjectGcMode {
 /// Publication through [`FinalizationJobSink`] transfers exactly one owned
 /// callback, realm, and held-value root per record. A Runtime adapter must not
 /// retain them again when it adopts the record.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct PreparedFinalizationJob {
     pub(crate) realm: ContextId,
     pub(crate) callback: ObjectId,
@@ -123,6 +136,12 @@ impl Heap {
         self.retain_raw(RawId::Object(id), 1)
     }
 
+    /// Trusted hot-path retain for a live object handle.
+    #[inline]
+    pub(crate) fn retain_object_fast(&self, id: ObjectId) {
+        self.retain_raw_fast(RawId::Object(id));
+    }
+
     /// Duplicate one externally owned shape reference.
     pub fn retain_shape(&mut self, id: ShapeId) -> Result<(), HeapError> {
         self.retain_raw(RawId::Shape(id), 1)
@@ -141,6 +160,49 @@ impl Heap {
     /// Duplicate one externally owned function-bytecode reference.
     pub fn retain_function_bytecode(&mut self, id: FunctionBytecodeId) -> Result<(), HeapError> {
         self.retain_raw(RawId::FunctionBytecode(id), 1)
+    }
+
+    /// Duplicate one externally owned string node reference.
+    pub fn retain_string(&mut self, id: StringId) -> Result<(), HeapError> {
+        self.retain_raw(RawId::String(id), 1)
+    }
+
+    /// Duplicate one externally owned BigInt node reference.
+    pub fn retain_bigint(&mut self, id: BigIntId) -> Result<(), HeapError> {
+        self.retain_raw(RawId::BigInt(id), 1)
+    }
+
+    /// Validated shared-borrow duplicate of one object reference.
+    pub(crate) fn retain_object_shared(&self, id: ObjectId) -> Result<(), HeapError> {
+        self.retain_raw_shared(RawId::Object(id))
+    }
+
+    /// Validated shared-borrow duplicate of one string node reference.
+    pub(crate) fn retain_string_shared(&self, id: StringId) -> Result<(), HeapError> {
+        self.retain_raw_shared(RawId::String(id))
+    }
+
+    /// Validated shared-borrow duplicate of one BigInt node reference.
+    pub(crate) fn retain_bigint_shared(&self, id: BigIntId) -> Result<(), HeapError> {
+        self.retain_raw_shared(RawId::BigInt(id))
+    }
+
+    /// Validated shared-borrow duplicate of one captured-variable cell.
+    pub(crate) fn retain_var_ref_shared(&self, id: VarRefId) -> Result<(), HeapError> {
+        self.retain_raw_shared(RawId::VarRef(id))
+    }
+
+    /// Validated shared-borrow duplicate of one context reference.
+    pub(crate) fn retain_context_shared(&self, id: ContextId) -> Result<(), HeapError> {
+        self.retain_raw_shared(RawId::Context(id))
+    }
+
+    /// Validated shared-borrow duplicate of one function-bytecode reference.
+    pub(crate) fn retain_function_bytecode_shared(
+        &self,
+        id: FunctionBytecodeId,
+    ) -> Result<(), HeapError> {
+        self.retain_raw_shared(RawId::FunctionBytecode(id))
     }
 
     /// Release one object reference and iteratively drain zero-reference nodes.
@@ -173,6 +235,20 @@ impl Heap {
         id: FunctionBytecodeId,
     ) -> Result<HeapCleanup, HeapError> {
         self.release_and_drain(RawId::FunctionBytecode(id))
+    }
+
+    /// Release one string node reference and iteratively drain zero-reference
+    /// nodes.  String payloads own no edges, so the cleanup carries counts
+    /// only.
+    pub fn release_string(&mut self, id: StringId) -> Result<HeapCleanup, HeapError> {
+        self.release_and_drain(RawId::String(id))
+    }
+
+    /// Release one BigInt node reference and iteratively drain zero-reference
+    /// nodes.  BigInt payloads own no edges, so the cleanup carries counts
+    /// only.
+    pub fn release_bigint(&mut self, id: BigIntId) -> Result<HeapCleanup, HeapError> {
+        self.release_and_drain(RawId::BigInt(id))
     }
 
     /// Snapshot the non-owning target currently stored by a genuine WeakRef.
@@ -341,8 +417,8 @@ impl Heap {
     ) -> Result<HeapCleanup, HeapError> {
         for value in values {
             cleanup.atoms.extend(raw_value_atom(&value));
-            if let RawValue::Object(object) = value {
-                self.release_raw_no_drain(RawId::Object(object))?;
+            for edge in raw_value_edges(&value) {
+                self.release_raw_no_drain(edge)?;
             }
         }
         cleanup.merge(self.drain_zero_queue()?);
@@ -411,7 +487,7 @@ impl Heap {
         let mut examined_nodes = 0usize;
         for (index, slot) in self.slots.iter().enumerate() {
             if let SlotState::Live(node) = &slot.state {
-                trial[index] = Some(node.strong);
+                trial[index] = Some(node.strong.get());
                 examined_nodes = examined_nodes.saturating_add(1);
             }
         }
@@ -489,6 +565,10 @@ impl Heap {
                     generation: slot.generation,
                 })),
                 NodeData::Shape(_) | NodeData::VarRef(_) => {}
+                // String and BigInt payloads own no edges, so an unreachable
+                // one cannot participate in a cycle; it is reclaimed purely by
+                // its reference count through the zero queue.
+                NodeData::String(_) | NodeData::BigInt(_) => {}
             }
         }
 
@@ -603,9 +683,9 @@ impl Heap {
                                             "ordered weak-map record disappeared during pruning",
                                         ))?
                                     };
-                                    if let Some(atom) = raw_value_atom(&value) {
-                                        if !hook(WeakSymbolGcEvent::Release(atom))? {
-                                            cleanup.atoms.push(atom);
+                                    if let Some(index) = raw_value_atom(&value) {
+                                        if !hook(WeakSymbolGcEvent::Release(index))? {
+                                            cleanup.atoms.push(index);
                                         }
                                     }
                                     for edge in raw_value_edges(&value) {
@@ -692,10 +772,10 @@ impl Heap {
                                 };
                                 data.entries.remove(entry_index)
                             };
-                            if let Some(atom) = raw_value_atom(&entry.held_value)
-                                && !hook(WeakSymbolGcEvent::Release(atom))?
+                            if let Some(index) = raw_value_atom(&entry.held_value)
+                                && !hook(WeakSymbolGcEvent::Release(index))?
                             {
-                                cleanup.atoms.push(atom);
+                                cleanup.atoms.push(index);
                             }
                             for edge in raw_value_edges(&entry.held_value) {
                                 self.release_raw_no_drain(edge)?;
@@ -973,7 +1053,11 @@ impl Heap {
     {
         match target {
             WeakCollectionKey::Object(object) => Ok(self.is_live(RawId::Object(object))),
-            WeakCollectionKey::Symbol(atom) => hook(WeakSymbolGcEvent::IsLive(atom)),
+            // The key was branded at admission; the event carries the same
+            // table's unbranded index.
+            WeakCollectionKey::Symbol(atom) => {
+                hook(WeakSymbolGcEvent::IsLive(AtomIdx::from_raw(atom.raw())))
+            }
         }
     }
 
@@ -1022,6 +1106,7 @@ impl Heap {
     fn preflight_edge_retain(&self, edge: RawId, additional: u32) -> Result<(), HeapError> {
         self.live_node(edge)?
             .strong
+            .get()
             .checked_add(additional)
             .ok_or(HeapError::Overflow {
                 operation: "retaining outgoing heap edges",
@@ -1031,12 +1116,44 @@ impl Heap {
 
     pub(super) fn retain_raw(&mut self, id: RawId, additional: u32) -> Result<(), HeapError> {
         let node = self.live_node_mut(id)?;
-        node.strong = node
-            .strong
-            .checked_add(additional)
-            .ok_or(HeapError::Overflow {
-                operation: "retaining a heap reference",
-            })?;
+        node.strong.set(
+            node.strong
+                .get()
+                .checked_add(additional)
+                .ok_or(HeapError::Overflow {
+                    operation: "retaining a heap reference",
+                })?,
+        );
+        Ok(())
+    }
+
+    /// Trusted hot-path retain for a proven-live handle.
+    ///
+    /// Callers hold a live owning edge, so a stale or wrong-kind handle is a
+    /// heap invariant violation rather than a recoverable condition. The
+    /// count saturates at `u32::MAX`, matching QuickJS's immortal value; the
+    /// fallible [`Heap::retain_raw`] keeps its checked overflow behavior.
+    #[inline]
+    pub(in crate::engine::heap) fn retain_raw_fast(&self, id: RawId) {
+        let node = self.live_node_fast(id);
+        node.strong.set(node.strong.get().saturating_add(1));
+    }
+
+    /// Validated shared-borrow retain: full identity check, then the `Cell`
+    /// counter increment.  Rooting paths (for example a nested property
+    /// materialization which already holds a shared state borrow) duplicate
+    /// one reference without requiring `&mut` access to the arena.
+    #[inline]
+    pub(in crate::engine::heap) fn retain_raw_shared(&self, id: RawId) -> Result<(), HeapError> {
+        let node = self.live_node(id)?;
+        node.strong.set(
+            node.strong
+                .get()
+                .checked_add(1)
+                .ok_or(HeapError::Overflow {
+                    operation: "retaining a heap reference",
+                })?,
+        );
         Ok(())
     }
 
@@ -1067,12 +1184,14 @@ impl Heap {
             let slot = &mut self.slots[index];
             match &mut slot.state {
                 SlotState::Live(node) => {
-                    node.strong = node.strong.checked_sub(1).ok_or(HeapError::Underflow {
-                        kind: id.kind(),
-                        index: id.index(),
-                        generation: id.generation(),
-                    })?;
-                    if node.strong == 0 {
+                    node.strong.set(node.strong.get().checked_sub(1).ok_or(
+                        HeapError::Underflow {
+                            kind: id.kind(),
+                            index: id.index(),
+                            generation: id.generation(),
+                        },
+                    )?);
+                    if node.strong.get() == 0 {
                         let state = std::mem::replace(&mut slot.state, SlotState::Vacant);
                         let SlotState::Live(node) = state else {
                             return Err(HeapError::Invariant(
@@ -1127,7 +1246,7 @@ impl Heap {
                         "zero queue referenced a node not in ZeroQueued state",
                     ));
                 };
-                if node.strong != 0 {
+                if node.strong.get() != 0 {
                     return Err(HeapError::Invariant(
                         "zero queue contained a nonzero reference count",
                     ));
@@ -1208,6 +1327,14 @@ impl Heap {
                     self.release_raw_no_drain(edge)?;
                 }
             }
+            // String and BigInt payloads own no heap edges and no atom
+            // references; finalization only accounts for the node itself.
+            NodeData::String(_) => {
+                cleanup.finalized_strings = cleanup.finalized_strings.saturating_add(1);
+            }
+            NodeData::BigInt(_) => {
+                cleanup.finalized_bigints = cleanup.finalized_bigints.saturating_add(1);
+            }
         }
         Ok(())
     }
@@ -1242,7 +1369,7 @@ impl Heap {
             }
             slot.state = SlotState::Zombie {
                 kind: id.kind(),
-                strong: node.strong,
+                strong: node.strong.get(),
             };
             node
         };
@@ -1316,9 +1443,7 @@ pub(super) fn object_edges(object: &ObjectData) -> Edges {
         ObjectPayload::Array { dense } => {
             if let Some(dense) = dense {
                 for value in dense {
-                    if let RawValue::Object(object) = value {
-                        edges.push(RawId::Object(*object));
-                    }
+                    edges.extend(raw_value_edges(value));
                 }
             }
         }
@@ -1651,8 +1776,19 @@ pub(super) fn property_slot_edges(slot: &PropertySlot) -> Edges {
 
 pub(super) fn raw_value_edges(value: &RawValue) -> Edges {
     let mut edges = Edges::new();
-    if let RawValue::Object(object) = value {
-        edges.push(RawId::Object(*object));
+    match value {
+        RawValue::Object(object) => edges.push(RawId::Object(*object)),
+        RawValue::String(id) => edges.push(RawId::String(*id)),
+        RawValue::BigInt(id) => edges.push(RawId::BigInt(*id)),
+        RawValue::Undefined
+        | RawValue::Null
+        | RawValue::Bool(_)
+        | RawValue::Int(_)
+        | RawValue::Float(_)
+        | RawValue::Symbol(_)
+        | RawValue::Private(_)
+        | RawValue::Uninitialized
+        | RawValue::Exception => {}
     }
     edges
 }
@@ -1844,7 +1980,7 @@ pub(super) fn function_bytecode_edges(bytecode: &FunctionBytecodeData) -> Vec<Ra
     edges
 }
 
-pub(super) fn property_slot_atoms(slot: &PropertySlot) -> impl Iterator<Item = Atom> + '_ {
+pub(super) fn property_slot_atoms(slot: &PropertySlot) -> impl Iterator<Item = AtomIdx> + '_ {
     match slot {
         PropertySlot::Data(RawValue::Symbol(atom) | RawValue::Private(atom)) => Some(*atom),
         PropertySlot::Data(_)
@@ -1855,11 +1991,11 @@ pub(super) fn property_slot_atoms(slot: &PropertySlot) -> impl Iterator<Item = A
     .into_iter()
 }
 
-fn object_slot_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
+fn object_slot_atoms(object: &ObjectData) -> impl Iterator<Item = AtomIdx> + '_ {
     object.slots.iter().flat_map(property_slot_atoms)
 }
 
-fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
+fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<AtomIdx> {
     match internal {
         InternalCallableData::PromiseCapabilityExecutor(capture) => capture
             .resolve
@@ -1885,9 +2021,11 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
     }
 }
 
-pub(super) fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
+pub(super) fn object_atoms(object: &ObjectData) -> impl Iterator<Item = AtomIdx> + '_ {
     let payload = match &object.payload {
-        ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) => vec![*atom],
+        ObjectPayload::Primitive(PrimitiveObjectData::Symbol(atom)) => {
+                vec![AtomIdx::from_raw(atom.raw())]
+            }
         ObjectPayload::Primitive(
             PrimitiveObjectData::Number(_)
             | PrimitiveObjectData::String(_)
@@ -1997,10 +2135,14 @@ pub(super) fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + 
     };
     object_slot_atoms(object)
         .chain(payload)
-        .chain(object.private_brand_home)
+        .chain(
+            object
+                .private_brand_home
+                .map(|atom| AtomIdx::from_raw(atom.raw())),
+        )
 }
 
-pub(super) fn generator_activation_atoms(activation: &GeneratorActivationData) -> Vec<Atom> {
+pub(super) fn generator_activation_atoms(activation: &GeneratorActivationData) -> Vec<AtomIdx> {
     let vm = &activation.vm;
     vm.stack
         .iter()
@@ -2016,7 +2158,7 @@ pub(super) fn generator_activation_atoms(activation: &GeneratorActivationData) -
                 .chain(activation.locals.iter())
                 .filter_map(|binding| match binding {
                     GeneratorFrameBinding::Direct(value) => raw_value_atom(value),
-                    GeneratorFrameBinding::Private(atom) => Some(*atom),
+                    GeneratorFrameBinding::Private(atom) => Some(AtomIdx::from_raw(atom.raw())),
                     GeneratorFrameBinding::PrivateCallable(_)
                     | GeneratorFrameBinding::Uninitialized
                     | GeneratorFrameBinding::Captured(_) => None,
@@ -2025,9 +2167,9 @@ pub(super) fn generator_activation_atoms(activation: &GeneratorActivationData) -
         .collect()
 }
 
-pub(super) fn raw_value_atom(value: &RawValue) -> Option<Atom> {
+pub(super) fn raw_value_atom(value: &RawValue) -> Option<AtomIdx> {
     match value {
-        RawValue::Symbol(atom) | RawValue::Private(atom) => Some(*atom),
+        RawValue::Symbol(index) | RawValue::Private(index) => Some(*index),
         RawValue::Undefined
         | RawValue::Null
         | RawValue::Bool(_)
@@ -2046,12 +2188,16 @@ pub(super) fn raw_value_matches_weak_key(value: &RawValue, key: WeakCollectionKe
         (RawValue::Object(value), WeakCollectionKey::Object(key)) => {
             value.index == key.index && value.generation == key.generation
         }
-        (RawValue::Symbol(value), WeakCollectionKey::Symbol(key)) => *value == key,
+        // The weak key was branded at admission; the stored value carries the
+        // same table's unbranded index, so raw-index equality is exact.
+        (RawValue::Symbol(value), WeakCollectionKey::Symbol(key)) => {
+            *value == AtomIdx::from_raw(key.raw())
+        }
         _ => false,
     }
 }
 
-fn context_atoms(context: &ContextData) -> impl Iterator<Item = Atom> + '_ {
+fn context_atoms(context: &ContextData) -> impl Iterator<Item = AtomIdx> + '_ {
     context.intrinsics.iter().filter_map(raw_value_atom).chain(
         context
             .loaded_modules
@@ -2062,7 +2208,7 @@ fn context_atoms(context: &ContextData) -> impl Iterator<Item = Atom> + '_ {
     )
 }
 
-pub(super) fn raw_module_record_atoms(record: &RawModuleRecord) -> impl Iterator<Item = Atom> + '_ {
+pub(super) fn raw_module_record_atoms(record: &RawModuleRecord) -> impl Iterator<Item = AtomIdx> + '_ {
     let body = match &record.body {
         RawModuleRecordBody::Json { default_value } => raw_value_atom(default_value),
         RawModuleRecordBody::Parsing
@@ -2080,11 +2226,11 @@ pub(super) fn raw_module_record_atoms(record: &RawModuleRecord) -> impl Iterator
     body.into_iter().chain(evaluation)
 }
 
-fn function_bytecode_atoms(bytecode: &FunctionBytecodeData) -> impl Iterator<Item = Atom> + '_ {
+fn function_bytecode_atoms(bytecode: &FunctionBytecodeData) -> impl Iterator<Item = AtomIdx> + '_ {
     bytecode
         .auxiliary_atoms
         .iter()
-        .copied()
+        .map(|atom| AtomIdx::from_raw(atom.raw()))
         .chain(
             bytecode
                 .constants
@@ -2096,6 +2242,6 @@ fn function_bytecode_atoms(bytecode: &FunctionBytecodeData) -> impl Iterator<Ite
         )
 }
 
-fn var_ref_atoms(var_ref: &VarRefData) -> impl Iterator<Item = Atom> + '_ {
+fn var_ref_atoms(var_ref: &VarRefData) -> impl Iterator<Item = AtomIdx> + '_ {
     raw_value_atom(&var_ref.value).into_iter()
 }

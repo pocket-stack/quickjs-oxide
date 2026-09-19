@@ -274,7 +274,7 @@ impl IndexedResume {
                         if matches!(self.0.kind, IndexedKind::At) {
                             Completion::Return(Value::Undefined)
                         } else {
-                            Completion::Throw(runtime.new_native_error(
+                            Completion::Throw(runtime.new_native_error_jsvalue(
                                 self.0.realm,
                                 NativeErrorKind::Range,
                                 &format!("invalid array index: {}", self.0.index),

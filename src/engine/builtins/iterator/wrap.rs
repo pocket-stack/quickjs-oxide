@@ -65,7 +65,7 @@ impl WrapStep {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "not an Iterator Wrap",
@@ -183,7 +183,7 @@ impl WrapResume {
             Phase::ReturnResult => Ok(WrapStep::Complete(if matches!(value, Value::Object(_)) {
                 Completion::Return(value)
             } else {
-                Completion::Throw(runtime.new_native_error(
+                Completion::Throw(runtime.new_native_error_jsvalue(
                     self.0.realm,
                     NativeErrorKind::Type,
                     "iterator must return an object",

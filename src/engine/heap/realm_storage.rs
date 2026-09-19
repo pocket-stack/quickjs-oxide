@@ -413,7 +413,7 @@ impl Heap {
                 "RegExp object shape does not contain exactly one lastIndex property",
             ));
         };
-        if last_index.atom != last_index_atom
+        if last_index.atom != AtomIdx::from_raw(last_index_atom.raw())
             || last_index.flags != PropertyFlags::data(true, false, false)
         {
             return Err(HeapError::Invariant(

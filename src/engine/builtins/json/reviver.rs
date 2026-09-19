@@ -159,7 +159,7 @@ impl ParseResumeState {
     ) -> Result<ParseStep, RuntimeError> {
         if self.frames.len() > MAX_JSON_REVIVER_DEPTH {
             return Ok(ParseStep::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     self.realm,
                     NativeErrorKind::Internal,
                     "stack overflow",
@@ -168,7 +168,7 @@ impl ParseResumeState {
         }
         if self.frames.try_reserve(1).is_err() {
             return Ok(ParseStep::Complete(Completion::Throw(
-                runtime.new_native_error(self.realm, NativeErrorKind::Internal, "out of memory")?,
+                runtime.new_native_error_jsvalue(self.realm, NativeErrorKind::Internal, "out of memory")?,
             )));
         }
         self.frames.push(Node {
@@ -234,7 +234,7 @@ impl ParseResumeState {
         let mut arguments = Vec::new();
         if arguments.try_reserve_exact(3).is_err() {
             return Ok(ParseStep::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Internal, "out of memory")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Internal, "out of memory")?,
             )));
         }
         arguments.push(name);
@@ -521,7 +521,7 @@ impl ParseResume {
                 if value {
                     if selected.try_reserve(1).is_err() {
                         return Ok(ParseStep::Complete(Completion::Throw(
-                            runtime.new_native_error(
+                            runtime.new_native_error_jsvalue(
                                 self.0.realm,
                                 NativeErrorKind::Internal,
                                 "out of memory",

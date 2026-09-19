@@ -55,7 +55,9 @@ fn two_closures_share_one_mutable_var_ref_cell() {
         heap.replace_var_ref_value(cell, RawValue::Int(9)).unwrap(),
         HeapCleanup::default()
     );
-    assert_eq!(heap.var_ref(cell).unwrap().value, RawValue::Int(9));
+    assert!(
+        matches!(heap.var_ref(cell).unwrap().value, RawValue::Int(9))
+    );
 
     assert_eq!(heap.release_var_ref(cell).unwrap(), HeapCleanup::default());
     assert_eq!(heap.release_object(first).unwrap().finalized_objects, 1);
@@ -435,6 +437,7 @@ fn bytecode_constant_pool_owns_child_and_returns_all_atoms() {
     let child_atom = Atom::from_raw(41);
     let parent_atom = Atom::from_raw(42);
     let symbol_atom = Atom::from_raw(43);
+    let symbol_index = AtomIdx::from_raw(symbol_atom.raw());
     let child = heap
         .allocate_function_bytecode(bytecode(&code, context, Vec::new(), vec![child_atom]))
         .unwrap();
@@ -444,7 +447,7 @@ fn bytecode_constant_pool_owns_child_and_returns_all_atoms() {
             context,
             vec![
                 BytecodeConstant::Function(child),
-                BytecodeConstant::Value(RawValue::Symbol(symbol_atom)),
+                BytecodeConstant::Value(RawValue::Symbol(symbol_index)),
             ],
             vec![parent_atom],
         ))
@@ -458,7 +461,11 @@ fn bytecode_constant_pool_owns_child_and_returns_all_atoms() {
     let mut cleanup = heap.release_function_bytecode(parent).unwrap();
     assert_eq!(cleanup.finalized_function_bytecodes, 2);
     cleanup.atoms.sort_unstable();
-    let mut expected = vec![child_atom, parent_atom, symbol_atom];
+    let mut expected = vec![
+        AtomIdx::from_raw(child_atom.raw()),
+        AtomIdx::from_raw(parent_atom.raw()),
+        symbol_index,
+    ];
     expected.sort_unstable();
     assert_eq!(cleanup.atoms, expected);
 
@@ -542,14 +549,19 @@ fn async_function_intrinsic_root_is_a_function_prototype_child() {
             "AsyncFunction prototype does not inherit from Function.prototype"
         ))
     );
-    assert_eq!(heap.context(realm).unwrap().async_function, None);
+    assert!(
+        matches!(heap.context(realm).unwrap().async_function, None)
+    );
 
     let roots = AsyncFunctionRealmData {
         function_prototype: async_function_prototype,
     };
     let before = heap.object_strong_count(async_function_prototype).unwrap();
     heap.attach_async_function_intrinsics(realm, roots).unwrap();
-    assert_eq!(heap.context(realm).unwrap().async_function, Some(roots));
+    assert!(
+        matches!(heap.context(realm).unwrap().async_function, Some(attached)
+            if attached.function_prototype == roots.function_prototype)
+    );
     assert_eq!(
         heap.object_strong_count(async_function_prototype),
         Ok(before + 1)
@@ -669,11 +681,13 @@ fn async_function_state_traces_callbacks_and_transfers_await_activation() {
         heap.async_function_state_snapshot(state).unwrap().phase,
         AsyncFunctionPhase::Executing
     );
-    assert_eq!(
-        heap.begin_async_function_resume(state),
-        Err(HeapError::Invariant(
-            "AsyncFunction resume began outside an awaiting phase"
-        ))
+    assert!(
+        matches!(
+            heap.begin_async_function_resume(state),
+            Err(HeapError::Invariant(
+                "AsyncFunction resume began outside an awaiting phase"
+            ))
+        )
     );
 
     let callback = heap
@@ -749,10 +763,11 @@ fn async_function_state_traces_callbacks_and_transfers_await_activation() {
         ))
         .unwrap();
     let awaited_atom = Atom::from_raw(8_071);
+    let awaited_index = AtomIdx::from_raw(awaited_atom.raw());
     let activation = GeneratorActivationData {
         bytecode,
         vm: GeneratorVmActivation {
-            stack: vec![RawValue::Symbol(awaited_atom)],
+            stack: vec![RawValue::Symbol(awaited_index)],
             regions: Vec::new(),
             pc: 2,
             callee_realm,
@@ -791,7 +806,7 @@ fn async_function_state_traces_callbacks_and_transfers_await_activation() {
     );
     assert_eq!(
         object_atoms(heap.object(state).unwrap()).collect::<Vec<_>>(),
-        [awaited_atom]
+        [awaited_index]
     );
     assert_eq!(
         heap.suspend_async_function(state, activation.clone()),
@@ -800,8 +815,23 @@ fn async_function_state_traces_callbacks_and_transfers_await_activation() {
         ))
     );
     let (resumed, cleanup) = heap.begin_async_function_resume(state).unwrap();
-    assert_eq!(resumed, activation);
-    assert_eq!(cleanup.atoms, [awaited_atom]);
+    assert_eq!(resumed.bytecode, activation.bytecode);
+    assert_eq!(resumed.vm.stack.len(), 1);
+    assert!(
+        matches!(resumed.vm.stack[0], RawValue::Symbol(index) if index == awaited_index),
+        "resumed stack mismatch: {:?}",
+        resumed.vm.stack[0]
+    );
+    assert_eq!(resumed.vm.pc, activation.vm.pc);
+    assert_eq!(resumed.vm.callee_realm, activation.vm.callee_realm);
+    assert_eq!(resumed.vm.current_function, activation.vm.current_function);
+    assert!(matches!(resumed.vm.this_value, RawValue::Undefined));
+    assert!(resumed.vm.normalized_this.is_none() == activation.vm.normalized_this.is_none());
+    assert!(matches!(resumed.vm.new_target, RawValue::Undefined));
+    assert_eq!(resumed.vm.strict, activation.vm.strict);
+    assert_eq!(resumed.vm.callee_global, activation.vm.callee_global);
+    assert_eq!(resumed.actual_argument_count, activation.actual_argument_count);
+    assert_eq!(cleanup.atoms, [awaited_index]);
     assert_eq!(
         heap.async_function_state_snapshot(state).unwrap().phase,
         AsyncFunctionPhase::Executing
@@ -830,7 +860,7 @@ fn async_function_state_traces_callbacks_and_transfers_await_activation() {
         .unwrap();
     assert_eq!(
         heap.complete_async_function(awaiting_state).unwrap().atoms,
-        [awaited_atom]
+        [awaited_index]
     );
     assert_eq!(
         heap.async_function_state_snapshot(awaiting_state)

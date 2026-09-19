@@ -240,7 +240,7 @@ impl RegExpSplitStep {
         };
         let Value::Object(regexp) = this_value else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not an object")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not an object")?,
             )));
         };
         let input = arguments
@@ -396,7 +396,7 @@ impl RegExpSplitResume {
                 let mut arguments = Vec::new();
                 if arguments.try_reserve_exact(2).is_err() {
                     return Ok(RegExpSplitStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             "out of memory",

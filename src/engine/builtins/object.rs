@@ -526,7 +526,7 @@ impl Runtime {
         };
         match this_value {
             value @ Value::Object(_) => Ok(Completion::Return(value)),
-            Value::Undefined | Value::Null => Ok(Completion::Throw(self.new_native_error(
+            Value::Undefined | Value::Null => Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "cannot convert to object",

@@ -4,10 +4,10 @@
 use crate::engine::api::error::Error;
 use crate::engine::code::bytecode::Instruction;
 use crate::engine::heap::{BytecodeConstant, RawValue, SlotReleaseReadiness};
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 use crate::engine::value::number::operations::Number;
 use crate::engine::vm::bindings::FrameBinding;
-use crate::engine::vm::exception::runtime_error_to_vm_error;
+use crate::engine::vm::exception::{heap_error_to_vm_error, runtime_error_to_vm_error};
 use crate::engine::vm::execution::RunningExecution;
 use crate::engine::vm::frame::FrameId;
 use crate::engine::vm::stack::{RunSlots, copy_value};
@@ -217,21 +217,64 @@ pub(super) fn test_complete_numeric(
     )
 }
 
-fn number(value: &Value) -> Option<Number> {
+/// Values surrendered by the run loop's explicit outside-borrow releases.
+trait ReleaseDropped {
+    fn release_dropped(self, runtime: &crate::engine::api::runtime::Runtime) -> Result<(), Error>;
+}
+
+impl ReleaseDropped for JsValue {
+    fn release_dropped(
+        self,
+        runtime: &crate::engine::api::runtime::Runtime,
+    ) -> Result<(), Error> {
+        runtime.release_jsvalue(self).map_err(runtime_error_to_vm_error)
+    }
+}
+
+impl ReleaseDropped for FrameBinding {
+    fn release_dropped(
+        self,
+        runtime: &crate::engine::api::runtime::Runtime,
+    ) -> Result<(), Error> {
+        super::bindings::release_frame_binding(runtime, self)
+    }
+}
+
+impl ReleaseDropped for (JsValue, JsValue) {
+    fn release_dropped(
+        self,
+        runtime: &crate::engine::api::runtime::Runtime,
+    ) -> Result<(), Error> {
+        runtime.release_jsvalue(self.0).map_err(runtime_error_to_vm_error)?;
+        runtime.release_jsvalue(self.1).map_err(runtime_error_to_vm_error)
+    }
+}
+
+fn release_dropped(
+    runtime: &crate::engine::api::runtime::Runtime,
+    dropped: impl ReleaseDropped,
+) -> Result<(), Error> {
+    dropped.release_dropped(runtime)
+}
+
+fn number(value: &JsValue) -> Option<Number> {
     value.as_number_repr()
 }
-fn value(number: Number) -> Value {
-    number.into()
+fn value(number: Number) -> JsValue {
+    match number {
+        Number::Int(value) => JsValue::Int(value),
+        Number::Float(value) => JsValue::Float(value),
+    }
 }
-fn immediate(value: &Value) -> bool {
+fn immediate(value: &JsValue) -> bool {
     matches!(
         value,
-        Value::Undefined | Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+        JsValue::Undefined | JsValue::Null | JsValue::Bool(_) | JsValue::Int(_) | JsValue::Float(_)
     )
 }
 fn binary(
     slots: &mut RunSlots<'_>,
-    operation: impl FnOnce(Number, Number) -> Value,
+    operation: impl FnOnce(Number, Number) -> JsValue,
 ) -> Result<bool, Error> {
     slots.binary_number(operation)
 }
@@ -248,7 +291,7 @@ fn release_displaced(
     // Between the initial proof and this commit, only moves and possibly one
     // retain occurred. Neither can invalidate the no-drain proof.
     if !runtime
-        .try_release_slot_value(&mut old)
+        .try_release_slot_value_jsvalue(&mut old)
         .map_err(runtime_error_to_vm_error)?
     {
         return Err(cold::internal(
@@ -263,8 +306,8 @@ fn release_displaced(
 /// so the overwrite/drop paths may release them inside the RunSlots borrow
 /// without materialization or active-PC publication. Symbols stay conservative
 /// because their atom release touches runtime tables.
-fn primitive_release_owner(value: &Value) -> bool {
-    !matches!(value, Value::Object(_) | Value::Symbol(_))
+fn primitive_release_owner(value: &JsValue) -> bool {
+    !matches!(value, JsValue::Object(_) | JsValue::Symbol(_))
 }
 
 // Explicit drops end the NoJs slot borrow before publication or owner release.
@@ -293,7 +336,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
             slots = transaction.slots();
             let released = $operation;
             drop(slots);
-            drop(released);
+            release_dropped(runtime, released)?;
             slots = transaction.slots();
         }};
     }
@@ -364,15 +407,24 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                     .get()
                     .and_then(|rare| rare.normalized_this.as_ref())
                 {
-                    copy_value(value)?
+                    // The rare-cell cache is a public-root island; entering the
+                    // stack duplicates its edges at this boundary.
+                    runtime
+                        .unroot_value(value)
+                        .map_err(runtime_error_to_vm_error)?
                 } else if executable.metadata.strict
-                    || matches!(cold.input.this_value, Value::Object(_))
+                    || matches!(cold.input.this_value, JsValue::Object(_))
                 {
-                    copy_value(&cold.input.this_value)?
-                } else if matches!(cold.input.this_value, Value::Undefined | Value::Null) {
-                    copy_value(&Value::Object(
-                        cold.input.callee_global(runtime, executable.realm)?.clone(),
-                    ))?
+                    copy_value(runtime, &cold.input.this_value)?
+                } else if matches!(cold.input.this_value, JsValue::Undefined | JsValue::Null) {
+                    copy_value(
+                        runtime,
+                        &JsValue::Object(
+                            cold.input
+                                .callee_global(runtime, executable.realm)?
+                                .object_id(),
+                        ),
+                    )?
                 } else {
                     return Ok(RunExit::NormalizeThis);
                 };
@@ -450,8 +502,11 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                     for offset in 0..count {
                         pc.fault = start + offset + 1;
                         pc.resume = pc.fault;
-                        let argument =
-                            super::method_arguments::argument(&slots, &executable.code[pc.fault])?;
+                        let argument = super::method_arguments::argument(
+                            runtime,
+                            &slots,
+                            &executable.code[pc.fault],
+                        )?;
                         slots.push(argument)?;
                         #[cfg(feature = "profiling")]
                         cold::instruction(observed_depth + offset + 1);
@@ -497,7 +552,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 return Ok(RunExit::Construct(*count));
             }
             Instruction::PushNewTarget => {
-                slots.push(copy_value(&cold.input.new_target)?)?;
+                slots.push(copy_value(runtime, &cold.input.new_target)?)?;
                 true
             }
             Instruction::InitializeDerivedLocal(index) => {
@@ -550,14 +605,16 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 ));
             }
             Instruction::ReturnDerived(index) => return Ok(RunExit::ReturnDerived(*index)),
-            Instruction::CheckCtor if !matches!(cold.input.new_target, Value::Undefined) => true,
+            Instruction::CheckCtor if !matches!(cold.input.new_target, JsValue::Undefined) => true,
             Instruction::CheckCtor => {
                 return Ok(RunExit::Pure(
                     super::pure_operations::PureOperation::ConstructorWithoutNew,
                 ));
             }
             Instruction::PushActiveFunction => {
-                slots.push(Value::Object(cold.function.clone()))?;
+                let id = cold.function.object_id();
+                runtime.retain_object_handle(id).map_err(heap_error_to_vm_error)?;
+                slots.push(JsValue::Object(id))?;
                 #[cfg(feature = "profiling")]
                 cold::storage(crate::engine::api::profiling::OwnedStorageEvent::Copy {
                     heap_root: true,
@@ -631,9 +688,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                             )
                     })
                     .and_then(|_| cold.closure_slots.get(usize::from(*index)))
-                    .map(|root| super::bindings::read_run_cell(runtime, &root))
-                    .transpose()?
-                    .flatten();
+                    .and_then(|root| super::bindings::read_run_cell(runtime, &root));
                 if let Some((value, _owned)) = immediate {
                     slots.push(value)?;
                     #[cfg(feature = "profiling")]
@@ -856,7 +911,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 ));
             }
             Instruction::ToObject => {
-                if matches!(slots.peek(0)?, Value::Object(_)) {
+                if matches!(slots.peek(0)?, JsValue::Object(_)) {
                     true
                 } else {
                     return Ok(RunExit::Environment(
@@ -865,8 +920,8 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 }
             }
             Instruction::ToPropKey => match slots.peek(0)? {
-                Value::Int(_) | Value::String(_) => true,
-                Value::Symbol(symbol) if symbol.belongs_to(runtime) => true,
+                JsValue::Int(_) | JsValue::String(_) => true,
+                JsValue::Symbol(_) => true,
                 _ => return Ok(RunExit::ConvertPropertyKey),
             },
             Instruction::DefineFieldComputed => {
@@ -990,23 +1045,23 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
             }
             Instruction::Nop | Instruction::MarkSuperCall => true,
             Instruction::PushI32(number) => {
-                slots.push(Value::Int(*number))?;
+                slots.push(JsValue::Int(*number))?;
                 true
             }
             Instruction::Undefined => {
-                slots.push(Value::Undefined)?;
+                slots.push(JsValue::Undefined)?;
                 true
             }
             Instruction::Null => {
-                slots.push(Value::Null)?;
+                slots.push(JsValue::Null)?;
                 true
             }
             Instruction::PushTrue => {
-                slots.push(Value::Bool(true))?;
+                slots.push(JsValue::Bool(true))?;
                 true
             }
             Instruction::PushFalse => {
-                slots.push(Value::Bool(false))?;
+                slots.push(JsValue::Bool(false))?;
                 true
             }
             Instruction::PushConst(index) => {
@@ -1024,24 +1079,30 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 {
                     return Ok(RunExit::AddLocal);
                 }
+                // The published bytecode node owns the constant-pool edge;
+                // the pushed operand duplicates it (scalars copy for free).
                 let result = match executable.constant(*index) {
                     Some(BytecodeConstant::Value(RawValue::Int(number))) => {
-                        Some(Value::Int(*number))
+                        Some(JsValue::Int(*number))
                     }
                     Some(BytecodeConstant::Value(RawValue::Float(number))) => {
-                        Some(Value::Float(*number))
+                        Some(JsValue::Float(*number))
                     }
-                    Some(BytecodeConstant::Value(RawValue::Undefined)) => Some(Value::Undefined),
-                    Some(BytecodeConstant::Value(RawValue::Null)) => Some(Value::Null),
+                    Some(BytecodeConstant::Value(RawValue::Undefined)) => Some(JsValue::Undefined),
+                    Some(BytecodeConstant::Value(RawValue::Null)) => Some(JsValue::Null),
                     Some(BytecodeConstant::Value(RawValue::Bool(value))) => {
-                        Some(Value::Bool(*value))
+                        Some(JsValue::Bool(*value))
                     }
-                    Some(BytecodeConstant::Value(RawValue::String(value))) => {
-                        Some(Value::String(value.clone()))
-                    }
-                    Some(BytecodeConstant::Value(RawValue::BigInt(value))) => {
-                        Some(Value::BigInt(value.clone()))
-                    }
+                    Some(BytecodeConstant::Value(RawValue::String(value))) => Some(
+                        runtime
+                            .dup_jsvalue(&JsValue::String(*value))
+                            .map_err(runtime_error_to_vm_error)?,
+                    ),
+                    Some(BytecodeConstant::Value(RawValue::BigInt(value))) => Some(
+                        runtime
+                            .dup_jsvalue(&JsValue::BigInt(*value))
+                            .map_err(runtime_error_to_vm_error)?,
+                    ),
                     _ => None,
                 };
                 if let Some(value) = result {
@@ -1061,9 +1122,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 if let Some((value, _owned)) = cold
                     .closure_slots
                     .get(usize::from(*index))
-                    .map(|root| super::bindings::read_run_cell(runtime, &root))
-                    .transpose()?
-                    .flatten()
+                    .and_then(|root| super::bindings::read_run_cell(runtime, &root))
                 {
                     slots.push(value)?;
                     #[cfg(feature = "profiling")]
@@ -1169,7 +1228,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 let immediate = if matches!(instruction, Instruction::GetArg(_)) {
                     match slots.parameter(*index)? {
                         FrameBinding::Captured(root) => {
-                            super::bindings::read_run_cell(runtime, &root)?
+                            super::bindings::read_run_cell(runtime, &root)
                         }
                         _ => None,
                     }
@@ -1263,13 +1322,13 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 }
                 match slots.local(*index)? {
                     FrameBinding::Direct(value) => {
-                        let copied = copy_value(value)?;
+                        let copied = copy_value(runtime, value)?;
                         slots.push(copied)?;
                         true
                     }
                     FrameBinding::Captured(root) => {
                         if let Some((value, _owned)) =
-                            super::bindings::read_run_cell(runtime, &root)?
+                            super::bindings::read_run_cell(runtime, &root)
                         {
                             slots.push(value)?;
                             #[cfg(feature = "profiling")]
@@ -1361,7 +1420,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                     FrameBinding::Uninitialized => true,
                     FrameBinding::Direct(old) => {
                         runtime
-                            .slot_value_release_readiness(old)
+                            .slot_value_release_readiness_jsvalue(old)
                             .map_err(runtime_error_to_vm_error)?
                             == SlotReleaseReadiness::Ready
                     }
@@ -1405,7 +1464,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                         FrameBinding::Uninitialized => true,
                         FrameBinding::Direct(old) => {
                             runtime
-                                .slot_value_release_readiness(old)
+                                .slot_value_release_readiness_jsvalue(old)
                                 .map_err(runtime_error_to_vm_error)?
                                 == SlotReleaseReadiness::Ready
                         }
@@ -1442,13 +1501,13 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
             | Instruction::SetLocal(index)
             | Instruction::PutLocalCheck(index)
             | Instruction::SetLocalCheck(index) => {
-                if matches!(slots.local(*index)?, FrameBinding::Direct(old) if runtime.slot_value_release_readiness(old).map_err(runtime_error_to_vm_error)? == SlotReleaseReadiness::Ready)
+                if matches!(slots.local(*index)?, FrameBinding::Direct(old) if runtime.slot_value_release_readiness_jsvalue(old).map_err(runtime_error_to_vm_error)? == SlotReleaseReadiness::Ready)
                 {
                     let next = if matches!(
                         instruction,
                         Instruction::SetLocal(_) | Instruction::SetLocalCheck(_)
                     ) {
-                        copy_value(slots.peek(0)?)?
+                        copy_value(runtime, slots.peek(0)?)?
                     } else {
                         slots.pop()?
                     };
@@ -1461,7 +1520,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                         instruction,
                         Instruction::SetLocal(_) | Instruction::SetLocalCheck(_)
                     ) {
-                        copy_value(slots.peek(0)?)?
+                        copy_value(runtime, slots.peek(0)?)?
                     } else {
                         slots.pop()?
                     };
@@ -1474,7 +1533,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                             instruction,
                             Instruction::SetLocal(_) | Instruction::SetLocalCheck(_)
                         ) {
-                            copy_value(slots.peek(0)?)?
+                            copy_value(runtime, slots.peek(0)?)?
                         } else {
                             slots.pop()?
                         };
@@ -1487,7 +1546,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
             }
             Instruction::GetArg(index) => {
                 if let FrameBinding::Direct(value) = slots.parameter(*index)? {
-                    let copied = copy_value(value)?;
+                    let copied = copy_value(runtime, value)?;
                     slots.push(copied)?;
                     true
                 } else {
@@ -1495,10 +1554,10 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 }
             }
             Instruction::PutArg(index) | Instruction::SetArg(index) => {
-                if matches!(slots.parameter(*index)?, FrameBinding::Direct(old) if runtime.slot_value_release_readiness(old).map_err(runtime_error_to_vm_error)? == SlotReleaseReadiness::Ready)
+                if matches!(slots.parameter(*index)?, FrameBinding::Direct(old) if runtime.slot_value_release_readiness_jsvalue(old).map_err(runtime_error_to_vm_error)? == SlotReleaseReadiness::Ready)
                 {
                     let next = if matches!(instruction, Instruction::SetArg(_)) {
-                        copy_value(slots.peek(0)?)?
+                        copy_value(runtime, slots.peek(0)?)?
                     } else {
                         slots.pop()?
                     };
@@ -1508,7 +1567,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 } else if matches!(slots.parameter(*index)?, FrameBinding::Direct(old) if primitive_release_owner(old))
                 {
                     let next = if matches!(instruction, Instruction::SetArg(_)) {
-                        copy_value(slots.peek(0)?)?
+                        copy_value(runtime, slots.peek(0)?)?
                     } else {
                         slots.pop()?
                     };
@@ -1518,7 +1577,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 } else if matches!(slots.parameter(*index)?, FrameBinding::Direct(_)) {
                     release_outside_slots!({
                         let next = if matches!(instruction, Instruction::SetArg(_)) {
-                            copy_value(slots.peek(0)?)?
+                            copy_value(runtime, slots.peek(0)?)?
                         } else {
                             slots.pop()?
                         };
@@ -1570,7 +1629,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                     true
                 } else if primitive_release_owner(slots.peek(0)?) {
                     let released = slots.pop()?;
-                    drop(released);
+                    release_dropped(runtime, released)?;
                     true
                 } else {
                     release_outside_slots!(slots.pop()?);
@@ -1591,7 +1650,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                     let kept = slots.pop()?;
                     let released = slots.pop()?;
                     slots.push(kept)?;
-                    drop(released);
+                    release_dropped(runtime, released)?;
                     true
                 } else {
                     release_outside_slots!({
@@ -1611,19 +1670,19 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
             Instruction::Mod => binary(&mut slots, |a, b| value(a.rem(b)))?,
             Instruction::Pow => binary(&mut slots, |a, b| value(a.pow(b)))?,
             Instruction::Shl => binary(&mut slots, |a, b| {
-                Value::Int(a.int32().wrapping_shl(b.int32() as u32 & 31))
+                JsValue::Int(a.int32().wrapping_shl(b.int32() as u32 & 31))
             })?,
             Instruction::Sar => binary(&mut slots, |a, b| {
-                Value::Int(a.int32() >> (b.int32() as u32 & 31))
+                JsValue::Int(a.int32() >> (b.int32() as u32 & 31))
             })?,
             Instruction::Shr => binary(&mut slots, |a, b| {
                 value(Number::compact(f64::from(
                     (a.int32() as u32) >> (b.int32() as u32 & 31),
                 )))
             })?,
-            Instruction::BitAnd => binary(&mut slots, |a, b| Value::Int(a.int32() & b.int32()))?,
-            Instruction::BitOr => binary(&mut slots, |a, b| Value::Int(a.int32() | b.int32()))?,
-            Instruction::BitXor => binary(&mut slots, |a, b| Value::Int(a.int32() ^ b.int32()))?,
+            Instruction::BitAnd => binary(&mut slots, |a, b| JsValue::Int(a.int32() & b.int32()))?,
+            Instruction::BitOr => binary(&mut slots, |a, b| JsValue::Int(a.int32() | b.int32()))?,
+            Instruction::BitXor => binary(&mut slots, |a, b| JsValue::Int(a.int32() ^ b.int32()))?,
             Instruction::Lt
             | Instruction::Lte
             | Instruction::Gt
@@ -1661,62 +1720,77 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 };
                 continue;
             }
-            Instruction::Lt => binary(&mut slots, |a, b| Value::Bool(a.float() < b.float()))?,
-            Instruction::Lte => binary(&mut slots, |a, b| Value::Bool(a.float() <= b.float()))?,
-            Instruction::Gt => binary(&mut slots, |a, b| Value::Bool(a.float() > b.float()))?,
-            Instruction::Gte => binary(&mut slots, |a, b| Value::Bool(a.float() >= b.float()))?,
+            Instruction::Lt => binary(&mut slots, |a, b| JsValue::Bool(a.float() < b.float()))?,
+            Instruction::Lte => binary(&mut slots, |a, b| JsValue::Bool(a.float() <= b.float()))?,
+            Instruction::Gt => binary(&mut slots, |a, b| JsValue::Bool(a.float() > b.float()))?,
+            Instruction::Gte => binary(&mut slots, |a, b| JsValue::Bool(a.float() >= b.float()))?,
             Instruction::StrictEq | Instruction::StrictNeq => {
                 let negate = matches!(instruction, Instruction::StrictNeq);
                 if binary(&mut slots, |a, b| {
-                    Value::Bool((a.float() == b.float()) != negate)
+                    JsValue::Bool((a.float() == b.float()) != negate)
                 })? {
                     true
                 } else {
-                    if matches!((slots.peek(1)?, slots.peek(0)?),
-                        (Value::String(left), Value::String(right)) if !left.is_flat() || !right.is_flat())
                     {
-                        return Ok(RunExit::StrictEquality(negate));
+                        // Rope (non-flat) spellings take the resident string
+                        // comparison; the arena dereference is pure.
+                        let rope = match (slots.peek(1)?, slots.peek(0)?) {
+                            (JsValue::String(left), JsValue::String(right)) => {
+                                let state = runtime.0.state.borrow();
+                                let heap = &state.heap;
+                                let left = heap.string_fast(*left);
+                                let right = heap.string_fast(*right);
+                                !left.is_flat() || !right.is_flat()
+                            }
+                            _ => false,
+                        };
+                        if rope {
+                            return Ok(RunExit::StrictEquality(negate));
+                        }
                     }
-                    let equal = slots.peek(1)?.strict_equal(slots.peek(0)?) != negate;
+                    let equal = runtime
+                        .strict_equal_jsvalue(slots.peek(1)?, slots.peek(0)?)
+                        .map_err(runtime_error_to_vm_error)?
+                        != negate;
                     let observable = (0..2).any(|offset| {
-                        matches!(slots.peek(offset), Ok(Value::Object(_) | Value::Symbol(_)))
+                        matches!(slots.peek(offset), Ok(JsValue::Object(_) | JsValue::Symbol(_)))
                     });
                     if observable {
                         release_outside_slots!({
                             let right = slots.pop()?;
                             let left = slots.pop()?;
-                            slots.push(Value::Bool(equal))?;
+                            slots.push(JsValue::Bool(equal))?;
                             (left, right)
                         });
                     } else {
                         let right = slots.pop()?;
                         let left = slots.pop()?;
-                        slots.push(Value::Bool(equal))?;
+                        slots.push(JsValue::Bool(equal))?;
                         drop(slots);
-                        drop((left, right));
+                        release_dropped(runtime, (left, right))?;
                         slots = transaction.slots();
                     }
                     true
                 }
             }
-            Instruction::Eq => binary(&mut slots, |a, b| Value::Bool(a.float() == b.float()))?,
-            Instruction::Neq => binary(&mut slots, |a, b| Value::Bool(a.float() != b.float()))?,
+            Instruction::Eq => binary(&mut slots, |a, b| JsValue::Bool(a.float() == b.float()))?,
+            Instruction::Neq => binary(&mut slots, |a, b| JsValue::Bool(a.float() != b.float()))?,
             Instruction::Not => {
                 // Includes Annex B HTMLDDA objects; metadata lookup cannot run JS.
                 let result = !runtime
-                    .value_to_boolean(slots.peek(0)?)
+                    .value_to_boolean_jsvalue(slots.peek(0)?)
                     .map_err(runtime_error_to_vm_error)?;
-                if matches!(slots.peek(0)?, Value::Object(_) | Value::Symbol(_)) {
+                if matches!(slots.peek(0)?, JsValue::Object(_) | JsValue::Symbol(_)) {
                     release_outside_slots!({
                         let input = slots.pop()?;
-                        slots.push(Value::Bool(result))?;
+                        slots.push(JsValue::Bool(result))?;
                         input
                     });
                 } else {
                     let input = slots.pop()?;
-                    slots.push(Value::Bool(result))?;
+                    slots.push(JsValue::Bool(result))?;
                     drop(slots);
-                    drop(input);
+                    release_dropped(runtime, input)?;
                     slots = transaction.slots();
                 }
                 true
@@ -1777,12 +1851,12 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
             Instruction::Gosub(target) => {
                 let pc = i32::try_from(next_pc)
                     .map_err(|_| cold::internal("gosub return PC does not fit Int"))?;
-                slots.push(Value::Int(pc))?;
+                slots.push(JsValue::Int(pc))?;
                 next_pc = *target as usize;
                 true
             }
             Instruction::Ret => {
-                let Value::Int(target) = slots.pop()? else {
+                let JsValue::Int(target) = slots.pop()? else {
                     return Err(cold::internal("invalid ret value"));
                 };
                 next_pc =
@@ -1793,7 +1867,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 true
             }
             Instruction::DropGosub => {
-                if !matches!(slots.pop()?, Value::Int(_)) {
+                if !matches!(slots.pop()?, JsValue::Int(_)) {
                     return Err(cold::internal("invalid gosub cleanup value"));
                 }
                 true
@@ -1827,7 +1901,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                 return Ok(RunExit::Complete);
             }
             Instruction::ReturnUndefined => {
-                execution.pending = Some(Value::Undefined);
+                execution.pending = Some(JsValue::Undefined);
                 pc.resume = next_pc;
                 #[cfg(feature = "profiling")]
                 cold::instruction(observed_depth);
@@ -1842,7 +1916,7 @@ pub(super) fn run(execution: &mut RunningExecution, id: FrameId) -> Result<RunEx
                     // Number/String/bool coercions cannot construct a JS error.
                     if !frame.active_frame.is_materialized()
                         && (0..if kind.unary() { 1 } else { 2 }).any(|i| {
-                            matches!(slots.peek(i), Ok(Value::Symbol(_) | Value::BigInt(_)))
+                            matches!(slots.peek(i), Ok(JsValue::Symbol(_) | JsValue::BigInt(_)))
                         })
                     {
                         return Ok(RunExit::Materialize);

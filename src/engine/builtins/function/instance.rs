@@ -169,7 +169,7 @@ impl InstanceResume {
                     let Some(target) = runtime.as_callable(&self.0.target)? else {
                         return if delegate {
                             Ok(InstanceStep::Complete(Completion::Throw(
-                                runtime.new_native_error(
+                                runtime.new_native_error_jsvalue(
                                     self.0.realm,
                                     NativeErrorKind::Type,
                                     "invalid 'instanceof' right operand",
@@ -195,7 +195,7 @@ impl InstanceResume {
                         if delegate && error.kind() == ErrorKind::Type =>
                     {
                         return Ok(InstanceStep::Complete(Completion::Throw(
-                            runtime.new_native_error_from_error(
+                            runtime.new_native_error_from_error_jsvalue(
                                 self.0.realm,
                                 NativeErrorKind::Type,
                                 &error,
@@ -229,7 +229,7 @@ impl InstanceResume {
             Phase::Prototype => {
                 let Value::Object(prototype) = value else {
                     return Ok(InstanceStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "operand 'prototype' property is not an object",

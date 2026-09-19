@@ -1,6 +1,13 @@
 use crate::engine::heap::native::{MapNativeKind, NativeCProto, SetNativeKind};
+use crate::engine::value::collection_key;
 
 use super::*;
+
+/// Intern an immediate symbol atom into the unbranded index form stored in
+/// `RawValue::Symbol`.
+fn symbol_index(value: u32) -> AtomIdx {
+    AtomIdx::from_raw(Atom::from_immediate_integer(value).unwrap().raw())
+}
 
 #[test]
 fn collection_churn_reclaims_records_with_a_paused_iterator() {
@@ -152,12 +159,9 @@ fn map_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
     let map = heap
         .allocate_object(ObjectData::map(shape, Vec::new()))
         .unwrap();
-    heap.map_insert_record(
-        map,
-        RawValue::Int(1),
-        RawValue::String(JsString::from_static("one")),
-    )
-    .unwrap();
+    let one = heap.allocate_string(JsString::from_static("one")).unwrap();
+    heap.map_insert_record(map, RawValue::Int(1), RawValue::String(one))
+        .unwrap();
     let iterator = heap
         .allocate_object(ObjectData::map_iterator(
             shape,
@@ -168,43 +172,48 @@ fn map_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
         .unwrap();
 
     heap.set_map_iterator_index(iterator, 1).unwrap();
-    heap.map_insert_record(
-        map,
-        RawValue::Int(2),
-        RawValue::String(JsString::from_static("first")),
-    )
-    .unwrap();
-    assert_eq!(
-        heap.map_records(map).unwrap().get(1).unwrap().key,
-        RawValue::Int(2)
+    let first = heap
+        .allocate_string(JsString::from_static("first"))
+        .unwrap();
+    heap.map_insert_record(map, RawValue::Int(2), RawValue::String(first))
+        .unwrap();
+    assert!(
+        matches!(
+            heap.map_records(map).unwrap().get(1).unwrap().key,
+            RawValue::Int(2)
+        )
     );
     heap.map_delete_record(map, 1).unwrap();
-    heap.map_insert_record(
-        map,
-        RawValue::Int(2),
-        RawValue::String(JsString::from_static("second")),
-    )
-    .unwrap();
+    let second = heap
+        .allocate_string(JsString::from_static("second"))
+        .unwrap();
+    heap.map_insert_record(map, RawValue::Int(2), RawValue::String(second))
+        .unwrap();
 
     let records = heap.map_records(map).unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records.next_id(), 3);
-    assert_eq!(records.get(0).unwrap().key, RawValue::Int(1));
+    assert!(matches!(records.get(0).unwrap().key, RawValue::Int(1)));
     assert!(records.get(1).is_none());
-    assert_eq!(records.get(2).unwrap().key, RawValue::Int(2));
-    assert_eq!(
-        records.get(2).unwrap().value,
-        RawValue::String(JsString::from_static("second"))
+    assert!(matches!(records.get(2).unwrap().key, RawValue::Int(2)));
+    assert!(
+        collection_key::same_value_zero(
+            &heap,
+            &records.get(2).unwrap().value,
+            &RawValue::String(second),
+        ),
+        "record value mismatch: {:?}",
+        records.get(2).unwrap().value
     );
     let (source, next_index, kind) = heap.map_iterator_state(iterator).unwrap();
     assert_eq!(source, Some(map));
     assert_eq!(next_index, 1);
     assert_eq!(kind, MapIteratorKind::KeyAndValue);
-    assert_eq!(
+    assert!(
         records
             .next_at_or_after(next_index)
-            .map(|(_, record)| &record.key),
-        Some(&RawValue::Int(2))
+            .map(|(_, record)| &record.key)
+            .is_some_and(|key| matches!(key, RawValue::Int(2)))
     );
 
     assert_eq!(heap.object_strong_count(map), Ok(2));
@@ -224,6 +233,9 @@ fn map_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
 
     heap.release_object(iterator).unwrap();
     heap.release_shape(shape).unwrap();
+    for id in [one, first, second] {
+        heap.release_string(id).unwrap();
+    }
     assert_eq!(heap.counts().live, 0);
 }
 
@@ -234,11 +246,11 @@ fn map_symbol_atoms_transfer_and_return_on_replace_delete_and_clear() {
     let map = heap
         .allocate_object(ObjectData::map(shape, Vec::new()))
         .unwrap();
-    let first_key = Atom::from_immediate_integer(101).unwrap();
-    let first_value = Atom::from_immediate_integer(102).unwrap();
-    let replacement = Atom::from_immediate_integer(103).unwrap();
-    let second_key = Atom::from_immediate_integer(104).unwrap();
-    let second_value = Atom::from_immediate_integer(105).unwrap();
+    let first_key = symbol_index(101);
+    let first_value = symbol_index(102);
+    let replacement = symbol_index(103);
+    let second_key = symbol_index(104);
+    let second_value = symbol_index(105);
 
     heap.map_insert_record(
         map,
@@ -306,14 +318,15 @@ fn map_intrinsics_attach_transactionally_and_root_the_realm_graph() {
 
     heap.live_node_mut(RawId::Object(iterator_prototype))
         .unwrap()
-        .strong = u32::MAX;
+        .strong
+        .set(u32::MAX);
     assert_eq!(
         heap.attach_map_intrinsics(realm, map),
         Err(HeapError::Overflow {
             operation: "retaining outgoing heap edges",
         })
     );
-    assert_eq!(heap.context(realm).unwrap().map, None);
+    assert!(matches!(heap.context(realm).unwrap().map, None));
     assert_eq!(heap.object_strong_count(prototype), Ok(prototype_strong));
     assert_eq!(
         heap.object_strong_count(constructor),
@@ -321,10 +334,15 @@ fn map_intrinsics_attach_transactionally_and_root_the_realm_graph() {
     );
     heap.live_node_mut(RawId::Object(iterator_prototype))
         .unwrap()
-        .strong = iterator_strong;
+        .strong
+        .set(iterator_strong);
 
     heap.attach_map_intrinsics(realm, map).unwrap();
-    assert_eq!(heap.context(realm).unwrap().map, Some(map));
+    assert!(
+        matches!(heap.context(realm).unwrap().map, Some(attached)
+            if attached.prototype == map.prototype
+                && attached.iterator_prototype == map.iterator_prototype)
+    );
     assert_eq!(
         heap.object_strong_count(prototype),
         Ok(prototype_strong + 1)
@@ -414,17 +432,21 @@ fn set_records_retain_key_edges_and_release_deleted_storage() {
     );
     assert_eq!(heap.set_size(set), Ok(1));
     assert_eq!(heap.object_strong_count(key), Ok(2));
-    assert_eq!(
-        heap.set_records(set)
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>(),
-        vec![MapRecord {
-            key: RawValue::Object(key),
-            value: RawValue::Undefined,
-        }]
-    );
+    {
+        let mut found = heap.set_records(set).unwrap().iter();
+        let record = found.next().expect("one live Set record");
+        assert!(found.next().is_none());
+        assert!(
+            matches!(record.key, RawValue::Object(object) if object == key),
+            "set record key mismatch: {:?}",
+            record.key
+        );
+        assert!(
+            matches!(record.value, RawValue::Undefined),
+            "set record value mismatch: {:?}",
+            record.value
+        );
+    }
     heap.release_object(key).unwrap();
 
     let cleanup = heap.set_delete_record(set, 0).unwrap();
@@ -491,9 +513,9 @@ fn set_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
     let records = heap.set_records(set).unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records.next_id(), 3);
-    assert_eq!(records.get(0).unwrap().key, RawValue::Int(1));
+    assert!(matches!(records.get(0).unwrap().key, RawValue::Int(1)));
     assert!(records.get(1).is_none());
-    assert_eq!(records.get(2).unwrap().key, RawValue::Int(2));
+    assert!(matches!(records.get(2).unwrap().key, RawValue::Int(2)));
     assert!(
         records
             .iter()
@@ -504,9 +526,11 @@ fn set_record_ids_preserve_readd_order_and_live_iterator_sees_appends() {
         heap.set_iterator_state(iterator),
         Ok((Some(set), 1, SetIteratorKind::KeyAndValue))
     );
-    assert_eq!(
-        records.next_at_or_after(1).map(|(_, record)| &record.key),
-        Some(&RawValue::Int(2))
+    assert!(
+        records
+            .next_at_or_after(1)
+            .map(|(_, record)| &record.key)
+            .is_some_and(|key| matches!(key, RawValue::Int(2)))
     );
 
     assert_eq!(heap.object_strong_count(set), Ok(2));
@@ -540,9 +564,9 @@ fn set_symbol_atoms_transfer_and_return_on_delete_clear_and_finalize() {
     let set = heap
         .allocate_object(ObjectData::set(shape, Vec::new()))
         .unwrap();
-    let first = Atom::from_immediate_integer(201).unwrap();
-    let second = Atom::from_immediate_integer(202).unwrap();
-    let third = Atom::from_immediate_integer(203).unwrap();
+    let first = symbol_index(201);
+    let second = symbol_index(202);
+    let third = symbol_index(203);
 
     heap.set_insert_record(set, RawValue::Symbol(first))
         .unwrap();
@@ -581,7 +605,7 @@ fn set_layout_and_iterator_source_are_structurally_validated() {
         payload: ObjectPayload::Set {
             records: {
                 let mut records = CollectionRecords::default();
-                records.insert(MapRecord {
+                records.insert(&heap, MapRecord {
                     key: RawValue::Int(1),
                     value: RawValue::Int(2),
                 });
@@ -665,14 +689,15 @@ fn set_intrinsics_attach_transactionally_and_root_the_realm_graph() {
 
     heap.live_node_mut(RawId::Object(iterator_prototype))
         .unwrap()
-        .strong = u32::MAX;
+        .strong
+        .set(u32::MAX);
     assert_eq!(
         heap.attach_set_intrinsics(realm, set),
         Err(HeapError::Overflow {
             operation: "retaining outgoing heap edges",
         })
     );
-    assert_eq!(heap.context(realm).unwrap().set, None);
+    assert!(matches!(heap.context(realm).unwrap().set, None));
     assert_eq!(heap.object_strong_count(prototype), Ok(prototype_strong));
     assert_eq!(
         heap.object_strong_count(constructor),
@@ -680,10 +705,15 @@ fn set_intrinsics_attach_transactionally_and_root_the_realm_graph() {
     );
     heap.live_node_mut(RawId::Object(iterator_prototype))
         .unwrap()
-        .strong = iterator_strong;
+        .strong
+        .set(iterator_strong);
 
     heap.attach_set_intrinsics(realm, set).unwrap();
-    assert_eq!(heap.context(realm).unwrap().set, Some(set));
+    assert!(
+        matches!(heap.context(realm).unwrap().set, Some(attached)
+            if attached.prototype == set.prototype
+                && attached.iterator_prototype == set.iterator_prototype)
+    );
     assert_eq!(
         heap.object_strong_count(prototype),
         Ok(prototype_strong + 1)
@@ -787,19 +817,21 @@ fn for_in_iterator_advances_snapshots_and_transfers_current_edges() {
 
     assert_eq!(heap.object_strong_count(source), Ok(2));
     heap.release_object(source).unwrap();
-    assert_eq!(
-        heap.next_for_in_candidate(iterator),
-        Ok(ForInCandidate::Property {
-            object: source,
-            name: JsString::from_static("a"),
-        })
+    let candidate = heap.next_for_in_candidate(iterator);
+    assert!(
+        matches!(
+            candidate,
+            Ok(ForInCandidate::Property { object, ref name })
+                if object == source && name == &JsString::from_static("a")
+        ),
+        "unexpected candidate: {candidate:?}"
     );
-    assert_eq!(
-        heap.next_for_in_candidate(iterator),
-        Ok(ForInCandidate::BaseComplete {
-            object: source,
-            fast_array: false,
-        })
+    assert!(
+        matches!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::BaseComplete { object, fast_array })
+                if object == source && !fast_array
+        )
     );
     heap.enter_for_in_prototype_chain(iterator, None).unwrap();
 
@@ -817,24 +849,28 @@ fn for_in_iterator_advances_snapshots_and_transfers_current_edges() {
     assert_eq!(cleanup.finalized_objects, 1);
     assert!(matches!(heap.object(source), Err(HeapError::Stale { .. })));
     heap.release_object(prototype).unwrap();
-    assert_eq!(
-        heap.next_for_in_candidate(iterator),
-        Ok(ForInCandidate::Property {
-            object: prototype,
-            name: JsString::from_static("b"),
-        })
+    assert!(
+        matches!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::Property { object, ref name })
+                if object == prototype && name == &JsString::from_static("b")
+        )
     );
-    assert_eq!(
-        heap.next_for_in_candidate(iterator),
-        Ok(ForInCandidate::LevelComplete(prototype))
+    assert!(
+        matches!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::LevelComplete(object)) if object == prototype
+        )
     );
     let cleanup = heap
         .replace_for_in_level(iterator, None, Vec::new())
         .unwrap();
     assert_eq!(cleanup.finalized_objects, 1);
-    assert_eq!(
-        heap.next_for_in_candidate(iterator),
-        Ok(ForInCandidate::Done)
+    assert!(
+        matches!(
+            heap.next_for_in_candidate(iterator),
+            Ok(ForInCandidate::Done)
+        )
     );
 
     heap.release_object(iterator).unwrap();

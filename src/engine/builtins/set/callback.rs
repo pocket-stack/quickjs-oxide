@@ -55,7 +55,7 @@ impl EachStep {
         };
         let Some(callback) = callback else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
             )));
         };
         EachResume(Box::new(EachResumeState {

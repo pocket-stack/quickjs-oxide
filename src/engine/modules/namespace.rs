@@ -8,7 +8,7 @@
 
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::PropertyKeyKind;
+use crate::engine::atom::{AtomIdx, PropertyKeyKind};
 
 use crate::engine::heap::{ObjectData, ObjectKind, PropertySlot};
 use crate::engine::object::{
@@ -25,8 +25,10 @@ impl Runtime {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("object"));
         }
-        Ok(self.0.state.borrow().heap.object(object.object_id())?.kind
-            == ObjectKind::ModuleNamespace)
+        Ok(matches!(
+            self.0.state.borrow().heap.object(object.object_id())?.kind,
+            ObjectKind::ModuleNamespace
+        ))
     }
 
     /// Allocate the null-prototype, already non-extensible namespace shell.
@@ -69,7 +71,7 @@ impl Runtime {
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         let shape = state.heap.shape(object.shape)?;
-        let Some(index) = shape.find(key.atom()) else {
+        let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
             return Ok(false);
         };
         Ok(matches!(
@@ -96,8 +98,11 @@ impl Runtime {
             let object = state.heap.object(object.object_id())?;
             let mut atoms = Vec::new();
             for entry in state.heap.shape(object.shape)?.entries() {
-                if state.atoms.property_key_kind(entry.atom)? != PropertyKeyKind::Private {
-                    atoms.push(entry.atom);
+                // Public exit boundary: re-brand the stored unbranded index
+                // before handing the atom to `PropertyKey` construction.
+                let atom = state.atoms.brand(entry.atom)?;
+                if state.atoms.property_key_kind(atom)? != PropertyKeyKind::Private {
+                    atoms.push(atom);
                 }
             }
             atoms

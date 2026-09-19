@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::Context;
 use crate::engine::builtins::native::NativeCProto;
 
@@ -114,7 +115,7 @@ fn global_atomics_is_lazy_realm_local_and_has_the_pinned_surface() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(global.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot].flags,
             PropertyFlags::data(true, false, true),

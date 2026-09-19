@@ -539,7 +539,7 @@ impl Runtime {
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
         match kind {
-            TypedArrayNativeKind::BaseConstructor => Ok(Completion::Throw(self.new_native_error(
+            TypedArrayNativeKind::BaseConstructor => Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "cannot be called",
@@ -838,7 +838,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let source_state = self.typed_array_state_from_snapshot(source_snapshot)?;
         if source_state.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "out of bound",
@@ -849,7 +849,7 @@ impl Runtime {
             .checked_add(u64::from(source_state.length))
             .is_none_or(|end| end > u64::from(target_length))
         {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "out of bound",
@@ -1428,7 +1428,7 @@ impl Runtime {
         heap: &mut crate::engine::heap::Heap,
         object: ObjectId,
         index: u32,
-    ) -> Option<Value> {
+    ) -> Option<JsValue> {
         let data = heap.object(object).ok()?;
         let snapshot = typed_array_snapshot_from_payload(&data.payload)?;
         if snapshot.element.is_bigint() {
@@ -1439,23 +1439,27 @@ impl Runtime {
         else {
             return None;
         };
-        Some(typed_array_decode(snapshot.element, bytes))
+        Some(match typed_array_decode(snapshot.element, bytes) {
+            Value::Int(value) => JsValue::Int(value),
+            Value::Float(value) => JsValue::Float(value),
+            _ => unreachable!("typed array decode always yields a number"),
+        })
     }
 
     /// Resident VM leaf: every decline precedes the only byte write. The
     /// owning input may be dropped after success without running heap cleanup.
     pub(crate) fn try_typed_array_number_write(
         &self,
-        base: &Value,
+        base: &JsValue,
         index: u32,
         number: f64,
     ) -> bool {
         use crate::engine::heap::SlotReleaseReadiness;
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return false;
         };
         if !matches!(
-            self.slot_value_release_readiness(base),
+            self.slot_value_release_readiness_jsvalue(base),
             Ok(SlotReleaseReadiness::Ready)
         ) {
             return false;
@@ -1463,7 +1467,7 @@ impl Runtime {
         let Ok(mut state) = self.0.state.try_borrow_mut() else {
             return false;
         };
-        let Ok(data) = state.heap.object(object.object_id()) else {
+        let Ok(data) = state.heap.object(*object) else {
             return false;
         };
         let Some(snapshot) = typed_array_snapshot_from_payload(&data.payload) else {

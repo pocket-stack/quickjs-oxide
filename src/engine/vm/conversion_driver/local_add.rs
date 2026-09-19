@@ -33,7 +33,7 @@ pub(in crate::engine::vm) fn complete_local_add(
             Instruction::PushConst(index),
             ..,
         ] => {
-            let Some(constant) = constant_string(&frame.executable, *index) else {
+            let Some(constant) = constant_string(runtime, &frame.executable, *index) else {
                 return Ok(PrimitiveCompletion::Declined);
             };
             (*left, Operands::LocalConstant(constant), false)
@@ -43,7 +43,7 @@ pub(in crate::engine::vm) fn complete_local_add(
             Instruction::GetLocal(right) | Instruction::GetLocalCheck(right),
             ..,
         ] => {
-            let Some(constant) = constant_string(&frame.executable, *index) else {
+            let Some(constant) = constant_string(runtime, &frame.executable, *index) else {
                 return Ok(PrimitiveCompletion::Declined);
             };
             (*right, Operands::ConstantLocal(constant), true)
@@ -150,7 +150,7 @@ pub(in crate::engine::vm) fn complete_local_add(
                 }
                 return Ok(PrimitiveCompletion::Throw(
                     runtime
-                        .new_native_error_from_error(frame.executable.realm, kind, &error)
+                        .new_native_error_from_error_jsvalue(frame.executable.realm, kind, &error)
                         .map_err(runtime_error_to_vm_error)?,
                 ));
             }
@@ -203,13 +203,18 @@ pub(in crate::engine::vm) fn complete_local_add(
 /// Extract the canonical String operand. A non-String constant declines the
 /// fused span; the canonical PushConst/GetLocal sequence then runs unchanged.
 fn constant_string(
+    runtime: &Runtime,
     executable: &crate::engine::code::runtime::PublishedFunctionSnapshot,
     index: u32,
 ) -> Option<Value> {
     use crate::engine::heap::{BytecodeConstant, RawValue};
     match executable.constant(index) {
         Some(BytecodeConstant::Value(RawValue::String(value))) => {
-            Some(Value::String(value.clone()))
+            // The published bytecode node owns the constant-pool edge, so the
+            // trusted read clones the payload Rc without retaining the node.
+            Some(Value::String(
+                runtime.0.state.borrow().heap.string_fast(*value).clone(),
+            ))
         }
         _ => None,
     }

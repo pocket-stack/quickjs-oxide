@@ -1,9 +1,12 @@
-//! Pure SameValueZero key operations on validated, runtime-local raw values.
+//! SameValueZero key operations on validated, runtime-local raw values.
 //!
-//! No rooting, heap access, coercion or user callbacks occur here. Callers must
-//! reject internal sentinels and foreign identities at their storage boundary.
+//! String and BigInt keys are generational node handles, so equality and
+//! hashing take the heap: same-kind handles compare by identity first and fall
+//! back to node content, exactly the semantics the storage layer guarantees.
+//! Callers must reject internal sentinels and foreign identities at their
+//! storage boundary; keys owned by live collection records always resolve.
 
-use crate::engine::heap::RawValue;
+use crate::engine::heap::{BigIntId, Heap, RawValue, StringId};
 use std::hash::{Hash, Hasher};
 
 fn number(value: &RawValue) -> Option<f64> {
@@ -14,15 +17,31 @@ fn number(value: &RawValue) -> Option<f64> {
     }
 }
 
-pub(crate) fn same_value_zero(left: &RawValue, right: &RawValue) -> bool {
+/// Live node payloads compare by content; stale handles are an invariant
+/// violation at every validated-key call site.
+fn string_content(heap: &Heap, id: StringId) -> &crate::engine::value::JsString {
+    heap.string(id)
+        .expect("a live collection key resolves its string node")
+}
+
+fn bigint_content(heap: &Heap, id: BigIntId) -> &crate::engine::value::bigint::JsBigInt {
+    heap.bigint(id)
+        .expect("a live collection key resolves its bigint node")
+}
+
+pub(crate) fn same_value_zero(heap: &Heap, left: &RawValue, right: &RawValue) -> bool {
     if let (Some(left), Some(right)) = (number(left), number(right)) {
         return left == right || (left.is_nan() && right.is_nan());
     }
     match (left, right) {
         (RawValue::Undefined, RawValue::Undefined) | (RawValue::Null, RawValue::Null) => true,
         (RawValue::Bool(left), RawValue::Bool(right)) => left == right,
-        (RawValue::String(left), RawValue::String(right)) => left == right,
-        (RawValue::BigInt(left), RawValue::BigInt(right)) => left == right,
+        (RawValue::String(left), RawValue::String(right)) => {
+            left == right || string_content(heap, *left) == string_content(heap, *right)
+        }
+        (RawValue::BigInt(left), RawValue::BigInt(right)) => {
+            left == right || bigint_content(heap, *left) == bigint_content(heap, *right)
+        }
         (RawValue::Symbol(left), RawValue::Symbol(right)) => left == right,
         (RawValue::Object(left), RawValue::Object(right)) => left == right,
         _ => false,
@@ -31,16 +50,16 @@ pub(crate) fn same_value_zero(left: &RawValue, right: &RawValue) -> bool {
 
 /// SameValue shares the non-coercing key equality rules, but distinguishes
 /// the two zero signs. Inputs have already passed runtime-domain validation.
-pub(crate) fn same_value(left: &RawValue, right: &RawValue) -> bool {
+pub(crate) fn same_value(heap: &Heap, left: &RawValue, right: &RawValue) -> bool {
     if let (Some(left), Some(right)) = (number(left), number(right)) {
         if left == 0.0 && right == 0.0 {
             return left.is_sign_negative() == right.is_sign_negative();
         }
     }
-    same_value_zero(left, right)
+    same_value_zero(heap, left, right)
 }
 
-pub(crate) fn hash<H: Hasher>(key: &RawValue, state: &mut H) {
+pub(crate) fn hash<H: Hasher>(heap: &Heap, key: &RawValue, state: &mut H) {
     match key {
         RawValue::Undefined => state.write_u8(0),
         RawValue::Null => state.write_u8(1),
@@ -62,16 +81,17 @@ pub(crate) fn hash<H: Hasher>(key: &RawValue, state: &mut H) {
             };
             state.write_u64(bits);
         }
-        RawValue::String(value) => {
+        RawValue::String(id) => {
             state.write_u8(4);
+            let value = string_content(heap, *id);
             value.len().hash(state);
             // Hash actual content with the index's randomized hasher, not the
             // existing unseeded 32-bit content fingerprint.
             value.hash_code_units(state);
         }
-        RawValue::BigInt(value) => {
+        RawValue::BigInt(id) => {
             state.write_u8(5);
-            value.hash(state);
+            bigint_content(heap, *id).hash(state);
         }
         RawValue::Symbol(value) => {
             state.write_u8(6);

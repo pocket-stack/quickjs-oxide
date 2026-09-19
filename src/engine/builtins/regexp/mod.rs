@@ -50,6 +50,7 @@ use crate::engine::builtins::native::{RegExpFlagKind, RegExpNativeKind};
 use crate::engine::heap::RegExpRealmData;
 
 use crate::engine::{
+    atom::AtomIdx,
     api::{runtime::Runtime, runtime_error::RuntimeError},
     builtins::native::NativeFunctionId,
     heap::ContextId,
@@ -274,7 +275,7 @@ impl Runtime {
         let last_index =
             self.pinned_property_key(crate::engine::atom::pinned::PinnedAtom::LastIndex)?;
         let entries = [ShapeEntry {
-            atom: last_index.atom(),
+            atom: AtomIdx::from_raw(last_index.atom().raw()),
             flags: PropertyFlags::data(true, false, false),
         }];
         let object_shape = self
@@ -296,7 +297,7 @@ impl Runtime {
                 .iter()
                 .enumerate()
                 .map(|(index, key)| ShapeEntry {
-                    atom: key.atom(),
+                    atom: AtomIdx::from_raw(key.atom().raw()),
                     flags: if index == 0 {
                         PropertyFlags::data(true, false, false)
                     } else {

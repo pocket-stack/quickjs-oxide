@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 
 impl Heap {
     #[must_use]
@@ -149,7 +150,10 @@ impl Heap {
                 "initializing slot metadata did not match its payload",
             ));
         }
-        slot.state = SlotState::Live(Node { strong, data });
+        slot.state = SlotState::Live(Node {
+            strong: Cell::new(strong),
+            data,
+        });
         Ok(())
     }
 
@@ -171,6 +175,38 @@ impl Heap {
                 index: id.index(),
                 generation: id.generation(),
             }),
+        }
+    }
+
+    /// Trusted accessor for a handle that a live owning edge keeps valid.
+    ///
+    /// The generation check runs only in debug builds; release builds keep the
+    /// `Vec` bounds check. A non-live slot or wrong kind at a trusted call site
+    /// is a heap invariant violation, so it panics rather than returning an
+    /// error. General and untrusted callers must keep using
+    /// [`Heap::live_node`].
+    #[inline]
+    pub(in crate::engine::heap) fn live_node_fast(&self, id: RawId) -> &Node {
+        debug_assert!(
+            self.validate_slot_identity(id).is_ok(),
+            "trusted handle failed its debug identity check"
+        );
+        match &self.slots[id.index() as usize].state {
+            SlotState::Live(node) => node,
+            _ => unreachable!("trusted handle reached a non-live slot"),
+        }
+    }
+
+    /// Trusted mutable accessor paired with [`Heap::live_node_fast`].
+    #[inline]
+    pub(in crate::engine::heap) fn live_node_fast_mut(&mut self, id: RawId) -> &mut Node {
+        debug_assert!(
+            self.validate_slot_identity(id).is_ok(),
+            "trusted handle failed its debug identity check"
+        );
+        match &mut self.slots[id.index() as usize].state {
+            SlotState::Live(node) => node,
+            _ => unreachable!("trusted handle reached a non-live slot"),
         }
     }
 
@@ -197,7 +233,9 @@ impl Heap {
             NodeData::Shape(_)
             | NodeData::VarRef(_)
             | NodeData::Context(_)
-            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+            | NodeData::FunctionBytecode(_)
+            | NodeData::String(_)
+            | NodeData::BigInt(_) => Err(HeapError::Invariant(
                 "typed object lookup reached another node payload",
             )),
         }
@@ -212,7 +250,9 @@ impl Heap {
             NodeData::Object(_)
             | NodeData::Shape(_)
             | NodeData::Context(_)
-            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+            | NodeData::FunctionBytecode(_)
+            | NodeData::String(_)
+            | NodeData::BigInt(_) => Err(HeapError::Invariant(
                 "typed var-ref lookup reached another node payload",
             )),
         }

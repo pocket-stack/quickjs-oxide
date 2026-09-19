@@ -1,7 +1,7 @@
 use super::*;
 
 /// ECMAScript-visible lifecycle of a branded synchronous generator object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 pub enum GeneratorState {
     SuspendedStart,
     SuspendedYield,
@@ -13,7 +13,7 @@ pub enum GeneratorState {
 /// Heap-native representation of one argument or local binding retained by a
 /// dormant generator frame. Runtime-owning root wrappers must never enter this
 /// structure: every GC identity is stored as a raw arena edge instead.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum GeneratorFrameBinding {
     Direct(RawValue),
     Private(Atom),
@@ -23,7 +23,7 @@ pub enum GeneratorFrameBinding {
 }
 
 /// Raw VM fields retained across a synchronous-generator suspension.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct GeneratorVmActivation {
     pub stack: Vec<RawValue>,
     pub regions: Vec<crate::engine::vm::VmUnwindRegion>,
@@ -38,7 +38,7 @@ pub struct GeneratorVmActivation {
 }
 
 /// Complete dormant execution state owned by one generator object.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct GeneratorActivationData {
     pub bytecode: FunctionBytecodeId,
     pub vm: GeneratorVmActivation,
@@ -51,7 +51,7 @@ pub struct GeneratorActivationData {
 }
 
 /// ECMAScript-visible lifecycle of a branded async-generator object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 pub enum AsyncGeneratorState {
     SuspendedStart,
     SuspendedYield,
@@ -63,7 +63,7 @@ pub enum AsyncGeneratorState {
 
 /// One queued `.next`, `.return`, or `.throw` request and its Promise
 /// capability. Every identity is stored as a raw traced edge.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AsyncGeneratorRequestData {
     pub completion: GeneratorResumeKind,
     pub result: RawValue,
@@ -73,7 +73,7 @@ pub struct AsyncGeneratorRequestData {
 }
 
 /// Complete hidden state of one genuine AsyncGenerator.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AsyncGeneratorData {
     pub state: AsyncGeneratorState,
     pub activation: Option<Box<GeneratorActivationData>>,
@@ -84,14 +84,14 @@ pub struct AsyncGeneratorData {
 }
 
 /// Settlement branch selected by an internal async-function resume callback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum AsyncFunctionResumeKind {
     Fulfill,
     Reject,
 }
 
 /// Settlement branch selected by an internal async-generator reaction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum AsyncGeneratorResumeKind {
     AwaitFulfill,
     AwaitReject,
@@ -104,7 +104,7 @@ pub enum AsyncGeneratorResumeKind {
 /// The active VM frame is rooted by the runtime while `Executing`. At an
 /// `await`, ownership transfers into the state object and the phase becomes
 /// `Awaiting`; `Completed` is absorbing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 pub enum AsyncFunctionPhase {
     Executing,
     Awaiting,
@@ -118,7 +118,7 @@ pub enum AsyncFunctionPhase {
 /// properties. `driver_realm` is the original caller realm which supplies the
 /// returned Promise and await jobs; it may differ from the bytecode activation
 /// realm. Every arena identity here is a raw, traced edge.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AsyncFunctionStateData {
     pub driver_realm: ContextId,
     pub outer_resolve: ObjectId,
@@ -537,10 +537,12 @@ pub(in crate::engine::heap) fn validate_async_from_sync_iterator_data(
         ));
     }
     for edge in raw_value_edges(&data.next) {
-        let RawId::Object(object) = edge else {
-            unreachable!("RawValue only owns object edges")
-        };
-        heap.object(object)?;
+        if !heap.is_live(edge) {
+            return Err(HeapError::Stale {
+                index: edge.index(),
+                generation: edge.generation(),
+            });
+        }
     }
     Ok(())
 }

@@ -98,12 +98,11 @@ impl EvaluationStep {
                 "module cycle-root evaluation previously failed inside the engine",
             ));
         }
-        if record.link_status != ModuleLinkStatus::Linked {
+        if !matches!(record.link_status, ModuleLinkStatus::Linked) {
             return Err(RuntimeError::Invariant(
                 "module evaluation Promise was requested before linking",
             ));
         }
-
         let capability = runtime.new_default_promise_capability(initiating_realm)?;
         let promise = capability.promise.clone();
         runtime

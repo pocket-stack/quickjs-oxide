@@ -5,6 +5,7 @@
 //! module owns the class shape, cached realm intrinsics, representation state,
 //! and the mapped `[[DefineOwnProperty]]` transitions.
 
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 use crate::engine::heap::roots::VarRefRoot;
@@ -42,7 +43,7 @@ impl ArgumentsLayout {
 
     fn push(&mut self, key: PropertyKey, flags: PropertyFlags, slot: PropertySlot) {
         self.entries.push(ShapeEntry {
-            atom: key.atom(),
+            atom: AtomIdx::from_raw(key.atom().raw()),
             flags,
         });
         self.slots.push(slot);
@@ -65,16 +66,62 @@ impl Runtime {
             RuntimeError::Invariant("actual argument count exceeded QuickJS Uint32 storage")
         })?;
         let mut layout = ArgumentsLayout::new(values.len());
-        for (index, value) in values.iter().enumerate() {
-            let key = self.property_key_for_index(index as u64)?;
+        // Convert up front: node allocation needs the state borrow, while the
+        // layout commit happens inside `new_arguments_object_base`. Clone
+        // copies only the handle; each conversion keeps exactly one producer
+        // edge, released once below (or immediately on every failure exit).
+        let mut converted = Vec::with_capacity(values.len());
+        for value in &values {
+            if let Err(error) = self
+                .raw_property_value(value)
+                .map(|raw| converted.push(raw))
+            {
+                for raw in &converted {
+                    self.release_converted_value_edge(raw);
+                }
+                return Err(error);
+            }
+        }
+        for (index, raw) in converted.iter().enumerate() {
+            let key = match self.property_key_for_index(index as u64) {
+                Ok(key) => key,
+                Err(error) => {
+                    for raw in &converted {
+                        self.release_converted_value_edge(raw);
+                    }
+                    return Err(RuntimeError::from(error));
+                }
+            };
             layout.push(
                 key,
                 PropertyFlags::data(true, true, true),
-                PropertySlot::Data(self.raw_property_value(value)?),
+                PropertySlot::Data(raw.clone()),
             );
         }
-        self.prepare_arguments_common_properties(realm, length, None, &mut layout)?;
-        self.new_arguments_object_base(realm, false, length, layout)
+        if let Err(error) =
+            self.prepare_arguments_common_properties(realm, length, None, &mut layout)
+        {
+            for raw in &converted {
+                self.release_converted_value_edge(raw);
+            }
+            return Err(error);
+        }
+        match self.new_arguments_object_base(realm, false, length, layout) {
+            Ok(object) => {
+                // The object retained its own copy edges during allocation;
+                // the boundary conversions' producer edges are no longer needed.
+                for raw in &converted {
+                    self.release_converted_value_edge(raw);
+                }
+                Ok(object)
+            }
+            Err(error) => {
+                for raw in &converted {
+                    self.release_converted_value_edge(raw);
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Build QuickJS `JS_CLASS_MAPPED_ARGUMENTS`. Each supplied root is one
@@ -343,7 +390,7 @@ impl Runtime {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
             let shape = state.heap.shape(object_data.shape)?;
-            let Some(index) = shape.find(key.atom()) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(key.atom().raw())) else {
                 return Ok(false);
             };
             let index = usize::try_from(index)
@@ -362,12 +409,13 @@ impl Runtime {
                 self.write_var_ref(&root, value.clone())?;
             }
             PropertySlot::Data(_) => {
-                self.store_property_slot(
-                    object,
-                    key,
-                    flags,
-                    PropertySlot::Data(self.raw_property_value(value)?),
-                )?;
+                let raw = self.raw_property_value(value)?;
+                // Clone duplicates only the handle; the probe keeps the
+                // producer edge accountable through the store below.
+                let conversion_probe = raw.clone();
+                let stored = self.store_property_slot(object, key, flags, PropertySlot::Data(raw));
+                self.release_converted_value_edge(&conversion_probe);
+                stored?;
             }
             PropertySlot::Accessor { .. } | PropertySlot::AutoInit(_) => return Ok(false),
         }

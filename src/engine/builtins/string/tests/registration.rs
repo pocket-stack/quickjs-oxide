@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::builtins::native::NativeCProto;
 use crate::engine::heap::{AutoInitProperty, PropertySlot, RawValue};
 use crate::engine::object::shape::PropertyFlags;
@@ -106,10 +107,10 @@ fn string_unicode_intrinsics_use_pinned_generic_cproto_and_append_order() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(prototype.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let sup = usize::try_from(shape.find(sup.atom()).unwrap()).unwrap();
-        let constructor = usize::try_from(shape.find(constructor.atom()).unwrap()).unwrap();
-        let normalize = usize::try_from(shape.find(normalize.atom()).unwrap()).unwrap();
-        let locale_compare = usize::try_from(shape.find(locale_compare.atom()).unwrap()).unwrap();
+        let sup = usize::try_from(shape.find(AtomIdx::from_raw(sup.atom().raw())).unwrap()).unwrap();
+        let constructor = usize::try_from(shape.find(AtomIdx::from_raw(constructor.atom().raw())).unwrap()).unwrap();
+        let normalize = usize::try_from(shape.find(AtomIdx::from_raw(normalize.atom().raw())).unwrap()).unwrap();
+        let locale_compare = usize::try_from(shape.find(AtomIdx::from_raw(locale_compare.atom().raw())).unwrap()).unwrap();
         assert_eq!(constructor, sup + 1);
         assert_eq!(normalize, constructor + 1);
         assert_eq!(locale_compare, normalize + 1);
@@ -190,7 +191,7 @@ fn string_subrange_family_publishes_generic_autoinit_entries_and_identities() {
     let object = state.heap.object(prototype.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
     for (name, selector, key) in &keys {
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert_eq!(
             shape.entries()[slot_index].flags,
             PropertyFlags::data(true, false, true),
@@ -236,7 +237,7 @@ fn string_repeat_publishes_one_generic_autoinit_entry() {
     let state = runtime.0.state.borrow();
     let object = state.heap.object(prototype.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
-    let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+    let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
     assert_eq!(
         shape.entries()[slot_index].flags,
         PropertyFlags::data(true, false, true),
@@ -287,7 +288,7 @@ fn string_pad_family_publishes_pinned_autoinit_entries_and_identities() {
     let shape = state.heap.shape(object.shape).unwrap();
     let slot_indices = keys
         .each_ref()
-        .map(|(_, _, key)| usize::try_from(shape.find(key.atom()).unwrap()).unwrap());
+        .map(|(_, _, key)| usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap());
     assert!(
         slot_indices[0] < slot_indices[1],
         "padEnd must precede padStart"
@@ -354,7 +355,7 @@ fn string_trim_family_preserves_alias_materialization_order_and_independence() {
         let shape = state.heap.shape(object.shape).unwrap();
         let slot_indices = keys
             .each_ref()
-            .map(|(_, _, key)| usize::try_from(shape.find(key.atom()).unwrap()).unwrap());
+            .map(|(_, _, key)| usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap());
         assert!(
             slot_indices.windows(2).all(|pair| pair[1] == pair[0] + 1),
             "the five trim-family entries did not retain QuickJS table order",

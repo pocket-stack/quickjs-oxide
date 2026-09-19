@@ -6,7 +6,7 @@ use crate::engine::api::runtime::Runtime;
 use crate::engine::code::rooted::FunctionBytecodeRef;
 use crate::engine::heap::ContextId;
 use crate::engine::object::CallableRef;
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 use crate::engine::vm::exception::runtime_error_to_vm_error;
 use crate::engine::vm::frame::{FrameCold, FrameEntry, ReturnTarget};
 use crate::engine::vm::stack::FrameStorage;
@@ -15,9 +15,9 @@ use crate::engine::vm::stack::FrameStorage;
 /// this request. Its values stay rooted independently of the parent window.
 pub(in crate::engine::vm) struct BytecodeCallRequest {
     pub callable: CallableRef,
-    pub receiver: Value,
-    pub new_target: Value,
-    pub arguments: Vec<Value>,
+    pub receiver: JsValue,
+    pub new_target: JsValue,
+    pub arguments: Vec<JsValue>,
     pub bytecode: FunctionBytecodeRef,
     pub closure_slots: crate::engine::vm::closure::ClosureSlots,
     pub caller_realm: ContextId,
@@ -102,8 +102,8 @@ impl BytecodeCallRequest {
 /// and innermost bound receiver before choosing their driver entry.
 pub(in crate::engine::vm) struct NormalizedCallback {
     pub callable: CallableRef,
-    pub receiver: Value,
-    pub arguments: Vec<Value>,
+    pub receiver: JsValue,
+    pub arguments: Vec<JsValue>,
     pub classification: super::CallableExecution,
 }
 
@@ -130,12 +130,25 @@ pub(in crate::engine::vm) fn normalize_callback(
                     .map_err(runtime_error_to_vm_error)?
                 {
                     NativeConversion::Value(arguments) => arguments,
-                    NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
                 };
                 receiver = this_value;
                 callable = target;
             }
             classification => {
+                // The normalized owners enter the internal call convention:
+                // their root edges are duplicated; the caller's roots release
+                // through the public Drop path.
+                let receiver = runtime
+                    .unroot_value(&receiver)
+                    .map_err(runtime_error_to_vm_error)?;
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| runtime.unroot_value(argument))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(runtime_error_to_vm_error)?;
                 return Ok(NativeConversion::Value(NormalizedCallback {
                     callable,
                     receiver,

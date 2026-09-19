@@ -1,19 +1,53 @@
 use crate::engine::api::error::Error;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 
 impl Runtime {
-    pub(crate) fn set_pending_exception(&self, value: Value) -> Result<(), RuntimeError> {
+    /// Internal-value form of [`Runtime::set_pending_exception`]: consumes the
+    /// value's edges after the pending-exception root has retained its copy.
+    pub(crate) fn set_pending_exception_jsvalue(
+        &self,
+        value: JsValue,
+    ) -> Result<(), RuntimeError> {
         let _operation = self.operation();
-        self.validate_value_domain(&value, "exception value")?;
-        let raw = self.raw_property_value(&value)?;
+        let raw = value.as_raw();
         {
             let mut state = self.0.state.borrow_mut();
             state.retain_raw_root(&raw)?;
             if let Some(previous) = state.pending_exception.replace(raw) {
                 state.release_owned_raw_root(previous)?;
             }
+        }
+        // `raw` owns its own retained occurrence; the consumed value's edges
+        // are no longer needed.
+        self.release_jsvalue(value)?;
+        Ok(())
+    }
+
+    pub(crate) fn set_pending_exception(&self, value: Value) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        self.validate_value_domain(&value, "exception value")?;
+        let raw = self.raw_property_value(&value)?;
+        // The conversion carries one producer-owned string/BigInt node edge;
+        // the pending-exception root retains its own occurrence below, so the
+        // producer edge is released on every exit.
+        let conversion_edge = raw.conversion_node_edge();
+        {
+            let mut state = self.0.state.borrow_mut();
+            if let Err(error) = state.retain_raw_root(&raw) {
+                drop(state);
+                if let Some(edge) = conversion_edge {
+                    self.release_converted_node_edge(edge);
+                }
+                return Err(error);
+            }
+            if let Some(previous) = state.pending_exception.replace(raw) {
+                state.release_owned_raw_root(previous)?;
+            }
+        }
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
         }
         // `raw` now owns its own retained occurrence.
         drop(value);
@@ -39,6 +73,12 @@ pub(in crate::engine::vm) fn runtime_error_to_vm_error(error: RuntimeError) -> E
         RuntimeError::Engine(error) => error,
         error => Error::internal(error.to_string()),
     }
+}
+
+/// Heap retain/release failures at trusted VM sites carry the same internal
+/// diagnostic policy as every other runtime failure.
+pub(in crate::engine::vm) fn heap_error_to_vm_error(error: crate::engine::heap::HeapError) -> Error {
+    runtime_error_to_vm_error(RuntimeError::from(error))
 }
 
 /// Materialize published binding diagnostics outside the resident driver frame.
@@ -82,7 +122,7 @@ pub(super) fn binding_error(
         .native_atom_error(kind, prefix, &key, suffix)
         .map_err(runtime_error_to_vm_error)?;
     let value = runtime
-        .new_native_error_from_error(frame.executable.realm, native, &error)
+        .new_native_error_from_error_jsvalue(frame.executable.realm, native, &error)
         .map_err(runtime_error_to_vm_error)?;
     #[cfg(feature = "profiling")]
     crate::engine::api::profiling::record_owned_instruction(execution.slots.depth(&frame.window));

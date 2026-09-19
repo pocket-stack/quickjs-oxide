@@ -101,7 +101,7 @@ impl StringReplaceStep {
         };
         if matches!(this_value, Value::Undefined | Value::Null) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "cannot convert to object",
@@ -289,7 +289,7 @@ impl StringReplaceResumeState {
             Phase::Flags => {
                 if matches!(value, Value::Undefined | Value::Null) {
                     return Ok(StringReplaceAction::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Type,
                             "cannot convert to object",
@@ -308,7 +308,7 @@ impl StringReplaceResumeState {
                 };
                 if !flags.utf16_units().any(|unit| unit == u16::from(b'g')) {
                     return Ok(StringReplaceAction::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Type,
                             "regexp must have the 'g' flag",
@@ -327,13 +327,13 @@ impl StringReplaceResumeState {
                 };
                 let Some(callable) = callable else {
                     return Ok(StringReplaceAction::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
                     )));
                 };
                 let mut arguments = Vec::new();
                 if arguments.try_reserve_exact(2).is_err() {
                     return Ok(StringReplaceAction::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Internal,
                             "out of memory",
@@ -494,7 +494,7 @@ impl StringReplaceResumeState {
                 let mut arguments = Vec::new();
                 if arguments.try_reserve_exact(3).is_err() {
                     return Ok(StringReplaceAction::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.realm,
                             NativeErrorKind::Internal,
                             "out of memory",

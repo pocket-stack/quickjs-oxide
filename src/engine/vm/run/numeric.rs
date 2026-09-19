@@ -3,7 +3,7 @@
 use crate::engine::{
     api::{Error, runtime::Runtime},
     heap::ContextId,
-    value::Value,
+    value::JsValue,
     vm::{
         exception::runtime_error_to_vm_error,
         numeric::operation::{NumericKind, primitive_output},
@@ -14,7 +14,7 @@ use crate::engine::{
 pub(super) fn supported(slots: &RunSlots<'_>, kind: NumericKind) -> bool {
     kind.primitive_arithmetic()
         && (0..if kind.unary() { 1 } else { 2 }).all(
-            |offset| matches!(slots.peek(offset), Ok(value) if !matches!(value, Value::Object(_))),
+            |offset| matches!(slots.peek(offset), Ok(value) if !matches!(value, JsValue::Object(_))),
         )
 }
 
@@ -32,7 +32,7 @@ pub(super) fn complete(
     realm: ContextId,
     transaction: &mut FrameTransaction<'_>,
     kind: NumericKind,
-    thrown: &mut Option<Value>,
+    thrown: &mut Option<JsValue>,
     active_frame: super::super::frames::ActiveFrameToken,
     fault_pc: usize,
 ) -> Result<bool, Error> {
@@ -47,7 +47,7 @@ pub(super) fn complete(
     };
     // Parsing, BigInt allocation, Symbol release and error materialization all
     // occur after the input RunSlots has ended. Object coercion is never admitted.
-    let output = match primitive_output(kind, left, right) {
+    let output = match primitive_output(runtime, kind, left, right) {
         Ok(output) => output,
         Err(error) => {
             let Some(kind) =
@@ -68,7 +68,7 @@ pub(super) fn complete(
             }
             *thrown = Some(
                 runtime
-                    .new_native_error_from_error(realm, kind, &error)
+                    .new_native_error_from_error_jsvalue(realm, kind, &error)
                     .map_err(runtime_error_to_vm_error)?,
             );
             return Ok(false);

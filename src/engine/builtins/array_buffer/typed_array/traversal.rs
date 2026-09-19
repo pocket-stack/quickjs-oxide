@@ -124,7 +124,7 @@ impl TypedTraversalStep {
                 } else {
                     if length == 0 {
                         return Ok(Self::Complete(Completion::Throw(
-                            runtime.new_native_error(
+                            runtime.new_native_error_jsvalue(
                                 realm,
                                 NativeErrorKind::Type,
                                 "empty array",
@@ -159,7 +159,7 @@ impl TraversalState {
     ) -> Result<NativeConversion<Vec<Value>>, RuntimeError> {
         let mut arguments = Vec::new();
         if arguments.try_reserve_exact(count).is_err() {
-            return Ok(NativeConversion::Throw(runtime.new_native_error(
+            return Ok(NativeConversion::Throw(runtime.new_native_error_jsvalue(
                 self.realm,
                 NativeErrorKind::Internal,
                 "out of memory",

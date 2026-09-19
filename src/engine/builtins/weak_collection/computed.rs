@@ -68,7 +68,7 @@ impl ComputedStep {
         };
         let Some(callable) = callback else {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
             )));
         };
         let Some(key) = runtime.weak_collection_key(&key_value, "WeakMap key")? else {

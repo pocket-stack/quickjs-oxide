@@ -85,6 +85,15 @@ impl ObjectRef {
     pub(crate) const fn object_id(&self) -> ObjectId {
         self.id
     }
+
+    /// Consume this root, transferring its one owned reference to the caller
+    /// without retaining or releasing (for example into an internal value
+    /// edge of the same runtime).
+    #[must_use]
+    pub(crate) fn into_handle(self) -> ObjectId {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.id
+    }
 }
 
 impl Clone for ObjectRef {
@@ -181,6 +190,14 @@ impl AtomOwner {
     #[must_use]
     fn domain_id(&self) -> u64 {
         self.runtime.domain_id()
+    }
+
+    /// Consume this root, transferring its one owned atom reference to the
+    /// caller without retaining or releasing.
+    #[must_use]
+    fn into_atom(self) -> Atom {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.atom
     }
 }
 
@@ -418,6 +435,13 @@ impl SymbolRef {
     #[must_use]
     pub(crate) const fn atom(&self) -> Atom {
         self.0.atom()
+    }
+
+    /// Consume this root, transferring its one owned atom reference to the
+    /// caller without retaining or releasing.
+    #[must_use]
+    pub(crate) fn into_atom(self) -> Atom {
+        self.0.into_atom()
     }
 }
 

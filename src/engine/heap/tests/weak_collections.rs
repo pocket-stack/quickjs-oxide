@@ -67,7 +67,11 @@ fn finalization_registry_transfers_held_and_job_roots_without_retain_on_adoption
     let job = sink.jobs.front().unwrap();
     assert_eq!(job.callback, callback);
     assert_eq!(job.realm, realm);
-    assert_eq!(job.held_value, RawValue::Object(held));
+    assert!(
+        matches!(job.held_value, RawValue::Object(object) if object == held),
+        "held value mismatch: {:?}",
+        job.held_value
+    );
 
     // Releasing the registry removes only its own callback/realm roots;
     // the already-published job keeps its roots without another retain.
@@ -85,6 +89,7 @@ fn finalization_registry_transfers_held_and_job_roots_without_retain_on_adoption
 fn finalization_job_moves_held_symbol_ownership_until_job_release() {
     let mut atoms = crate::engine::atom::AtomTable::new();
     let held = atoms.new_symbol(Some("finalization held value")).unwrap();
+    let held_index = AtomIdx::from_raw(held.raw());
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
@@ -95,7 +100,7 @@ fn finalization_job_moves_held_symbol_ownership_until_job_release() {
     heap.finalization_registry_register(
         registry,
         WeakCollectionKey::Object(target),
-        RawValue::Symbol(held),
+        RawValue::Symbol(held_index),
         None,
     )
     .unwrap();
@@ -105,10 +110,10 @@ fn finalization_job_moves_held_symbol_ownership_until_job_release() {
     heap.run_gc_with_finalization_sink(
         |event| {
             Ok(match event {
-                WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
-                WeakSymbolGcEvent::Release(atom) => {
+                WeakSymbolGcEvent::IsLive(index) => atoms.is_live_index(index),
+                WeakSymbolGcEvent::Release(index) => {
                     atoms
-                        .release(atom)
+                        .release_index(index)
                         .map_err(|_| HeapError::Invariant("held Symbol release failed"))?;
                     true
                 }
@@ -118,12 +123,16 @@ fn finalization_job_moves_held_symbol_ownership_until_job_release() {
     )
     .unwrap();
     assert_eq!(sink.jobs.len(), 1);
-    assert_eq!(sink.jobs[0].held_value, RawValue::Symbol(held));
+    assert!(
+        matches!(sink.jobs[0].held_value, RawValue::Symbol(index) if index == held_index),
+        "held value mismatch: {:?}",
+        sink.jobs[0].held_value
+    );
     assert!(atoms.is_live(held));
 
     heap.release_object(registry).unwrap();
     let cleanup = heap.discard_finalization_jobs(sink.jobs).unwrap();
-    assert_eq!(cleanup.atoms, [held]);
+    assert_eq!(cleanup.atoms, [held_index]);
     assert_eq!(
         atoms.release(held),
         Ok(crate::engine::atom::ReleaseOutcome::Removed)
@@ -351,8 +360,16 @@ fn finalization_registry_unregister_is_allocation_free_and_stable() {
         unreachable!()
     };
     assert_eq!(data.entries.len(), 2);
-    assert_eq!(data.entries[0].held_value, RawValue::Object(held[1]));
-    assert_eq!(data.entries[1].held_value, RawValue::Object(held[3]));
+    assert!(
+        matches!(data.entries[0].held_value, RawValue::Object(object) if object == held[1]),
+        "held value mismatch: {:?}",
+        data.entries[0].held_value
+    );
+    assert!(
+        matches!(data.entries[1].held_value, RawValue::Object(object) if object == held[3]),
+        "held value mismatch: {:?}",
+        data.entries[1].held_value
+    );
     assert!(matches!(heap.object(held[0]), Err(HeapError::Stale { .. })));
     assert!(matches!(heap.object(held[2]), Err(HeapError::Stale { .. })));
 
@@ -533,6 +550,7 @@ fn weak_map_prunes_records_incrementally_in_insertion_order() {
 fn weak_symbol_hook_release_precedes_later_record_liveness_query() {
     let mut atoms = crate::engine::atom::AtomTable::new();
     let symbol = atoms.new_symbol(Some("ordered weak key")).unwrap();
+    let symbol_index = AtomIdx::from_raw(symbol.raw());
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let weak_map = heap
@@ -544,7 +562,7 @@ fn weak_symbol_hook_release_precedes_later_record_liveness_query() {
     let weak_symbol = WeakCollectionKey::Symbol(symbol);
 
     // The first value owns the symbol used non-owningly by the next key.
-    heap.weak_map_set(weak_map, weak_first, RawValue::Symbol(symbol))
+    heap.weak_map_set(weak_map, weak_first, RawValue::Symbol(symbol_index))
         .unwrap();
     heap.weak_map_set(weak_map, weak_symbol, RawValue::Object(held_value))
         .unwrap();
@@ -557,9 +575,9 @@ fn weak_symbol_hook_release_precedes_later_record_liveness_query() {
             |event| {
                 events.push(event);
                 match event {
-                    WeakSymbolGcEvent::IsLive(atom) => Ok(atoms.is_live(atom)),
-                    WeakSymbolGcEvent::Release(atom) => {
-                        atoms.release(atom).map_err(|_| {
+                    WeakSymbolGcEvent::IsLive(index) => Ok(atoms.is_live_index(index)),
+                    WeakSymbolGcEvent::Release(index) => {
+                        atoms.release_index(index).map_err(|_| {
                             HeapError::Invariant("weak-symbol test hook release failed")
                         })?;
                         Ok(true)
@@ -572,12 +590,12 @@ fn weak_symbol_hook_release_precedes_later_record_liveness_query() {
     assert_eq!(
         events,
         vec![
-            WeakSymbolGcEvent::Release(symbol),
-            WeakSymbolGcEvent::IsLive(symbol)
+            WeakSymbolGcEvent::Release(symbol_index),
+            WeakSymbolGcEvent::IsLive(symbol_index)
         ]
     );
     assert!(!atoms.is_live(symbol));
-    assert!(!stats.cleanup.atoms.contains(&symbol));
+    assert!(!stats.cleanup.atoms.contains(&symbol_index));
     assert_eq!(stats.cleanup.finalized_objects, 1);
     assert!(heap.weak_map_get(weak_map, weak_first).unwrap().is_none());
     assert!(heap.weak_map_get(weak_map, weak_symbol).unwrap().is_none());
@@ -591,6 +609,7 @@ fn weak_symbol_hook_release_precedes_later_record_liveness_query() {
 fn gc_release_hook_can_defer_detached_value_atoms() {
     let mut atoms = crate::engine::atom::AtomTable::new();
     let symbol = atoms.new_symbol(Some("deferred weak value")).unwrap();
+    let symbol_index = AtomIdx::from_raw(symbol.raw());
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let weak_map = heap
@@ -600,7 +619,7 @@ fn gc_release_hook_can_defer_detached_value_atoms() {
     heap.weak_map_set(
         weak_map,
         WeakCollectionKey::Object(key),
-        RawValue::Symbol(symbol),
+        RawValue::Symbol(symbol_index),
     )
     .unwrap();
     heap.release_object(key).unwrap();
@@ -609,7 +628,7 @@ fn gc_release_hook_can_defer_detached_value_atoms() {
         .run_gc_with_finalization_sink(
             |event| {
                 Ok(match event {
-                    WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
+                    WeakSymbolGcEvent::IsLive(index) => atoms.is_live_index(index),
                     WeakSymbolGcEvent::Release(_) => false,
                 })
             },
@@ -617,7 +636,7 @@ fn gc_release_hook_can_defer_detached_value_atoms() {
         )
         .unwrap();
     assert!(atoms.is_live(symbol));
-    assert_eq!(stats.cleanup.atoms, vec![symbol]);
+    assert_eq!(stats.cleanup.atoms, vec![symbol_index]);
     assert!(atoms.release(symbol).is_ok());
 
     heap.release_object(weak_map).unwrap();
@@ -816,6 +835,7 @@ fn cycle_collected_weak_key_is_pruned_on_the_following_gc() {
 fn stale_symbol_keys_are_pruned_without_owning_the_atom() {
     let mut atoms = crate::engine::atom::AtomTable::new();
     let symbol = atoms.new_symbol(Some("weak key")).unwrap();
+    let symbol_index = AtomIdx::from_raw(symbol.raw());
     let mut heap = Heap::new();
     let shape = empty_shape(&mut heap);
     let weak_map = heap
@@ -841,7 +861,7 @@ fn stale_symbol_keys_are_pruned_without_owning_the_atom() {
         .run_gc_with_finalization_sink(
             |event| {
                 Ok(match event {
-                    WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
+                    WeakSymbolGcEvent::IsLive(index) => atoms.is_live_index(index),
                     WeakSymbolGcEvent::Release(_) => false,
                 })
             },
@@ -849,7 +869,7 @@ fn stale_symbol_keys_are_pruned_without_owning_the_atom() {
         )
         .unwrap();
     assert_eq!(stats.cleanup.finalized_objects, 1);
-    assert!(!stats.cleanup.atoms.contains(&symbol));
+    assert!(!stats.cleanup.atoms.contains(&symbol_index));
     assert!(heap.weak_map_get(weak_map, weak_key).unwrap().is_none());
     assert!(!heap.weak_set_has(weak_set, weak_key).unwrap());
 
@@ -881,9 +901,12 @@ fn weak_map_hash_storage_handles_the_deep_staging_scale() {
         keys.push(key);
     }
     for (index, key) in keys.iter().copied().enumerate() {
-        assert_eq!(
-            heap.weak_map_get(weak_map, WeakCollectionKey::Object(key)),
-            Ok(Some(&RawValue::Int(i32::try_from(index).unwrap())))
+        assert!(
+            matches!(
+                heap.weak_map_get(weak_map, WeakCollectionKey::Object(key)),
+                Ok(Some(&RawValue::Int(value))) if value == i32::try_from(index).unwrap()
+            ),
+            "weak map value mismatch for key {index}"
         );
     }
 
@@ -960,7 +983,9 @@ fn weak_reference_intrinsics_attach_atomically_and_root_both_prototypes() {
             root, root, root, root, root, root, root, root,
         ))
         .unwrap();
-    assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+    assert!(
+        matches!(heap.context(realm).unwrap().weak_ref, None)
+    );
 
     let intrinsic_shape = heap
         .allocate_shape(Shape::new(Some(root), []).unwrap())
@@ -992,7 +1017,9 @@ fn weak_reference_intrinsics_attach_atomically_and_root_both_prototypes() {
             "WeakRef and FinalizationRegistry prototypes share one identity",
         ))
     );
-    assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+    assert!(
+        matches!(heap.context(realm).unwrap().weak_ref, None)
+    );
 
     assert_eq!(
         heap.attach_weak_ref_intrinsics(
@@ -1006,7 +1033,9 @@ fn weak_reference_intrinsics_attach_atomically_and_root_both_prototypes() {
             "WeakRef prototype is not an ordinary child of Object.prototype",
         ))
     );
-    assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+    assert!(
+        matches!(heap.context(realm).unwrap().weak_ref, None)
+    );
     assert_eq!(
         heap.object_strong_count(weak_ref_prototype),
         Ok(weak_ref_strong)
@@ -1018,24 +1047,33 @@ fn weak_reference_intrinsics_attach_atomically_and_root_both_prototypes() {
 
     heap.live_node_mut(RawId::Object(finalization_registry_prototype))
         .unwrap()
-        .strong = u32::MAX;
+        .strong
+        .set(u32::MAX);
     assert_eq!(
         heap.attach_weak_ref_intrinsics(realm, roots),
         Err(HeapError::Overflow {
             operation: "retaining outgoing heap edges",
         })
     );
-    assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+    assert!(
+        matches!(heap.context(realm).unwrap().weak_ref, None)
+    );
     assert_eq!(
         heap.object_strong_count(weak_ref_prototype),
         Ok(weak_ref_strong)
     );
     heap.live_node_mut(RawId::Object(finalization_registry_prototype))
         .unwrap()
-        .strong = finalization_registry_strong;
+        .strong
+        .set(finalization_registry_strong);
 
     heap.attach_weak_ref_intrinsics(realm, roots).unwrap();
-    assert_eq!(heap.context(realm).unwrap().weak_ref, Some(roots));
+    assert!(
+        matches!(heap.context(realm).unwrap().weak_ref, Some(attached)
+            if attached.weak_ref_prototype == roots.weak_ref_prototype
+                && attached.finalization_registry_prototype
+                    == roots.finalization_registry_prototype)
+    );
     assert_eq!(
         heap.object_strong_count(weak_ref_prototype),
         Ok(weak_ref_strong + 1)

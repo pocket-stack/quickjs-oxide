@@ -60,7 +60,7 @@ struct Search {
 }
 fn overflow(runtime: &Runtime, realm: ContextId) -> Result<ProxyConstructStep, RuntimeError> {
     Ok(ProxyConstructStep::Complete(Completion::Throw(
-        runtime.new_native_error(realm, NativeErrorKind::Internal, "stack overflow")?,
+        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Internal, "stack overflow")?,
     )))
 }
 impl ProxyConstructStep {
@@ -136,7 +136,7 @@ impl ProxyConstructResume {
             Phase::Result { realm, trap, .. } => {
                 return Ok(ProxyConstructStep::Complete(match completion {
                     Completion::Return(value) if trap && !matches!(value, Value::Object(_)) => {
-                        Completion::Throw(runtime.new_native_error(
+                        Completion::Throw(runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Type,
                             "not an object",
@@ -184,7 +184,7 @@ impl ProxyConstructResume {
             Ok(method) => method,
             Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Type => {
                 return Ok(ProxyConstructStep::Complete(Completion::Throw(
-                    runtime.new_native_error_from_error(
+                    runtime.new_native_error_from_error_jsvalue(
                         search.realm,
                         NativeErrorKind::Type,
                         &error,

@@ -76,7 +76,7 @@ fn unique_shape_append_never_mutates_a_shared_shape() {
             .unwrap()
             .entries()
             .iter()
-            .map(|entry| entry.atom)
+            .map(|entry| state.atoms.brand(entry.atom).unwrap())
             .collect::<Vec<_>>(),
         shared_keys
             .iter()
@@ -95,7 +95,7 @@ fn unique_shape_append_never_mutates_a_shared_shape() {
             .unwrap()
             .entries()
             .iter()
-            .map(|entry| entry.atom)
+            .map(|entry| state.atoms.brand(entry.atom).unwrap())
             .collect::<Vec<_>>(),
         unique_atoms
     );
@@ -220,7 +220,7 @@ fn append_edges_are_weak_and_unlinked_on_mutation_and_collection() {
     let atom = state.atoms.intern_static("transition-key").unwrap();
     let parent = state.get_or_create_shape(None, &[]).unwrap();
     let entry = crate::engine::object::shape::ShapeEntry {
-        atom,
+        atom: AtomIdx::from_raw(atom.raw()),
         flags: crate::engine::object::shape::PropertyFlags::data(true, true, true),
     };
     let first = state.append_transition(parent, entry).unwrap();

@@ -420,7 +420,7 @@ impl CollectionResume {
         }
         let Value::Object(item) = item else {
             let error =
-                runtime.new_native_error(self.0.realm, NativeErrorKind::Type, "not an object")?;
+                runtime.new_native_error_jsvalue(self.0.realm, NativeErrorKind::Type, "not an object")?;
             drop(item);
             self.0.phase = Phase::Add(None);
             return self.abrupt(error);

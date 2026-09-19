@@ -1,5 +1,6 @@
 //! Array constructor, prototype, iterator, and sorting intrinsics.
 
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
@@ -487,7 +488,7 @@ impl Runtime {
         let (prototype, mut entries, mut slots) = {
             let object = state.heap.object(object_id)?;
             let shape = state.heap.shape(object.shape)?;
-            if shape.find(key.atom()).is_some() {
+            if shape.find(AtomIdx::from_raw(key.atom().raw())).is_some() {
                 return Err(RuntimeError::Invariant(
                     "Array unscopables autoinit property already exists",
                 ));
@@ -499,7 +500,7 @@ impl Runtime {
             )
         };
         entries.push(ShapeEntry {
-            atom: key.atom(),
+            atom: AtomIdx::from_raw(key.atom().raw()),
             flags: PropertyFlags::data(false, false, true),
         });
         slots.push(PropertySlot::AutoInit(AutoInitProperty::ArrayUnscopables {

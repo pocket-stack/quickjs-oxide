@@ -230,7 +230,7 @@ impl TypedCreateStep {
             };
             let Some(callable) = callable else {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                    runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
                 )));
             };
             Some(callable)
@@ -249,7 +249,7 @@ impl TypedCreateStep {
         };
         if let Some(message) = message {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(realm, NativeErrorKind::Type, message)?,
+                runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, message)?,
             )));
         }
         TypedCreateResume::iterator(
@@ -492,7 +492,7 @@ impl TypedCreateResume {
             Allocation::Static(constructor) => {
                 if !matches!(constructor, Value::Object(_)) {
                     return Ok(TypedCreateStep::Complete(Completion::Throw(
-                        runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
                     )));
                 }
                 Ok(TypedCreateStep::request_create(
@@ -588,7 +588,7 @@ impl TypedCreateResume {
                 };
                 if offset % u64::from(element.byte_length()) != 0 {
                     return Ok(TypedCreateStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Range,
                             "invalid offset",
@@ -751,7 +751,7 @@ fn complete_object(result: NativeConversion<ObjectRef>) -> Result<TypedCreateSte
 }
 fn out_of_memory(runtime: &Runtime, realm: ContextId) -> Result<TypedCreateStep, RuntimeError> {
     Ok(TypedCreateStep::Complete(Completion::Throw(
-        runtime.new_native_error(realm, NativeErrorKind::Internal, "out of memory")?,
+        runtime.new_native_error_jsvalue(realm, NativeErrorKind::Internal, "out of memory")?,
     )))
 }
 pub(super) fn finish(

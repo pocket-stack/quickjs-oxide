@@ -163,45 +163,63 @@ pub(crate) struct EncodedVmActivation {
 }
 
 impl EncodedVmActivation {
-    pub(crate) fn atoms(&self) -> Vec<Atom> {
+    /// Brand every retained atom index for the caller's explicit retain pass.
+    /// `GeneratorFrameBinding::Private` already carries a branded boundary
+    /// `Atom` and passes through untouched.
+    pub(crate) fn atoms(
+        &self,
+        table: &crate::engine::atom::AtomTable,
+    ) -> Result<Vec<Atom>, RuntimeError> {
         let vm = &self.data.vm;
-        vm.stack
+        let mut atoms = Vec::new();
+        for value in vm
+            .stack
             .iter()
             .chain(self.data.original_arguments.iter())
             .chain(std::iter::once(&vm.this_value))
             .chain(vm.normalized_this.iter())
             .chain(std::iter::once(&vm.new_target))
-            .filter_map(generator_raw_value_atom)
-            .chain(
-                self.data
-                    .arguments
-                    .iter()
-                    .chain(self.data.locals.iter())
-                    .filter_map(|binding| match binding {
-                        GeneratorFrameBinding::Direct(value) => generator_raw_value_atom(value),
-                        GeneratorFrameBinding::Private(atom) => Some(*atom),
-                        GeneratorFrameBinding::PrivateCallable(_)
-                        | GeneratorFrameBinding::Uninitialized
-                        | GeneratorFrameBinding::Captured(_) => None,
-                    }),
-            )
-            .collect()
+        {
+            if let RawValue::Symbol(index) | RawValue::Private(index) = value {
+                atoms.push(table.brand(*index)?);
+            }
+        }
+        for binding in self.data.arguments.iter().chain(self.data.locals.iter()) {
+            match binding {
+                GeneratorFrameBinding::Direct(value) => {
+                    if let RawValue::Symbol(index) | RawValue::Private(index) = value {
+                        atoms.push(table.brand(*index)?);
+                    }
+                }
+                GeneratorFrameBinding::Private(atom) => atoms.push(*atom),
+                GeneratorFrameBinding::PrivateCallable(_)
+                | GeneratorFrameBinding::Uninitialized
+                | GeneratorFrameBinding::Captured(_) => {}
+            }
+        }
+        Ok(atoms)
     }
-}
 
-fn generator_raw_value_atom(value: &RawValue) -> Option<Atom> {
-    match value {
-        RawValue::Symbol(atom) | RawValue::Private(atom) => Some(*atom),
-        RawValue::Undefined
-        | RawValue::Null
-        | RawValue::Bool(_)
-        | RawValue::Int(_)
-        | RawValue::Float(_)
-        | RawValue::BigInt(_)
-        | RawValue::String(_)
-        | RawValue::Object(_)
-        | RawValue::Uninitialized
-        | RawValue::Exception => None,
+    /// Release the caller-owned string/BigInt producer edge carried by every
+    /// boundary-converted raw value, once the heap owner has retained its own
+    /// copies (or immediately when the activation is never stored).
+    pub(crate) fn release_conversion_edges(&self, runtime: &Runtime) {
+        let vm = &self.data.vm;
+        for value in vm
+            .stack
+            .iter()
+            .chain(self.data.original_arguments.iter())
+            .chain(std::iter::once(&vm.this_value))
+            .chain(vm.normalized_this.iter())
+            .chain(std::iter::once(&vm.new_target))
+        {
+            runtime.release_converted_value_edge(value);
+        }
+        for binding in self.data.arguments.iter().chain(self.data.locals.iter()) {
+            if let GeneratorFrameBinding::Direct(value) = binding {
+                runtime.release_converted_value_edge(value);
+            }
+        }
     }
 }
 
@@ -580,7 +598,12 @@ mod tests {
             .generator_snapshot(generator.object_id())
             .unwrap();
         assert_eq!(state, GeneratorState::SuspendedStart);
-        assert_eq!(after.as_ref(), Some(&data));
+        // `GeneratorActivationData` has no `PartialEq` (its VM fields embed
+        // `RawValue`), so equality is checked through the debug rendering.
+        assert_eq!(
+            after.as_ref().map(|entry| format!("{entry:?}")),
+            Some(format!("{:?}", data))
+        );
         assert!(runtime.0.state.borrow().active_frames.is_empty());
     }
 

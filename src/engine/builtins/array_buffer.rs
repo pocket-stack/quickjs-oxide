@@ -271,14 +271,14 @@ impl Runtime {
         max_byte_length: Option<u64>,
     ) -> Result<Completion, RuntimeError> {
         if length > MAX_ARRAY_BUFFER_LENGTH {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid array buffer length",
             )?));
         }
         if max_byte_length.is_some_and(|maximum| maximum > MAX_ARRAY_BUFFER_LENGTH) {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid max array buffer length",
@@ -293,7 +293,7 @@ impl Runtime {
             .map_err(|_| RuntimeError::Invariant("validated ArrayBuffer maximum overflowed u32"))?;
         let Some(object) = self.new_array_buffer_object(&prototype, length, max_byte_length)?
         else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Internal,
                 "out of memory",
@@ -410,21 +410,21 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.array_buffer_snapshot(&object)?;
         if current.detached {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",
             )?));
         }
         let Some(maximum) = current.max_byte_length else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "array buffer is not resizable",
             )?));
         };
         if new_length < 0 || new_length > i64::from(maximum) {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid array buffer length",
@@ -439,7 +439,7 @@ impl Runtime {
             .heap
             .resize_array_buffer_bytes(object.object_id(), new_length)?;
         if !resized {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Internal,
                 "out of memory",
@@ -514,7 +514,7 @@ impl Runtime {
         new_length: u32,
     ) -> Result<Completion, RuntimeError> {
         if target.object_id() == source.object_id() {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "cannot use identical ArrayBuffer",
@@ -523,7 +523,7 @@ impl Runtime {
         let target_snapshot = match self.array_buffer_snapshot_if_branded(&target)? {
             Some(snapshot) => snapshot,
             None => {
-                return Ok(Completion::Throw(self.new_native_error(
+                return Ok(Completion::Throw(self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "ArrayBuffer object expected",
@@ -531,14 +531,14 @@ impl Runtime {
             }
         };
         if target_snapshot.detached {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",
             )?));
         }
         if target_snapshot.byte_length < new_length {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "new ArrayBuffer is too small",
@@ -565,7 +565,7 @@ impl Runtime {
             !data.detached && end <= data.bytes.len()
         };
         if !source_is_live {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",
@@ -607,7 +607,7 @@ impl Runtime {
     ) -> Result<Completion, RuntimeError> {
         let current = self.array_buffer_snapshot(&source)?;
         if current.detached {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "ArrayBuffer is detached",
@@ -619,14 +619,14 @@ impl Runtime {
             current.max_byte_length
         };
         if result_maximum.is_some_and(|maximum| new_length > u64::from(maximum)) {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "invalid array buffer length",
             )?));
         }
         if new_length > MAX_ARRAY_BUFFER_LENGTH {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Range,
                 "invalid array buffer length",
@@ -636,7 +636,7 @@ impl Runtime {
             .map_err(|_| RuntimeError::Invariant("transfer length overflowed usize"))?;
         let prototype = self.array_buffer_default_prototype(realm)?;
         let Some(target) = self.new_array_buffer_object(&prototype, 0, result_maximum)? else {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Internal,
                 "out of memory",
@@ -648,7 +648,7 @@ impl Runtime {
             new_length,
         )?;
         if !transferred {
-            return Ok(Completion::Throw(self.new_native_error(
+            return Ok(Completion::Throw(self.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Internal,
                 "out of memory",

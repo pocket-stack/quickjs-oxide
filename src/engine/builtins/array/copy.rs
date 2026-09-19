@@ -140,7 +140,7 @@ impl CopyResume {
             Phase::Write => {
                 if !value {
                     return Ok(CopyStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "could not delete property",

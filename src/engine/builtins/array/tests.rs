@@ -1,3 +1,4 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::Context;
 use crate::engine::heap::RawValue;
 
@@ -109,7 +110,7 @@ fn array_unscopables_autoinit_retains_then_releases_its_realm_edge() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(array_prototype.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert!(matches!(
             object.slots.get(slot_index),
             Some(PropertySlot::AutoInit(
@@ -162,7 +163,7 @@ fn array_unscopables_metadata_and_delete_preserve_lazy_state() {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(array_prototype.object_id()).unwrap();
         let shape = state.heap.shape(object.shape).unwrap();
-        let slot_index = usize::try_from(shape.find(key.atom()).unwrap()).unwrap();
+        let slot_index = usize::try_from(shape.find(AtomIdx::from_raw(key.atom().raw())).unwrap()).unwrap();
         assert!(matches!(
             object.slots.get(slot_index),
             Some(PropertySlot::AutoInit(
@@ -185,7 +186,7 @@ fn array_unscopables_metadata_and_delete_preserve_lazy_state() {
     );
     let object = state.heap.object(array_prototype.object_id()).unwrap();
     let shape = state.heap.shape(object.shape).unwrap();
-    assert!(shape.find(key.atom()).is_none());
+    assert!(shape.find(AtomIdx::from_raw(key.atom().raw())).is_none());
 }
 
 fn eval_object(context: &mut Context, source: &str) -> ObjectRef {

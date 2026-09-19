@@ -5,7 +5,7 @@ use super::*;
 /// prototype, and initial instance shape independently from their public
 /// property graph because user code may replace or delete those properties
 /// after bootstrap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct RegExpRealmData {
     pub prototype: ObjectId,
     pub constructor: ObjectId,
@@ -21,7 +21,7 @@ pub struct RegExpRealmData {
 /// iterators. QuickJS roots the two class prototypes, but not the public Map
 /// constructor: deleting the global and `Map.prototype.constructor` edges may
 /// therefore make that constructor collectible.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct MapRealmData {
     pub prototype: ObjectId,
     /// Realm-local `%MapIteratorPrototype%`, inheriting from this realm's
@@ -32,7 +32,7 @@ pub struct MapRealmData {
 /// Realm-owned identities required to allocate genuine Set objects and their
 /// iterators. As with Map, QuickJS roots the two class prototypes without
 /// independently rooting the public Set constructor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct SetRealmData {
     pub prototype: ObjectId,
     /// Realm-local `%SetIteratorPrototype%`, inheriting from this realm's
@@ -45,13 +45,13 @@ pub struct SetRealmData {
 /// Weak collections have no iterator prototype. As in pinned QuickJS, the
 /// public constructor remains reachable through the ordinary property graph
 /// rather than through an additional Context edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct WeakMapRealmData {
     pub prototype: ObjectId,
 }
 
 /// Realm-owned `%WeakSet.prototype%` class root.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct WeakSetRealmData {
     pub prototype: ObjectId,
 }
@@ -60,7 +60,7 @@ pub struct WeakSetRealmData {
 /// `JS_AddIntrinsicWeakRef` bootstrap step. The public constructors remain
 /// reachable through their ordinary prototype/global property graph and are
 /// therefore not duplicated as Context roots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct WeakRefRealmData {
     pub weak_ref_prototype: ObjectId,
     pub finalization_registry_prototype: ObjectId,
@@ -73,7 +73,7 @@ pub struct WeakRefRealmData {
 /// objects inherit from `function_prototype`, while generator instances use
 /// `prototype` as the cross-realm fallback when a callable's public
 /// `.prototype` is not an object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct GeneratorRealmData {
     pub prototype: ObjectId,
     pub function_prototype: ObjectId,
@@ -85,7 +85,7 @@ pub struct GeneratorRealmData {
 /// a direct child of the realm's `%Function.prototype%`. The hidden
 /// `AsyncFunction` constructor remains reachable through the reciprocal
 /// property graph and therefore needs no independent Context root.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct AsyncFunctionRealmData {
     pub function_prototype: ObjectId,
 }
@@ -95,7 +95,7 @@ pub struct AsyncFunctionRealmData {
 /// QuickJS keeps `%AsyncIteratorPrototype%`, `%AsyncGeneratorPrototype%`, and
 /// `%AsyncGeneratorFunction.prototype%` as independent context roots. The
 /// hidden dynamic constructor remains reachable from the reciprocal graph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct AsyncGeneratorRealmData {
     pub async_iterator_prototype: ObjectId,
     /// Realm-local `%AsyncFromSyncIteratorPrototype%`, inheriting from this
@@ -110,7 +110,7 @@ pub struct AsyncGeneratorRealmData {
 /// Both identities remain explicit Context roots.  User code may delete the
 /// public global and constructor/prototype properties without changing the
 /// intrinsic identities used by Promise abstract operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct PromiseRealmData {
     pub prototype: ObjectId,
     pub constructor: ObjectId,
@@ -124,7 +124,7 @@ pub struct PromiseRealmData {
 /// one transaction, matching QuickJS's `iterator_ctor` and class-prototype
 /// roots for `JS_CLASS_ITERATOR_CONCAT`, `JS_CLASS_ITERATOR_HELPER`, and
 /// `JS_CLASS_ITERATOR_WRAP`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct IteratorRealmData {
     pub constructor: ObjectId,
     pub concat_prototype: ObjectId,
@@ -137,7 +137,7 @@ pub struct IteratorRealmData {
 /// The backing bytes live on each branded object, but constructor-realm
 /// fallback must retain the original prototype even after authored code
 /// replaces or deletes the writable global `ArrayBuffer` binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct ArrayBufferRealmData {
     pub prototype: ObjectId,
 }
@@ -146,7 +146,7 @@ pub struct ArrayBufferRealmData {
 ///
 /// Shared wrappers may outlive and share backing stores across runtimes, but
 /// their JavaScript prototype identity remains owned by the importing realm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct SharedArrayBufferRealmData {
     pub prototype: ObjectId,
 }
@@ -155,7 +155,7 @@ pub struct SharedArrayBufferRealmData {
 ///
 /// DataView instances retain their backing ArrayBuffer-family object directly. The realm
 /// keeps only the original prototype identity used by constructor fallback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct DataViewRealmData {
     pub prototype: ObjectId,
 }
@@ -165,7 +165,7 @@ pub struct DataViewRealmData {
 /// QuickJS roots these twelve identities in `ctx->class_proto`. The hidden
 /// abstract prototype stays reachable through their `[[Prototype]]` edges;
 /// retaining it separately here would add an arena root that upstream lacks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct TypedArrayRealmData {
     pub prototypes: [ObjectId; TypedArrayElementKind::COUNT],
 }
@@ -175,7 +175,7 @@ pub struct TypedArrayRealmData {
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
 /// additional intrinsic and module roots can extend the vectors without
 /// changing `ContextId` ownership.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct ContextData {
     /// Stable public handle identity assigned by `Runtime::new_context`.
     ///

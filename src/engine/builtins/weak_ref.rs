@@ -7,7 +7,7 @@
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::AtomKind;
+use crate::engine::atom::{AtomIdx, AtomKind};
 
 use crate::engine::builtins::native::{
     FinalizationRegistryNativeKind, NativeFunctionId, WeakRefNativeKind,
@@ -203,7 +203,7 @@ impl Runtime {
         realm: ContextId,
         message: &'static str,
     ) -> Result<Completion, RuntimeError> {
-        Ok(Completion::Throw(self.new_native_error(
+        Ok(Completion::Throw(self.new_native_error_jsvalue(
             realm,
             NativeErrorKind::Type,
             message,
@@ -334,7 +334,9 @@ impl Runtime {
                 }
                 let raw = match target {
                     WeakCollectionKey::Object(object) => RawValue::Object(object),
-                    WeakCollectionKey::Symbol(atom) => RawValue::Symbol(atom),
+                    // The branded key atom was already validated by the heap
+                    // lookup above, so it can be narrowed without re-branding.
+                    WeakCollectionKey::Symbol(atom) => RawValue::Symbol(AtomIdx::from_raw(atom.raw())),
                 };
                 Ok(Completion::Return(self.root_raw_value(&raw)?))
             }
@@ -453,6 +455,11 @@ impl Runtime {
 
                 self.validate_value_domain(&held_value, "FinalizationRegistry held value")?;
                 let raw_held_value = self.raw_property_value(&held_value)?;
+                // The conversion allocated a string/BigInt node with one
+                // producer edge; the registry entry retains its own copy edge
+                // inside `finalization_registry_register`, so the producer
+                // edge is released on every exit.
+                let conversion_edge = raw_held_value.conversion_node_edge();
                 let mut state = self.0.state.borrow_mut();
                 let retained_atoms = state.retain_raw_value_atoms([&raw_held_value])?;
                 if let Err(error) = state.heap.finalization_registry_register(
@@ -462,9 +469,16 @@ impl Runtime {
                     unregister_token,
                 ) {
                     state.release_atoms(retained_atoms)?;
+                    drop(state);
+                    if let Some(edge) = conversion_edge {
+                        self.release_converted_node_edge(edge);
+                    }
                     return Err(Self::weak_intrinsic_mutation_error(error));
                 }
                 drop(state);
+                if let Some(edge) = conversion_edge {
+                    self.release_converted_node_edge(edge);
+                }
                 Ok(Completion::Return(Value::Undefined))
             }
             FinalizationRegistryNativeKind::Unregister => {

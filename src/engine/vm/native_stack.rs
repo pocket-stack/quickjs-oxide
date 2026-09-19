@@ -161,7 +161,7 @@ impl Runtime {
         if function_kind == FunctionKind::Async {
             return self.reject_async_bytecode_stack_overflow(caller_realm);
         }
-        Ok(Completion::Throw(self.new_native_error(
+        Ok(Completion::Throw(self.new_native_error_jsvalue(
             caller_realm,
             NativeErrorKind::Internal,
             "stack overflow",

@@ -63,7 +63,7 @@ fn array_class_roots_length_layout_values_and_realm_prototype() {
         assert!(
             state
                 .atoms
-                .array_index(shape.entries()[0].atom)
+                .array_index(state.atoms.brand(shape.entries()[0].atom).unwrap())
                 .unwrap()
                 .is_none()
         );

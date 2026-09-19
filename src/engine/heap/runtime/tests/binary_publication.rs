@@ -272,7 +272,7 @@ fn trusted_quickjs_ordinary_leaf_synthesizes_bigint_and_canonical_empty_atom_con
     assert!(matches!(
         snapshot.constants.as_ref(),
         [BytecodeConstant::Value(RawValue::BigInt(value))]
-            if value == &JsBigInt::from(42)
+            if runtime.0.state.borrow().heap.bigint(*value).unwrap() == &JsBigInt::from(42)
     ));
 
     let direct_image = quickjs_ordinary_with_code_and_constants(&[0xbf, 0x28], &[]);
@@ -361,11 +361,13 @@ fn trusted_quickjs_ordinary_leaf_synthesizes_bigint_and_canonical_empty_atom_con
     ));
     assert!(matches!(
         &snapshot.constants[1],
-        BytecodeConstant::Value(RawValue::BigInt(value)) if value == &JsBigInt::from(7)
+        BytecodeConstant::Value(RawValue::BigInt(value))
+            if runtime.0.state.borrow().heap.bigint(*value).unwrap() == &JsBigInt::from(7)
     ));
     assert!(matches!(
         &snapshot.constants[3],
-        BytecodeConstant::Value(RawValue::BigInt(value)) if value == &JsBigInt::from(-3)
+        BytecodeConstant::Value(RawValue::BigInt(value))
+            if runtime.0.state.borrow().heap.bigint(*value).unwrap() == &JsBigInt::from(-3)
     ));
     let BytecodeConstant::Value(RawValue::String(first_empty)) = &snapshot.constants[2] else {
         panic!("first synthesized empty atom lost its String payload");
@@ -373,8 +375,14 @@ fn trusted_quickjs_ordinary_leaf_synthesizes_bigint_and_canonical_empty_atom_con
     let BytecodeConstant::Value(RawValue::String(second_empty)) = &snapshot.constants[4] else {
         panic!("second synthesized empty atom lost its String payload");
     };
-    assert!(first_empty.same_representation(second_empty));
-    assert!(mixed_result.same_representation(first_empty));
+    {
+        let state = runtime.0.state.borrow();
+        assert_eq!(
+            state.heap.string(*first_empty).unwrap(),
+            state.heap.string(*second_empty).unwrap()
+        );
+        assert_eq!(&mixed_result, state.heap.string(*first_empty).unwrap());
+    }
 }
 
 #[test]

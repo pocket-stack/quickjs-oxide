@@ -71,7 +71,7 @@ impl AggregateStep {
     ) -> Result<Self, RuntimeError> {
         if matches!(iterable, Value::Null | Value::Undefined) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     &format!(
@@ -120,7 +120,7 @@ impl AggregateResume {
                 };
                 let Some(callable) = callable else {
                     return Ok(AggregateStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "value is not iterable",
@@ -137,7 +137,7 @@ impl AggregateResume {
             Phase::Iterator => {
                 let Value::Object(iterator) = value else {
                     return Ok(AggregateStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not an object",

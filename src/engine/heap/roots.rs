@@ -1,27 +1,30 @@
+use crate::engine::atom::AtomIdx;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
 
 use crate::engine::code::function::metadata::{ClosureVariable, ClosureVariableKind};
 use crate::engine::heap::{HeapError, RawValue, VarRefData, VarRefId};
 use crate::engine::object::{ObjectRef, SymbolRef};
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 use crate::engine::vm::bindings::closure_view_matches_cell;
 
 impl Runtime {
+    /// Store an internal value into a fresh captured cell, consuming the
+    /// value's edges. The cell retains its own copy edge transactionally;
+    /// the passed value's edges are released before returning.
     pub(crate) fn new_var_ref(
         &self,
-        value: Value,
+        value: JsValue,
         is_lexical: bool,
         is_const: bool,
         kind: ClosureVariableKind,
     ) -> Result<VarRefRoot, RuntimeError> {
         let _operation = self.operation();
-        self.validate_value_domain(&value, "captured variable")?;
-        let raw = self.raw_property_value(&value)?;
+        let raw = value.as_raw();
         let mut state = self.0.state.borrow_mut();
-        let retained_atom = if let RawValue::Symbol(atom) = &raw {
-            state.atoms.retain(*atom)?;
-            Some(*atom)
+        let retained_atom = if let RawValue::Symbol(index) = &raw {
+            state.atoms.retain_index(*index)?;
+            Some(*index)
         } else {
             None
         };
@@ -29,15 +32,34 @@ impl Runtime {
         let id = match state.heap.allocate_var_ref(data) {
             Ok(id) => id,
             Err(error) => {
-                if let Some(atom) = retained_atom {
-                    state.atoms.release(atom)?;
+                if let Some(index) = retained_atom {
+                    state.atoms.release_index(index)?;
                 }
+                drop(state);
+                self.release_jsvalue(value)?;
                 return Err(error.into());
             }
         };
         drop(state);
-        drop(value);
+        // The cell retained its own copy edge; the consumed value's edge
+        // is no longer needed.
+        self.release_jsvalue(value)?;
         Ok(VarRefRoot::from_owned_handle(self.clone(), id))
+    }
+
+    /// Public-root boundary form of [`Runtime::new_var_ref`]: converts the
+    /// root into an internal value (allocating string/BigInt nodes) and
+    /// consumes it.
+    pub(crate) fn new_var_ref_rooted(
+        &self,
+        value: Value,
+        is_lexical: bool,
+        is_const: bool,
+        kind: ClosureVariableKind,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        self.validate_value_domain(&value, "captured variable")?;
+        let value = self.unroot_value(&value)?;
+        self.new_var_ref(value, is_lexical, is_const, kind)
     }
 
     pub(crate) fn new_uninitialized_var_ref(&self) -> Result<VarRefRoot, RuntimeError> {
@@ -110,10 +132,12 @@ impl Runtime {
         state.apply_cleanup(cleanup)
     }
 
+    /// Read a captured cell as an owned internal value, duplicating every
+    /// heap edge the cell carries.
     pub(crate) fn read_var_ref(
         &self,
         root: &impl crate::engine::heap::roots::VarRefHandle,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<JsValue, RuntimeError> {
         let _operation = self.operation();
         if !root.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("closure variable"));
@@ -128,7 +152,22 @@ impl Runtime {
             }
             var_ref.value.clone()
         };
-        self.root_raw_value(&raw)
+        let mut state = self.0.state.borrow_mut();
+        state.retain_raw_root(&raw)?;
+        JsValue::from_raw(raw).ok_or(RuntimeError::Invariant(
+            "internal value sentinel occupied a captured variable cell",
+        ))
+    }
+
+    /// Public-root boundary form of [`Runtime::read_var_ref`].
+    pub(crate) fn read_var_ref_rooted(
+        &self,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
+    ) -> Result<Value, RuntimeError> {
+        let value = self.read_var_ref(root)?;
+        let rooted = self.root_value(&value);
+        self.release_jsvalue(value)?;
+        rooted
     }
 
     /// Root a fresh non-immediate cell value without entering an operation or
@@ -137,7 +176,7 @@ impl Runtime {
     pub(crate) fn try_read_owned_var_ref(
         &self,
         root: &impl crate::engine::heap::roots::VarRefHandle,
-    ) -> Result<Option<Value>, RuntimeError> {
+    ) -> Result<Option<JsValue>, RuntimeError> {
         if !root.belongs_to(self) || self.0.deferred_references.has_pending() {
             return Ok(None);
         }
@@ -162,14 +201,77 @@ impl Runtime {
             return Ok(None);
         }
         let raw = cell.value.clone();
-        // Object and Symbol retain check overflow before incrementing. String
-        // and BigInt ownership is already carried by the cloned raw value.
-        // Thus an error leaves the cell and reference counts unchanged.
+        // The cell keeps its own edge; this read retains one new edge for
+        // every heap-backed kind before handing out the owned value.
         state.retain_raw_root(&raw)?;
         drop(state);
-        // The selected public variants cannot fail conversion. This shared
-        // constructor consumes the retained owner without another retain.
-        self.take_owned_raw_value(raw).map(Some)
+        Ok(Some(JsValue::from_raw(raw).ok_or(
+            RuntimeError::Invariant("internal value sentinel occupied a captured cell"),
+        )?))
+    }
+
+    /// Public-root boundary form of [`Runtime::try_read_owned_var_ref`].
+    pub(crate) fn try_read_owned_var_ref_rooted(
+        &self,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let Some(value) = self.try_read_owned_var_ref(root)? else {
+            return Ok(None);
+        };
+        let rooted = self.root_value(&value);
+        self.release_jsvalue(value)?;
+        rooted.map(Some)
+    }
+
+    /// Trusted shared-borrow read of a proven live captured cell.
+    ///
+    /// Handles the object, string, BigInt and symbol cases without a mutable
+    /// state borrow: node payloads clone their inner `Rc`, objects take the
+    /// trusted retain fast path, and symbols retain through the atom table's
+    /// shared-borrow `Cell` counter.  A declined read claims no owner and
+    /// leaves the cell unchanged.
+    #[inline]
+    pub(crate) fn read_owned_cell_fast(
+        &self,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
+    ) -> Option<JsValue> {
+        if !root.belongs_to(self) || self.0.deferred_references.has_pending() {
+            return None;
+        }
+        let state = self.0.state.try_borrow().ok()?;
+        if !state.heap.zero_queue.is_empty() {
+            return None;
+        }
+        let cell = state.heap.var_ref_fast(root.id());
+        if cell.kind.is_private() {
+            return None;
+        }
+        match &cell.value {
+            RawValue::Object(object) => {
+                state.heap.retain_object_fast(*object);
+                Some(JsValue::Object(*object))
+            }
+            RawValue::String(id) => {
+                state.heap.retain_string_shared(*id).ok()?;
+                Some(JsValue::String(*id))
+            }
+            RawValue::BigInt(id) => {
+                state.heap.retain_bigint_shared(*id).ok()?;
+                Some(JsValue::BigInt(*id))
+            }
+            RawValue::Symbol(index) => {
+                state.atoms.retain_index_shared(*index).ok()?;
+                Some(JsValue::Symbol(*index))
+            }
+            RawValue::Undefined
+            | RawValue::Null
+            | RawValue::Bool(_)
+            | RawValue::Int(_)
+            | RawValue::Float(_)
+            | RawValue::Private(_)
+            | RawValue::Uninitialized
+            | RawValue::Exception => None,
+        }
     }
 
     /// Guarded global own-data read for an unresolved, non-lexical binding.
@@ -181,7 +283,7 @@ impl Runtime {
         root: &impl VarRefHandle,
         realm: crate::engine::heap::ContextId,
         atom: crate::engine::atom::Atom,
-    ) -> Result<Option<Value>, RuntimeError> {
+    ) -> Result<Option<JsValue>, RuntimeError> {
         use crate::engine::heap::{ObjectKind, ObjectPayload, PropertySlot};
         use crate::engine::object::shape::PropertyStorageKind;
         if !root.belongs_to(self) || self.0.deferred_references.has_pending() {
@@ -220,7 +322,7 @@ impl Runtime {
         let index = if let Some(entry) = cached {
             entry.index
         } else {
-            let Some(index) = shape.find(atom) else {
+            let Some(index) = shape.find(AtomIdx::from_raw(atom.raw())) else {
                 cell.global_location.set(None);
                 return Ok(None);
             };
@@ -260,7 +362,9 @@ impl Runtime {
         let raw = raw.clone();
         state.retain_raw_root(&raw)?;
         drop(state);
-        self.take_owned_raw_value(raw).map(Some)
+        Ok(Some(JsValue::from_raw(raw).ok_or(
+            RuntimeError::Invariant("internal value sentinel occupied a global binding cell"),
+        )?))
     }
 
     pub(crate) fn raw_var_ref_value(
@@ -296,10 +400,14 @@ impl Runtime {
         Ok(())
     }
 
+    /// Replace a captured cell's value, consuming the passed value's edges.
+    /// The cell retains its own copy edge transactionally and the previous
+    /// value's edges are released by the replacement; the passed value's
+    /// edges are released before returning.
     pub(crate) fn write_var_ref(
         &self,
         root: &impl crate::engine::heap::roots::VarRefHandle,
-        value: Value,
+        value: JsValue,
     ) -> Result<(), RuntimeError> {
         let _operation = self.operation();
         if !root.belongs_to(self) {
@@ -318,40 +426,63 @@ impl Runtime {
                 "ordinary VarRef write reached a private-element binding",
             ));
         }
-        self.validate_value_domain(&value, "captured variable")?;
-        let raw = self.raw_property_value(&value)?;
+        let raw = value.as_raw();
         let mut state = self.0.state.borrow_mut();
-        let retained_atom = if let RawValue::Symbol(atom) = &raw {
-            state.atoms.retain(*atom)?;
-            Some(*atom)
+        let retained_atom = if let RawValue::Symbol(index) = &raw {
+            state.atoms.retain_index(*index)?;
+            Some(*index)
         } else {
             None
         };
         let cleanup = match state.heap.replace_var_ref_value(root.id(), raw) {
             Ok(cleanup) => cleanup,
             Err(error) => {
-                if let Some(atom) = retained_atom {
-                    state.atoms.release(atom)?;
+                if let Some(index) = retained_atom {
+                    state.atoms.release_index(index)?;
                 }
+                drop(state);
+                self.release_jsvalue(value)?;
                 return Err(error.into());
             }
         };
         state.apply_cleanup(cleanup)?;
         drop(state);
-        drop(value);
+        // The cell retained its own copy edge; the consumed value's edge
+        // is no longer needed.
+        self.release_jsvalue(value)?;
         Ok(())
     }
 
+    /// Public-root boundary form of [`Runtime::write_var_ref`].
+    pub(crate) fn write_var_ref_rooted(
+        &self,
+        root: &impl crate::engine::heap::roots::VarRefHandle,
+        value: Value,
+    ) -> Result<(), RuntimeError> {
+        self.validate_value_domain(&value, "captured variable")?;
+        let value = self.unroot_value(&value)?;
+        self.write_var_ref(root, value)
+    }
+
     pub(crate) fn take_owned_raw_value(&self, value: RawValue) -> Result<Value, RuntimeError> {
-        Ok(match value {
+        // The caller consumed one owned root edge for this value.  Object and
+        // Symbol edges transfer into the public root wrappers below; a string
+        // or BigInt node edge does not (the public value owns an `Rc` payload
+        // clone), so it is released once the payload has been read out.
+        let node_edge = value.conversion_node_edge();
+        let state = self.0.state.borrow();
+        let converted = Ok(match value {
             RawValue::Undefined => Value::Undefined,
             RawValue::Null => Value::Null,
             RawValue::Bool(value) => Value::Bool(value),
             RawValue::Int(value) => Value::Int(value),
             RawValue::Float(value) => Value::Float(value),
-            RawValue::BigInt(value) => Value::BigInt(value),
-            RawValue::String(value) => Value::String(value),
-            RawValue::Symbol(atom) => Value::Symbol(SymbolRef::from_owned_atom(self.clone(), atom)),
+            RawValue::BigInt(id) => Value::BigInt(state.heap.bigint(id)?.clone()),
+            RawValue::String(id) => Value::String(state.heap.string(id)?.clone()),
+            RawValue::Symbol(index) => {
+                let atom = state.atoms.brand(index)?;
+                Value::Symbol(SymbolRef::from_owned_atom(self.clone(), atom))
+            }
             RawValue::Private(_) => {
                 return Err(RuntimeError::Invariant(
                     "private-name identity occupied a public runtime root",
@@ -365,20 +496,58 @@ impl Runtime {
                     "internal value sentinel occupied the pending exception slot",
                 ));
             }
-        })
+        });
+        drop(state);
+        if let Some(edge) = node_edge {
+            self.release_converted_node_edge(edge);
+        }
+        converted
+    }
+
+    /// Trusted variant of [`Runtime::take_owned_raw_value`] for a raw payload
+    /// already proven to be one of the public variants which need no heap or
+    /// table lookup: scalars and object edges.
+    ///
+    /// The caller owns one reference for the payload (an object edge or
+    /// primitive backing store). Internal sentinels and heap-resolved kinds
+    /// (string, BigInt, symbol) at a trusted call site are a heap invariant
+    /// violation, so they panic instead of returning an error; use
+    /// [`Runtime::take_owned_raw_value`] for those.
+    #[inline]
+    pub(crate) fn take_owned_raw_value_fast(&self, value: RawValue) -> Value {
+        match value {
+            RawValue::Undefined => Value::Undefined,
+            RawValue::Null => Value::Null,
+            RawValue::Bool(value) => Value::Bool(value),
+            RawValue::Int(value) => Value::Int(value),
+            RawValue::Float(value) => Value::Float(value),
+            RawValue::Object(object) => {
+                Value::Object(ObjectRef::from_owned_handle(self.clone(), object))
+            }
+            RawValue::BigInt(_)
+            | RawValue::String(_)
+            | RawValue::Symbol(_)
+            | RawValue::Private(_)
+            | RawValue::Uninitialized
+            | RawValue::Exception => {
+                unreachable!("trusted raw value conversion received a heap-resolved kind")
+            }
+        }
     }
 
     pub(crate) fn root_raw_value(&self, value: &RawValue) -> Result<Value, RuntimeError> {
+        let state = self.0.state.borrow();
         Ok(match value {
             RawValue::Undefined => Value::Undefined,
             RawValue::Null => Value::Null,
             RawValue::Bool(value) => Value::Bool(*value),
             RawValue::Int(value) => Value::Int(*value),
             RawValue::Float(value) => Value::Float(*value),
-            RawValue::BigInt(value) => Value::BigInt(value.clone()),
-            RawValue::String(value) => Value::String(value.clone()),
-            RawValue::Symbol(atom) => {
-                Value::Symbol(SymbolRef::from_borrowed_atom(self.clone(), *atom)?)
+            RawValue::BigInt(id) => Value::BigInt(state.heap.bigint(*id)?.clone()),
+            RawValue::String(id) => Value::String(state.heap.string(*id)?.clone()),
+            RawValue::Symbol(index) => {
+                let atom = state.atoms.brand(*index)?;
+                Value::Symbol(SymbolRef::from_borrowed_atom(self.clone(), atom)?)
             }
             RawValue::Private(_) => {
                 return Err(RuntimeError::Invariant(
@@ -636,7 +805,8 @@ mod owned_cell_tests {
             .heap
             .live_node_mut(RawId::Object(id))
             .unwrap()
-            .strong = u32::MAX;
+            .strong
+            .set(u32::MAX);
         let result = runtime.try_read_owned_var_ref(&root);
         let after = runtime
             .0
@@ -653,12 +823,15 @@ mod owned_cell_tests {
             .heap
             .live_node_mut(RawId::Object(id))
             .unwrap()
-            .strong = before;
+            .strong
+            .set(before);
         assert!(result.is_err());
         assert_eq!(after, u32::MAX);
-        assert_eq!(
-            runtime.raw_var_ref_value(&root).unwrap(),
-            RawValue::Object(id)
+        assert!(
+            matches!(
+                runtime.raw_var_ref_value(&root).unwrap(),
+                RawValue::Object(object) if object == id
+            )
         );
     }
 }

@@ -402,6 +402,10 @@ impl Runtime {
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
         let raw_source = self.raw_property_value(source)?;
         let raw_next = self.raw_property_value(next)?;
+        // The conversions allocated string/BigInt nodes with producer edges;
+        // the object retains its own copy edges, so the producer edges are
+        // released on every exit below.
+        let conversion_edges = [raw_source.conversion_node_edge(), raw_next.conversion_node_edge()];
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(Some(prototype.object_id()), &[])?;
         let retained_atoms = match state.retain_raw_value_atoms([&raw_source, &raw_next]) {
@@ -409,6 +413,10 @@ impl Runtime {
             Err(error) => {
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                drop(state);
+                for edge in conversion_edges.into_iter().flatten() {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error);
             }
         };
@@ -423,12 +431,19 @@ impl Runtime {
                 state.release_atoms(retained_atoms)?;
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                drop(state);
+                for edge in conversion_edges.into_iter().flatten() {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error.into());
             }
         };
         let cleanup = state.heap.release_shape(shape)?;
         state.apply_cleanup(cleanup)?;
         drop(state);
+        for edge in conversion_edges.into_iter().flatten() {
+            self.release_converted_node_edge(edge);
+        }
         Ok(ObjectRef::from_owned_handle(self.clone(), object))
     }
 
@@ -470,10 +485,16 @@ impl Runtime {
     ) -> Result<ObjectRef, RuntimeError> {
         let prototype = self.iterator_realm_data(realm)?.helper_prototype;
         let prototype = ObjectRef::from_borrowed_handle(self.clone(), prototype)?;
+        let raw_next = self.raw_property_value(next)?;
+        let raw_callback = self.raw_property_value(callback)?;
+        // The conversions allocated string/BigInt nodes with producer edges;
+        // the object retains its own copy edges, so the producer edges are
+        // released on every exit below.
+        let conversion_edges = [raw_next.conversion_node_edge(), raw_callback.conversion_node_edge()];
         let data = IteratorHelperData {
             source: source.object_id(),
-            next: self.raw_property_value(next)?,
-            callback: self.raw_property_value(callback)?,
+            next: raw_next,
+            callback: raw_callback,
             inner: None,
             count,
             kind,
@@ -487,6 +508,10 @@ impl Runtime {
             Err(error) => {
                 let cleanup = state.heap.release_shape(shape)?;
                 state.apply_cleanup(cleanup)?;
+                drop(state);
+                for edge in conversion_edges.into_iter().flatten() {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error);
             }
         };

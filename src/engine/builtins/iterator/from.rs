@@ -60,7 +60,7 @@ impl FromStep {
             ))?;
         if !matches!(input, Value::Object(_) | Value::String(_)) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "Iterator.from called on non-object",
@@ -133,7 +133,7 @@ impl FromResume {
             Phase::Iterator => {
                 if !matches!(value, Value::Object(_)) {
                     return Ok(FromStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             self.0.realm,
                             NativeErrorKind::Type,
                             "not an object",

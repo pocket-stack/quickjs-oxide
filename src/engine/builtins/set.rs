@@ -416,12 +416,18 @@ impl Runtime {
 
     fn find_set_record(&self, set: &ObjectRef, key: &Value) -> Result<Option<usize>, RuntimeError> {
         let raw_key = self.raw_property_value(key)?;
-        Ok(self
+        // Lookup only: the conversion's producer edge is not stored anywhere.
+        let conversion_edge = raw_key.conversion_node_edge();
+        let found = self
             .0
             .state
             .borrow()
             .heap
-            .set_find_record(set.object_id(), &raw_key)?)
+            .set_find_record(set.object_id(), &raw_key)?;
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
+        }
+        Ok(found)
     }
 
     fn insert_set_record(&self, set: &ObjectRef, key: Value) -> Result<bool, RuntimeError> {
@@ -431,17 +437,27 @@ impl Runtime {
             return Ok(false);
         }
         let raw_key = self.raw_property_value(&key)?;
+        // The record retains its own copy edge inside the heap transaction,
+        // so the conversion's producer edge is released on every exit.
+        let conversion_edge = raw_key.conversion_node_edge();
         let mut state = self.0.state.borrow_mut();
         let retained = state.retain_raw_value_atoms([&raw_key])?;
         let cleanup = match state.heap.set_insert_record(set.object_id(), raw_key) {
             Ok(cleanup) => cleanup,
             Err(error) => {
                 state.release_atoms(retained)?;
+                drop(state);
+                if let Some(edge) = conversion_edge {
+                    self.release_converted_node_edge(edge);
+                }
                 return Err(error.into());
             }
         };
         state.apply_cleanup(cleanup)?;
         drop(state);
+        if let Some(edge) = conversion_edge {
+            self.release_converted_node_edge(edge);
+        }
         drop(key);
         Ok(true)
     }
@@ -665,7 +681,7 @@ impl Runtime {
         };
         let Value::Object(iterator) = this_value else {
             return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                self.new_native_error(
+                self.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "Set Iterator object expected",
@@ -682,7 +698,7 @@ impl Runtime {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
                 return Ok(NativeInvokeOutcome::Completion(Completion::Throw(
-                    self.new_native_error(
+                    self.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "Set Iterator object expected",

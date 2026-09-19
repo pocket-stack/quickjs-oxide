@@ -155,7 +155,7 @@ impl BuildStep {
             };
             let Some(callable) = callable else {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(realm, NativeErrorKind::Type, "not a function")?,
+                    runtime.new_native_error_jsvalue(realm, NativeErrorKind::Type, "not a function")?,
                 )));
             };
             Some(callable)
@@ -174,7 +174,7 @@ impl BuildStep {
                 "undefined"
             };
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     &format!("cannot read property 'Symbol.iterator' of {base}"),

@@ -231,7 +231,7 @@ impl TypedSearchStep {
             let initial = runtime.typed_array_state(&target)?;
             if initial.out_of_bounds {
                 return Ok(Self::Complete(Completion::Throw(
-                    runtime.new_native_error(
+                    runtime.new_native_error_jsvalue(
                         realm,
                         NativeErrorKind::Type,
                         "ArrayBuffer is detached",

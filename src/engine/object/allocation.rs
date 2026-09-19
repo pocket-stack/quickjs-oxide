@@ -1,6 +1,6 @@
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 
 use crate::engine::builtins::native::{NativeFunctionId, PrimitiveKind};
 use crate::engine::code::function::metadata::{
@@ -73,7 +73,7 @@ impl Runtime {
         }
         let length = self.pinned_property_key(crate::engine::atom::pinned::PinnedAtom::Length)?;
         let entries = [ShapeEntry {
-            atom: length.atom(),
+            atom: AtomIdx::from_raw(length.atom().raw()),
             flags: PropertyFlags::data(true, false, false),
         }];
         let mut state = self.0.state.borrow_mut();
@@ -117,15 +117,32 @@ impl Runtime {
         }
         self.validate_value_domain(&value, "Array element")?;
         let raw = self.raw_property_value(&value)?;
+        // Clone duplicates only the handle; the probe keeps the producer edge
+        // accountable through every store-or-decline path below.
+        let conversion_probe = raw.clone();
         let mut state = self.0.state.borrow_mut();
-        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
-        match state
-            .heap
-            .append_fresh_array_dense_value(array.object_id(), raw)
-        {
-            Ok(()) => Ok(()),
+        let retained_atoms = match state.retain_raw_value_atoms(std::iter::once(&raw)) {
+            Ok(atoms) => atoms,
             Err(error) => {
-                state.release_atoms(retained_atoms)?;
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error);
+            }
+        };
+        let appended = state
+            .heap
+            .append_fresh_array_dense_value(array.object_id(), raw);
+        match appended {
+            Ok(()) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                Ok(())
+            }
+            Err(error) => {
+                let released = state.release_atoms(retained_atoms);
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                released?;
                 Err(error.into())
             }
         }
@@ -147,6 +164,53 @@ impl Runtime {
             self.append_fresh_array_value(&array, value)?;
         }
         Ok(array)
+    }
+
+    /// Internal-value form of [`Runtime::new_array_from_values`]: consumes the
+    /// values' edges after each dense store has retained its own copy.
+    pub(crate) fn new_array_from_values_jsvalue(
+        &self,
+        realm: ContextId,
+        values: Vec<crate::engine::value::JsValue>,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let array = self.new_array(realm)?;
+        for value in values {
+            self.append_fresh_array_value_jsvalue(&array, value)?;
+        }
+        Ok(array)
+    }
+
+    /// Internal-value form of [`Runtime::append_fresh_array_value`]. The dense
+    /// store retains its own copy edge transactionally; the consumed value's
+    /// edge is released before returning.
+    pub(crate) fn append_fresh_array_value_jsvalue(
+        &self,
+        array: &ObjectRef,
+        value: crate::engine::value::JsValue,
+    ) -> Result<(), RuntimeError> {
+        if !array.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("Array"));
+        }
+        let raw = value.as_raw();
+        let mut state = self.0.state.borrow_mut();
+        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
+        let appended = state
+            .heap
+            .append_fresh_array_dense_value(array.object_id(), raw);
+        match appended {
+            Ok(()) => {
+                drop(state);
+                self.release_jsvalue(value)?;
+                Ok(())
+            }
+            Err(error) => {
+                let released = state.release_atoms(retained_atoms);
+                drop(state);
+                self.release_jsvalue(value)?;
+                released?;
+                Err(error.into())
+            }
+        }
     }
 
     pub(crate) fn new_string_iterator(
@@ -228,6 +292,24 @@ impl Runtime {
         value: Value,
     ) -> Result<ObjectRef, RuntimeError> {
         self.new_primitive_object_with_string_length(prototype, kind, value, false)
+    }
+
+    /// Internal-value form of [`Runtime::new_primitive_object`]: consumes the
+    /// wrapper payload's edges after the wrapper has retained its own copies.
+    pub(crate) fn new_primitive_object_jsvalue(
+        &self,
+        prototype: &ObjectRef,
+        kind: PrimitiveKind,
+        value: crate::engine::value::JsValue,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let object = self.new_primitive_object_with_string_length(
+            prototype,
+            kind,
+            self.root_value(&value)?,
+            false,
+        )?;
+        self.release_jsvalue(value)?;
+        Ok(object)
     }
 
     pub(crate) fn new_string_object(
@@ -470,22 +552,74 @@ impl Runtime {
         }
 
         let raw_this = self.raw_property_value(this_value)?;
-        let raw_arguments = arguments
-            .iter()
-            .map(|argument| self.raw_property_value(argument))
-            .collect::<Result<Vec<_>, _>>()?;
-        let is_constructor = self.is_constructor(target.as_object())?;
+        let mut raw_arguments = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            match self.raw_property_value(argument) {
+                Ok(raw) => raw_arguments.push(raw),
+                Err(error) => {
+                    // Nothing was stored yet; balance every producer edge.
+                    self.release_converted_value_edge(&raw_this);
+                    for raw in &raw_arguments {
+                        self.release_converted_value_edge(raw);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        // Clones duplicate only the handles; the probes keep every producer
+        // edge accountable through every store-or-decline path below.
+        let conversion_probes: Vec<_> = std::iter::once(raw_this.clone())
+            .chain(raw_arguments.iter().cloned())
+            .collect();
+        let is_constructor = match self.is_constructor(target.as_object()) {
+            Ok(is_constructor) => is_constructor,
+            Err(error) => {
+                for probe in &conversion_probes {
+                    self.release_converted_value_edge(probe);
+                }
+                return Err(error);
+            }
+        };
 
         let mut state = self.0.state.borrow_mut();
-        let function_prototype = state.heap.context(realm)?.function_prototype;
-        let shape = state.get_or_create_shape(Some(function_prototype), &[])?;
+        let shape = {
+            let created = match state
+                .heap
+                .context(realm)
+                .map(|context| context.function_prototype)
+                .map_err(RuntimeError::from)
+            {
+                Ok(prototype) => state
+                    .get_or_create_shape(Some(prototype), &[])
+                    .map_err(RuntimeError::from),
+                Err(error) => Err(error),
+            };
+            match created {
+                Ok(shape) => shape,
+                Err(error) => {
+                    drop(state);
+                    for probe in &conversion_probes {
+                        self.release_converted_value_edge(probe);
+                    }
+                    return Err(error);
+                }
+            }
+        };
         let retained_atoms = match state
             .retain_raw_value_atoms(std::iter::once(&raw_this).chain(raw_arguments.iter()))
         {
             Ok(atoms) => atoms,
             Err(error) => {
-                let cleanup = state.heap.release_shape(shape)?;
-                state.apply_cleanup(cleanup)?;
+                let applied = state
+                    .heap
+                    .release_shape(shape)
+                    .map_err(RuntimeError::from)
+                    .and_then(|cleanup| state.apply_cleanup(cleanup));
+                drop(state);
+                for probe in &conversion_probes {
+                    self.release_converted_value_edge(probe);
+                }
+                applied?;
                 return Err(error);
             }
         };
@@ -499,15 +633,33 @@ impl Runtime {
         )) {
             Ok(object) => object,
             Err(error) => {
-                state.release_atoms(retained_atoms)?;
-                let cleanup = state.heap.release_shape(shape)?;
-                state.apply_cleanup(cleanup)?;
+                let released = state.release_atoms(retained_atoms);
+                let applied = state
+                    .heap
+                    .release_shape(shape)
+                    .map_err(RuntimeError::from)
+                    .and_then(|cleanup| state.apply_cleanup(cleanup));
+                drop(state);
+                for probe in &conversion_probes {
+                    self.release_converted_value_edge(probe);
+                }
+                released?;
+                applied?;
                 return Err(error.into());
             }
         };
-        let cleanup = state.heap.release_shape(shape)?;
-        state.apply_cleanup(cleanup)?;
+        let finalized = state
+            .heap
+            .release_shape(shape)
+            .map_err(RuntimeError::from)
+            .and_then(|cleanup| state.apply_cleanup(cleanup));
         drop(state);
+        // The bound function retained its own copy edges; the boundary
+        // conversions' producer edges are no longer needed.
+        for probe in &conversion_probes {
+            self.release_converted_value_edge(probe);
+        }
+        finalized?;
         Ok(CallableRef::from_validated_object(
             ObjectRef::from_owned_handle(self.clone(), object),
         ))
@@ -601,11 +753,42 @@ impl Runtime {
     /// Returns `None` for objects without `[[Call]]`; runtime-domain and stale
     /// handle failures remain explicit errors.
     pub fn as_callable(&self, object: &ObjectRef) -> Result<Option<CallableRef>, RuntimeError> {
+        self.as_callable_object(object.object_id())
+    }
+
+    /// Handle form of [`Runtime::as_callable`]; borrows the object's edge.
+    pub(crate) fn as_callable_object(
+        &self,
+        object: crate::engine::heap::ObjectId,
+    ) -> Result<Option<CallableRef>, RuntimeError> {
         let _operation = self.operation();
-        if !self.object_has_call_capability(object)? {
+        if !self.object_id_has_call_capability(object)? {
             return Ok(None);
         }
-        Ok(Some(CallableRef::from_validated_object(object.clone())))
+        Ok(Some(CallableRef::from_validated_object(
+            ObjectRef::from_borrowed_handle(self.clone(), object)?,
+        )))
+    }
+
+    fn object_id_has_call_capability(
+        &self,
+        object: crate::engine::heap::ObjectId,
+    ) -> Result<bool, RuntimeError> {
+        Ok(matches!(
+            self.0
+                .state
+                .borrow()
+                .heap
+                .object(object)?
+                .payload,
+            crate::engine::heap::ObjectPayload::NativeFunction { .. }
+                | crate::engine::heap::ObjectPayload::BoundFunction { .. }
+                | crate::engine::heap::ObjectPayload::BytecodeFunction { .. }
+                | crate::engine::heap::ObjectPayload::Proxy(crate::engine::heap::ProxyData {
+                    is_callable: true,
+                    ..
+                })
+        ))
     }
 
     /// The inner error returns the unchanged non-callable owner so callers can

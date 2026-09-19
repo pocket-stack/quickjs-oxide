@@ -120,7 +120,7 @@ impl Runtime {
     }
 
     fn invalid_raw_json(&self, realm: ContextId) -> Result<Completion, RuntimeError> {
-        Ok(Completion::Throw(self.new_native_error(
+        Ok(Completion::Throw(self.new_native_error_jsvalue(
             realm,
             NativeErrorKind::Syntax,
             "invalid rawJSON string",

@@ -4,12 +4,12 @@
 mod ic;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 use crate::engine::heap::runtime::RuntimeState;
 use crate::engine::heap::{ObjectId, ObjectKind, ObjectPayload, PropertySlot};
 use crate::engine::object::shape::PropertyFlags;
 use crate::engine::object::{ObjectRef, PropertyKey};
-use crate::engine::value::Value;
+use crate::engine::value::{JsValue, Value};
 
 /// Affine native payload fact selected together with an own property value.
 /// Its callee remains retained by the result/operand owner; consumption checks
@@ -29,6 +29,7 @@ impl LinkedNativeSelection {
     }
 }
 
+#[derive(Clone, Copy)]
 struct OwnSlot {
     index: usize,
     flags: PropertyFlags,
@@ -50,7 +51,7 @@ fn locate(
 ) -> Result<Option<OwnSlot>, RuntimeError> {
     let data = state.heap.object(object)?;
     let shape = state.heap.shape(data.shape)?;
-    let Some(index) = shape.find(atom) else {
+    let Some(index) = shape.find(AtomIdx::from_raw(atom.raw())) else {
         return Ok(None);
     };
     let index = index as usize;
@@ -95,7 +96,7 @@ fn select_set_slot(
                     && shape
                         .entries()
                         .first()
-                        .is_some_and(|entry| entry.atom != atom)
+                        .is_some_and(|entry| entry.atom != AtomIdx::from_raw(atom.raw()))
             }
             _ => false,
         };
@@ -181,8 +182,13 @@ pub(super) fn prototypes_allow_dense_append(
 /// Continue an already-selected missing own property without releasing the
 /// borrow. Any exotic boundary declines before changing the receiver; the
 /// ordinary state machine then performs its original observable protocol.
+///
+/// A `Define` result means the define is validated and still missing: the
+/// caller ends the borrow, converts the value (which may allocate a
+/// string/BigInt node and needs the state borrow), and commits through
+/// [`Runtime::store_property_slot`]. No callback or mutation can run between
+/// this selection and that commit, so splitting the borrow is unobservable.
 fn set_missing_local(
-    runtime: &Runtime,
     state: &mut RuntimeState,
     receiver: ObjectId,
     atom: Atom,
@@ -218,19 +224,7 @@ fn set_missing_local(
             crate::engine::object::operations::PropertySetRejection::NotExtensible,
         )));
     }
-    let replacement = PropertySlot::Data(runtime.raw_property_value(value)?);
-    state.store_selected_property_slot(
-        receiver,
-        atom,
-        PropertyFlags::data(true, true, true),
-        replacement,
-        None,
-    )?;
-    #[cfg(feature = "profiling")]
-    crate::engine::api::profiling::record_owned_execution_event(
-        "set_missing_committed_from_selection",
-    );
-    Ok(MissingSelection::Complete(SetProbe::Stored(true)))
+    Ok(MissingSelection::Define)
 }
 
 #[derive(Clone, Copy)]
@@ -307,6 +301,13 @@ impl Runtime {
             DenseAppend(u32),
 
             SpecialAt(ObjectId, SpecialKind),
+
+            /// A validated missing define on the target: commit after the
+            /// borrow, once the value conversion can take it.
+            Define,
+
+            /// A selected writable own data slot awaiting replacement.
+            DataReplace(OwnSlot),
         }
         let selected = {
             let mut state = self.0.state.borrow_mut();
@@ -347,7 +348,6 @@ impl Runtime {
                     BorrowedSet::Missing(prototype) => {
                         if receiver_is_target {
                             match set_missing_local(
-                                self,
                                 &mut state,
                                 id,
                                 key.atom(),
@@ -358,9 +358,7 @@ impl Runtime {
                                 MissingSelection::Special(id, kind) => {
                                     Selected::SpecialAt(id, kind)
                                 }
-                                MissingSelection::Define => {
-                                    unreachable!("missing receiver definition is consumed locally")
-                                }
+                                MissingSelection::Define => Selected::Define,
                             }
                         } else {
                             Selected::Missing(prototype)
@@ -373,9 +371,7 @@ impl Runtime {
                         if !receiver_is_target {
                             return Ok(SetProbe::Writable);
                         }
-                        let replacement = PropertySlot::Data(self.raw_property_value(value)?);
-                        replace_data(&mut state, id, slot, replacement)?;
-                        return Ok(SetProbe::Stored(true));
+                        Selected::DataReplace(slot)
                     }
                     BorrowedSet::Setter(set) => Selected::Setter(set),
                     BorrowedSet::Special(kind) => return Ok(SetProbe::Special(kind)),
@@ -401,6 +397,44 @@ impl Runtime {
                     None => SetProbe::Stored(true),
                     Some(reason) => SetProbe::Rejected(reason),
                 }
+            }
+            Selected::Define => {
+                // The define was validated under the selection borrow; convert
+                // outside it (node allocation needs the borrow) and commit.
+                let raw = self.raw_property_value(value)?;
+                // Clone duplicates only the handle; the probe keeps the
+                // producer edge accountable through every store-or-decline path.
+                let conversion_probe = raw.clone();
+                let stored = self.store_property_slot(
+                    object,
+                    key,
+                    PropertyFlags::data(true, true, true),
+                    PropertySlot::Data(raw),
+                );
+                self.release_converted_value_edge(&conversion_probe);
+                stored?;
+                #[cfg(feature = "profiling")]
+                crate::engine::api::profiling::record_owned_execution_event(
+                    "set_missing_committed_from_selection",
+                );
+                SetProbe::Stored(true)
+            }
+            Selected::DataReplace(slot) => {
+                let raw = self.raw_property_value(value)?;
+                // Clone duplicates only the handle; the probe keeps the
+                // producer edge accountable through every store-or-decline path.
+                let conversion_probe = raw.clone();
+                let mut state = self.0.state.borrow_mut();
+                let replaced = replace_data(
+                    &mut state,
+                    object.object_id(),
+                    slot,
+                    PropertySlot::Data(raw),
+                );
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                replaced?;
+                return Ok(SetProbe::Stored(true));
             }
             Selected::Setter(set) => SetProbe::Setter(set),
             Selected::Missing(prototype) => SetProbe::Missing(
@@ -635,28 +669,73 @@ impl Runtime {
         {
             return Ok(None);
         }
+        // Convert before taking the state borrow: node allocation needs it.
+        let raw = self.raw_property_value(value)?;
+        // Clone duplicates only the handle; the probe keeps the
+        // producer edge accountable through every store-or-decline path.
+        let conversion_probe = raw.clone();
         let mut state = self.0.state.borrow_mut();
         let id = object.object_id();
-        if !is_ordinary(state.heap.object(id)?) {
+        let ordinary = match state.heap.object(id) {
+            Ok(data) => is_ordinary(data),
+            Err(error) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error.into());
+            }
+        };
+        if !ordinary {
+            drop(state);
+            self.release_converted_value_edge(&conversion_probe);
             return Ok(None);
         }
-        let Some(slot) = locate(&state, id, key.atom())? else {
+        let slot = match locate(&state, id, key.atom()) {
+            Ok(slot) => slot,
+            Err(error) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error);
+            }
+        };
+        let Some(slot) = slot else {
+            drop(state);
+            self.release_converted_value_edge(&conversion_probe);
             return Ok(None);
         };
-        let PropertySlot::Data(old) = &state.heap.object(id)?.slots[slot.index] else {
-            return Ok(None);
+        let old = match state.heap.object(id) {
+            Ok(data) => match &data.slots[slot.index] {
+                PropertySlot::Data(old) => old,
+                _ => {
+                    drop(state);
+                    self.release_converted_value_edge(&conversion_probe);
+                    return Ok(None);
+                }
+            },
+            Err(error) => {
+                drop(state);
+                self.release_converted_value_edge(&conversion_probe);
+                return Err(error.into());
+            }
         };
-        let raw = self.raw_property_value(value)?;
         if !crate::engine::object::property::data_value_update_allowed(
             slot.flags.configurable,
             slot.flags.writable,
             old,
             &raw,
-            crate::engine::value::collection_key::same_value,
+            |left, right| {
+                crate::engine::value::collection_key::same_value(&state.heap, left, right)
+            },
         ) {
+            drop(state);
+            self.release_converted_value_edge(&conversion_probe);
             return Ok(Some(false));
         }
-        replace_data(&mut state, id, slot, PropertySlot::Data(raw))?;
+        let replaced = replace_data(&mut state, id, slot, PropertySlot::Data(raw));
+        drop(state);
+        // The slot retained its own copy edge on success; a rejected update
+        // kept nothing. Balance the producer edge either way.
+        self.release_converted_value_edge(&conversion_probe);
+        replaced?;
         Ok(Some(true))
     }
 }
@@ -865,6 +944,20 @@ fn immediate_value(raw: &crate::engine::heap::RawValue) -> Option<Value> {
     })
 }
 
+/// Scalar projection for an immediate leaf result: the returned internal
+/// value owns no heap edge, matching [`immediate_value`].
+fn immediate_value_jsvalue(raw: &crate::engine::heap::RawValue) -> Option<JsValue> {
+    use crate::engine::heap::RawValue;
+    Some(match raw {
+        RawValue::Undefined => JsValue::Undefined,
+        RawValue::Null => JsValue::Null,
+        RawValue::Bool(value) => JsValue::Bool(*value),
+        RawValue::Int(value) => JsValue::Int(*value),
+        RawValue::Float(value) => JsValue::Float(*value),
+        _ => return None,
+    })
+}
+
 fn linked_field_atom(
     runtime: &Runtime,
     executable: &crate::engine::code::runtime::PublishedFunctionSnapshot,
@@ -887,20 +980,20 @@ impl Runtime {
     /// every decline leaves input owners, lazy properties and prototypes alone.
     pub(crate) fn try_ordinary_field_immediate_read(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &crate::engine::code::runtime::PublishedFunctionSnapshot,
         index: u32,
-    ) -> Option<Value> {
+    ) -> Option<JsValue> {
         use crate::engine::heap::SlotReleaseReadiness;
         let atom = linked_field_atom(self, executable, index)?;
         if !matches!(
-            self.slot_value_release_readiness(base),
+            self.slot_value_release_readiness_jsvalue(base),
             Ok(SlotReleaseReadiness::Ready)
         ) {
             return None;
         }
         let state = self.0.state.try_borrow().ok()?;
-        if let Value::String(string) = base {
+        if let JsValue::String(id) = base {
             let info = state.atoms.resolve(atom).ok()?;
             let crate::engine::atom::AtomSpelling::Text(name) = info.spelling else {
                 return None;
@@ -908,19 +1001,19 @@ impl Runtime {
             return (info.kind == crate::engine::atom::AtomKind::String
                 && name.len() == 6
                 && name.utf16_units().eq("length".encode_utf16()))
-            .then(|| Value::number(string.len() as f64));
+            .then(|| JsValue::Float(state.heap.string_fast(*id).len() as f64));
         }
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return None;
         };
-        let id = object.object_id();
+        let id = *object;
         let data = state.heap.object(id).ok()?;
         if matches!(
             (data.kind, &data.payload),
             (ObjectKind::Array, ObjectPayload::Array { .. })
         ) {
             let first = state.heap.shape(data.shape).ok()?.entries().first()?;
-            if first.atom == atom {
+            if first.atom == AtomIdx::from_raw(atom.raw()) {
                 let (length, _) =
                     Self::array_length_state_in_heap(&state.heap, id, atom).ok()??;
                 return Some(Self::array_length_value(length));
@@ -934,7 +1027,7 @@ impl Runtime {
         let PropertySlot::Data(value) = &data.slots[slot.index] else {
             return None;
         };
-        immediate_value(value)
+        immediate_value_jsvalue(value)
     }
     /// A published function already owns its static key. Only the selected
     /// result/getter is promoted here; fallback will acquire an owning key.
@@ -950,7 +1043,7 @@ impl Runtime {
 
     pub(crate) fn prepare_linked_own_read_selected(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &crate::engine::code::runtime::PublishedFunctionSnapshot,
         index: u32,
         native: Option<&mut Option<LinkedNativeSelection>>,
@@ -958,21 +1051,25 @@ impl Runtime {
         let Some(atom) = linked_field_atom(self, executable, index) else {
             return Ok(None);
         };
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return Ok(None);
         };
         let _operation = self.operation();
-        self.validate_value_domain(base, "property receiver")?;
+        let object = crate::engine::object::ObjectRef::from_borrowed_handle(self.clone(), *object)?;
         Ok(
-            match self.ordinary_read_probe_atom(object, atom, true, native)? {
+            match self.ordinary_read_probe_atom(&object, atom, true, native)? {
                 ReadProbe::Value(value) => {
-                    Some(crate::engine::object::OrdinaryRead::Complete(Some(value)))
+                    // Transfer the probed root into the internal value without
+                    // a retain/release pair.
+                    Some(crate::engine::object::OrdinaryRead::Complete(Some(
+                        self.into_jsvalue(value)?,
+                    )))
                 }
                 ReadProbe::Getter(None) => Some(crate::engine::object::OrdinaryRead::Complete(
-                    Some(Value::Undefined),
+                    Some(JsValue::Undefined),
                 )),
                 ReadProbe::Getter(Some(getter)) => {
-                    let receiver = base.clone();
+                    let receiver = self.root_value(base)?;
                     #[cfg(feature = "profiling")]
                     crate::engine::api::profiling::record_owned_execution_event(
                         "linked_read_owner_clone.ReceiverObject",
@@ -988,26 +1085,26 @@ impl Runtime {
     #[cfg(test)]
     pub(crate) fn try_ordinary_field_immediate_write(
         &self,
-        base: &Value,
+        base: &JsValue,
         executable: &crate::engine::code::runtime::PublishedFunctionSnapshot,
         index: u32,
-        value: &Value,
+        value: &JsValue,
     ) -> bool {
         use crate::engine::heap::SlotReleaseReadiness;
         if !matches!(
             value,
-            Value::Undefined | Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+            JsValue::Undefined | JsValue::Null | JsValue::Bool(_) | JsValue::Int(_) | JsValue::Float(_)
         ) {
             return false;
         }
         let Some(atom) = linked_field_atom(self, executable, index) else {
             return false;
         };
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return false;
         };
         if !matches!(
-            self.slot_value_release_readiness(base),
+            self.slot_value_release_readiness_jsvalue(base),
             Ok(SlotReleaseReadiness::Ready)
         ) {
             return false;
@@ -1015,7 +1112,7 @@ impl Runtime {
         let Ok(mut state) = self.0.state.try_borrow_mut() else {
             return false;
         };
-        let id = object.object_id();
+        let id = *object;
         let Ok(data) = state.heap.object(id) else {
             return false;
         };
@@ -1034,9 +1131,9 @@ impl Runtime {
         if immediate_value(old).is_none() {
             return false;
         }
-        let Ok(raw) = self.raw_property_value(value) else {
-            return false;
-        };
+        // `value` was matched to a scalar above, so this id copy allocates
+        // nothing and never takes the state borrow the caller still holds.
+        let raw = value.as_raw();
         // The canonical transaction validates shape storage before publication.
         // With scalar old/new values it retains/releases no edges or atoms;
         // the already-empty zero queue makes post-commit cleanup infallible.
@@ -1055,53 +1152,52 @@ impl Runtime {
     }
 
     /// One release proof and heap borrow select either existing array kernel.
-    pub(crate) fn try_array_immediate_read(&self, base: &Value, index: u32) -> Option<Value> {
+    pub(crate) fn try_array_immediate_read(&self, base: &JsValue, index: u32) -> Option<JsValue> {
         self.try_array_immediate_read_kind(base, index, true)
     }
 
     fn try_array_immediate_read_kind(
         &self,
-        base: &Value,
+        base: &JsValue,
         index: u32,
         include_typed: bool,
-    ) -> Option<Value> {
+    ) -> Option<JsValue> {
         use crate::engine::heap::SlotReleaseReadiness;
-        let Value::Object(object) = base else {
+        let JsValue::Object(object) = base else {
             return None;
         };
         if !matches!(
-            self.slot_value_release_readiness(base),
+            self.slot_value_release_readiness_jsvalue(base),
             Ok(SlotReleaseReadiness::Ready)
         ) {
             return None;
         }
         let mut state = self.0.state.try_borrow_mut().ok()?;
-        let data = state.heap.object(object.object_id()).ok()?;
+        let data = state.heap.object(*object).ok()?;
         if matches!(
             (data.kind, &data.payload),
             (ObjectKind::Array, ObjectPayload::Array { .. })
         ) {
-            return immediate_value(data.dense_array_value(index)?);
+            return immediate_value_jsvalue(data.dense_array_value(index)?);
         }
         if !include_typed {
             return None;
         }
         if matches!(data.payload, ObjectPayload::Arguments { .. }) {
             let atom = Atom::from_immediate_integer(index)?;
-            let slot = locate(&state, object.object_id(), atom).ok()??;
+            let slot = locate(&state, *object, atom).ok()??;
             return match &data.slots[slot.index] {
-                PropertySlot::Data(value) => immediate_value(value),
+                PropertySlot::Data(value) => immediate_value_jsvalue(value),
                 PropertySlot::VarRef(cell) => {
-                    immediate_value(&state.heap.var_ref(*cell).ok()?.value)
+                    immediate_value_jsvalue(&state.heap.var_ref(*cell).ok()?.value)
                 }
                 PropertySlot::Accessor { .. } | PropertySlot::AutoInit(_) => None,
             };
         }
-        let value =
-            Self::typed_array_number_read_in_heap(&mut state.heap, object.object_id(), index)?;
+        let raw = Self::typed_array_number_read_raw_in_heap(&mut state.heap, *object, index)?;
         #[cfg(feature = "profiling")]
         crate::engine::api::profiling::record_owned_execution_event("typed_array_number_read_leaf");
-        Some(value)
+        Some(JsValue::Float(raw))
     }
 }
 

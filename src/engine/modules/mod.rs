@@ -17,7 +17,7 @@ use crate::engine::api::context::Context;
 use crate::engine::api::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::AtomIdx;
 
 use crate::engine::builtins::native::{DynamicImportHandlerKind, ModuleEvaluationKind};
 use crate::engine::code::bytecode_publish;
@@ -487,9 +487,15 @@ struct ModuleResolvedBinding {
     target: ModuleResolvedBindingTarget,
 }
 
+/// `RawModuleRef` deliberately carries no `PartialEq`; identity is the pair of
+/// plain arena handles, compared here at the module-language boundary.
+fn same_raw_module(left: RawModuleRef, right: RawModuleRef) -> bool {
+    left.cache == right.cache && left.module == right.module
+}
+
 impl ModuleResolvedBinding {
     fn has_same_identity(&self, other: &Self) -> bool {
-        if self.module != other.module {
+        if !same_raw_module(self.module, other.module) {
             return false;
         }
         match (&self.target, &other.target) {
@@ -729,7 +735,7 @@ impl ModuleBytecodeRef {
 
 impl PartialEq for ModuleBytecodeRef {
     fn eq(&self, other: &Self) -> bool {
-        self.runtime.is_same_runtime(&other.runtime) && self.raw == other.raw
+        self.runtime.is_same_runtime(&other.runtime) && same_raw_module(self.raw, other.raw)
     }
 }
 
@@ -1056,7 +1062,7 @@ impl Runtime {
         })
     }
 
-    fn module_value_atoms(record: &ModuleRecord) -> Vec<Atom> {
+    fn module_value_atoms(record: &ModuleRecord) -> Vec<AtomIdx> {
         let mut atoms = Vec::with_capacity(2);
         if let ModuleRecordBody::Json {
             default_value: RawValue::Symbol(atom) | RawValue::Private(atom),
@@ -1075,7 +1081,7 @@ impl Runtime {
     fn module_value_atom_delta(
         current: &ModuleRecord,
         replacement: &ModuleRecord,
-    ) -> (Vec<Atom>, Vec<Atom>) {
+    ) -> (Vec<AtomIdx>, Vec<AtomIdx>) {
         let mut old = Self::module_value_atoms(current);
         let new = Self::module_value_atoms(replacement);
         let mut added = Vec::with_capacity(new.len());
@@ -1091,11 +1097,11 @@ impl Runtime {
 
     fn retain_module_atoms(
         state: &mut RuntimeState,
-        atoms: Vec<Atom>,
-    ) -> Result<Vec<Atom>, RuntimeError> {
+        atoms: Vec<AtomIdx>,
+    ) -> Result<Vec<AtomIdx>, RuntimeError> {
         for (retained, &atom) in atoms.iter().enumerate() {
-            if let Err(error) = state.atoms.retain(atom) {
-                state.release_atoms(atoms[..retained].iter().copied())?;
+            if let Err(error) = state.atoms.retain_index(atom) {
+                state.release_atom_indices(atoms[..retained].iter().copied())?;
                 return Err(error.into());
             }
         }
@@ -1114,7 +1120,7 @@ impl Runtime {
             Ok(module) => Ok(module),
             Err(error) => {
                 state
-                    .release_atoms(retained_atoms)
+                    .release_atom_indices(retained_atoms)
                     .expect("loaded-module atom rollback failed after rejected publication");
                 Err(error.into())
             }
@@ -1129,7 +1135,11 @@ impl Runtime {
         let mut state = self.0.state.borrow_mut();
         let current = state.heap.loaded_module(module)?;
         let (added_atoms, removed_atoms) = Self::module_value_atom_delta(&current, &replacement);
-        state.preflight_atom_releases(&removed_atoms)?;
+        let mut removed_branded = Vec::with_capacity(removed_atoms.len());
+        for &index in &removed_atoms {
+            removed_branded.push(state.atoms.brand(index)?);
+        }
+        state.preflight_atom_releases(&removed_branded)?;
         let retained_atoms = Self::retain_module_atoms(&mut state, added_atoms)?;
         match state.heap.replace_loaded_module(module, replacement) {
             Ok(cleanup) => {
@@ -1139,7 +1149,7 @@ impl Runtime {
             }
             Err(error) => {
                 state
-                    .release_atoms(retained_atoms)
+                    .release_atom_indices(retained_atoms)
                     .expect("loaded-module atom rollback failed after rejected replacement");
                 Err(error.into())
             }
@@ -1235,7 +1245,11 @@ impl Runtime {
             .iter()
             .flat_map(Self::module_value_atoms)
             .collect::<Vec<_>>();
-        state.preflight_atom_releases(&removed_atoms)?;
+        let mut removed_branded = Vec::with_capacity(removed_atoms.len());
+        for &index in &removed_atoms {
+            removed_branded.push(state.atoms.brand(index)?);
+        }
+        state.preflight_atom_releases(&removed_branded)?;
         let cleanup = state.heap.unpublish_loaded_modules(cache, &doomed)?;
         debug_assert!(cleanup.atoms.starts_with(&removed_atoms));
         state.apply_committed_cleanup(cleanup);
@@ -1294,7 +1308,9 @@ impl Runtime {
             )
         }));
         match outcome {
-            Ok(Ok(ModuleCompilation::Published(module))) if module == parsing_module => {
+            Ok(Ok(ModuleCompilation::Published(module)))
+                if same_raw_module(module, parsing_module) =>
+            {
                 Ok(ModuleCompilation::Published(module))
             }
             Ok(Ok(ModuleCompilation::Published(_))) => {
@@ -1584,7 +1600,7 @@ impl Runtime {
                     let popped = stack.pop().ok_or(RuntimeError::Invariant(
                         "module resolution stack unexpectedly became empty",
                     ))?;
-                    if popped.module != completed {
+                    if !same_raw_module(popped.module, completed) {
                         return Err(RuntimeError::Invariant(
                             "module resolution stack changed during record publication",
                         ));
@@ -1983,6 +1999,9 @@ impl Runtime {
     ) -> Result<RawModuleRef, RuntimeError> {
         self.validate_value_domain(&default_value, "JSON module value")?;
         let raw_default_value = self.raw_property_value(&default_value)?;
+        // Clone duplicates only the handle; the probe keeps the producer edge
+        // accountable after the record consumes the value.
+        let default_value_probe = raw_default_value.clone();
         let record = ModuleRecord {
             name,
             body: ModuleRecordBody::Json {
@@ -2016,7 +2035,12 @@ impl Runtime {
             link_realm: None,
             compile_realm: realm,
         };
-        let published = self.publish_module_record(realm, record)?;
+        let published = self.publish_module_record(realm, record);
+        // `publish_module_record` retained the record's own node edge on
+        // success; a rejected publication never stores the value. Either way
+        // the boundary conversion's producer edge must be balanced here.
+        self.release_converted_value_edge(&default_value_probe);
+        let published = published?;
         drop(default_value);
         Ok(published)
     }
@@ -2240,7 +2264,7 @@ impl Runtime {
                         ));
                     }
                     let meta = self.get_or_create_module_import_meta(module)?;
-                    Some(self.new_var_ref(
+                    Some(self.new_var_ref_rooted(
                         Value::Object(meta),
                         true,
                         true,
@@ -2276,7 +2300,7 @@ impl Runtime {
             // detached VarRef per local C/synthetic export. Its initial value
             // is `undefined`; the module initializer writes the JSON value at
             // evaluation time.
-            slots.push(Some(self.new_var_ref(
+            slots.push(Some(self.new_var_ref_rooted(
                 Value::Undefined,
                 false,
                 false,
@@ -2626,7 +2650,7 @@ impl Runtime {
     ) -> Result<ObjectRef, RuntimeError> {
         match self.module_record(module)?.namespace {
             ModuleNamespaceState::Building(object) => {
-                if !created.contains(&module) {
+                if !created.iter().any(|entry| same_raw_module(*entry, module)) {
                     return Err(RuntimeError::Invariant(
                         "module namespace cache retained a stale Building record",
                     ));
@@ -2672,12 +2696,23 @@ impl Runtime {
         }
 
         let tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
-        self.store_property_slot(
+        // A genuine value-producing boundary: mint the string node outside the
+        // store borrow, then hand its producer edge to the transactional store.
+        let tag_string = {
+            let mut state = self.0.state.borrow_mut();
+            state
+                .heap
+                .allocate_string(JsString::from_static("Module"))?
+        };
+        let tag_raw = RawValue::String(tag_string);
+        let stored = self.store_property_slot(
             &namespace,
             &tag,
             PropertyFlags::data(false, false, false),
-            PropertySlot::Data(RawValue::String(JsString::from_static("Module"))),
-        )?;
+            PropertySlot::Data(tag_raw.clone()),
+        );
+        self.release_converted_value_edge(&tag_raw);
+        stored?;
         self.transition_module_record(
             module,
             RawModuleTransition::FinishNamespace(namespace.object_id()),
@@ -2749,7 +2784,7 @@ impl Runtime {
                     let target = self.module_dependency(binding.module, *request)?;
                     let namespace =
                         self.build_module_namespace(target, realm, namespace_transaction)?;
-                    return self.new_var_ref(
+                    return self.new_var_ref_rooted(
                         Value::Object(namespace),
                         true,
                         true,
@@ -2840,7 +2875,7 @@ impl Runtime {
                                         realm,
                                         namespace_transaction,
                                     )?;
-                                    return self.new_var_ref(
+                                    return self.new_var_ref_rooted(
                                         Value::Object(namespace),
                                         true,
                                         true,
@@ -3107,7 +3142,10 @@ impl Runtime {
         module: RawModuleRef,
         dfs: &mut ModuleLinkDfs,
     ) -> Result<ModuleDfsFrame, RuntimeError> {
-        if self.module_record(module)?.link_status != ModuleLinkStatus::Unlinked {
+        if !matches!(
+            self.module_record(module)?.link_status,
+            ModuleLinkStatus::Unlinked
+        ) {
             return Err(RuntimeError::Invariant(
                 "link DFS entered a module which was not unlinked",
             ));
@@ -3494,18 +3532,29 @@ impl Runtime {
     ) -> Result<(), RuntimeError> {
         self.validate_value_domain(exception, "module evaluation exception")?;
         let raw = self.raw_property_value(exception)?;
+        // Clone duplicates only the handle; the probe keeps the producer edge
+        // accountable after the records and the pending-exception slot consume
+        // the value.
+        let conversion_probe = raw.clone();
         let mut evaluating = Vec::with_capacity(active.len());
         for &id in active {
-            if matches!(
-                self.module_record(RawModuleRef { cache, module: id })?
-                    .evaluation,
-                ModuleEvaluationState::Evaluating
-            ) {
+            let record = match self.module_record(RawModuleRef { cache, module: id }) {
+                Ok(record) => record,
+                Err(error) => {
+                    self.release_converted_value_edge(&conversion_probe);
+                    return Err(error);
+                }
+            };
+            if matches!(record.evaluation, ModuleEvaluationState::Evaluating) {
                 evaluating.push(id);
             }
         }
         let mut state = self.0.state.borrow_mut();
-        state.retain_raw_root(&raw)?;
+        if let Err(error) = state.retain_raw_root(&raw) {
+            drop(state);
+            self.release_converted_value_edge(&conversion_probe);
+            return Err(error);
+        }
         let retained_atoms = match &raw {
             RawValue::Symbol(atom) => {
                 let count = evaluating.len();
@@ -3526,9 +3575,11 @@ impl Runtime {
                 .publish_loaded_module_errors(cache, &evaluating, cycle_root, raw.clone())
         {
             state
-                .release_atoms(retained_atoms)
+                .release_atom_indices(retained_atoms)
                 .expect("module evaluation error atom rollback failed");
             state.release_owned_raw_root_committed(raw);
+            drop(state);
+            self.release_converted_value_edge(&conversion_probe);
             return Err(error.into());
         }
         // One extra owned occurrence was prepared with the cache batch, so
@@ -3537,6 +3588,10 @@ impl Runtime {
         if let Some(previous) = previous {
             state.release_owned_raw_root_committed(previous);
         }
+        drop(state);
+        // The records and the pending-exception slot retained their own edges;
+        // the boundary conversion's producer edge is no longer needed.
+        self.release_converted_value_edge(&conversion_probe);
         Ok(())
     }
 

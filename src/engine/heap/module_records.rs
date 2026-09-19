@@ -3,19 +3,19 @@ use super::*;
 /// Runtime-internal module identity. `cache` is the defining Context whose
 /// loaded-module cache owns `module`; all dependency indices in that record
 /// refer to the same cache.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub(crate) struct RawModuleRef {
     pub(crate) cache: ContextId,
     pub(crate) module: ModuleId,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct RawPublishedModuleExport {
     pub(crate) export_name: JsString,
     pub(crate) target: RawPublishedModuleExportTarget,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum RawPublishedModuleExportTarget {
     SourceTextLocal {
         closure_index: u16,
@@ -29,7 +29,7 @@ pub(crate) enum RawPublishedModuleExportTarget {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum RawModuleRecordBody {
     /// Source-text module definition published before parsing begins.
     ///
@@ -50,7 +50,7 @@ pub(crate) enum RawModuleRecordBody {
     Aborted,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RawModuleResolutionState {
     Unresolved,
     Resolving,
@@ -62,7 +62,7 @@ pub(crate) enum RawModuleResolutionState {
     Resolved(Rc<[ModuleId]>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct RawModuleInstance {
     /// Borrowed module snapshots share the slot vector. Copy only when a binding
     /// is installed, never for each export lookup during namespace construction.
@@ -70,7 +70,7 @@ pub(crate) struct RawModuleInstance {
     pub(crate) callable: Option<ObjectId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum RawModuleNamespaceState {
     Empty,
     Building(ObjectId),
@@ -85,7 +85,7 @@ pub(crate) enum RawModuleLinkStatus {
     Poisoned,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum RawModuleEvaluationState {
     Unevaluated,
     Evaluating,
@@ -98,7 +98,7 @@ pub(crate) enum RawModuleEvaluationState {
 /// First-execution realm retained by a linked module record. The defining
 /// cache realm is represented without a heap edge because the Context already
 /// owns the loaded-module record; only a distinct realm is an outgoing edge.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum RawModuleLinkRealm {
     Cache,
     Other(ContextId),
@@ -142,7 +142,7 @@ pub(crate) enum RawModuleTransition {
 /// A snapshot must therefore not outlive the cache root or be used after a
 /// mutation releases one of its raw fields unless that field was promoted to
 /// an owning runtime root first.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct RawModuleRecord {
     pub(crate) name: JsString,
     pub(crate) body: RawModuleRecordBody,
@@ -197,7 +197,7 @@ pub(crate) struct RawModuleRecord {
     pub(crate) compile_realm: ContextId,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ModuleLookupIndexes {
     exports_by_name: HashMap<JsString, usize>,
     imports_by_closure: HashMap<u16, usize>,
@@ -363,7 +363,7 @@ pub(in crate::engine::heap) fn aborted_module_record(record: &RawModuleRecord) -
 /// compacted or reused: rollback changes an unreferenced slot to `None` and a
 /// referenced slot to `Aborted`, while the name map continues to point at the
 /// oldest remaining live record.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct LoadedModuleCache {
     pub(in crate::engine::heap) records: Vec<Option<RawModuleRecord>>,
     pub(in crate::engine::heap) first_by_name: HashMap<JsString, ModuleId>,

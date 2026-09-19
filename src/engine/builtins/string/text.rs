@@ -115,7 +115,7 @@ impl StringTextStep {
         };
         if matches!(this_value, Value::Undefined | Value::Null) {
             return Ok(Self::Complete(Completion::Throw(
-                runtime.new_native_error(
+                runtime.new_native_error_jsvalue(
                     realm,
                     NativeErrorKind::Type,
                     "null or undefined are forbidden",
@@ -235,7 +235,7 @@ impl StringTextResume {
                         if attribute.is_some() {
                             if matches!(self.0.first, Value::Undefined | Value::Null) {
                                 return Ok(StringTextStep::Complete(Completion::Throw(
-                                    runtime.new_native_error(
+                                    runtime.new_native_error_jsvalue(
                                         realm,
                                         NativeErrorKind::Type,
                                         "null or undefined are forbidden",
@@ -334,7 +334,7 @@ impl StringTextResume {
                     NormalizationForm::Nfkd
                 } else {
                     return Ok(StringTextStep::Complete(Completion::Throw(
-                        runtime.new_native_error(
+                        runtime.new_native_error_jsvalue(
                             realm,
                             NativeErrorKind::Range,
                             "bad normalization form",

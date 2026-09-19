@@ -20,7 +20,9 @@ fn dependency_free_module_links_then_evaluates_with_module_semantics() {
 
     let snapshot = module_evaluation_snapshot(&mut context, &module);
     assert_eq!(snapshot.state, PromiseState::Fulfilled);
-    assert_eq!(snapshot.result, RawValue::Undefined);
+    assert!(
+        matches!(snapshot.result, RawValue::Undefined)
+    );
     assert_script_true(
         &mut context,
         r#"
@@ -51,7 +53,9 @@ fn module_identity_evaluates_once_and_caches_abrupt_completion() {
     let first = module_evaluation_promise(&mut context, &abrupt);
     let first_snapshot = promise_snapshot(&runtime, &first);
     assert_eq!(first_snapshot.state, PromiseState::Rejected);
-    assert_eq!(first_snapshot.result, RawValue::Int(42));
+    assert!(
+        matches!(first_snapshot.result, RawValue::Int(42))
+    );
     let second = module_evaluation_promise(&mut context, &abrupt);
     assert_eq!(first.object_id(), second.object_id());
 }

@@ -4,7 +4,7 @@ mod local_add;
 use crate::engine::api::{error::Error, runtime::Runtime};
 use crate::engine::code::function::metadata::FunctionKind;
 use crate::engine::object::{CallableRef, OrdinaryRead};
-use crate::engine::value::Value;
+use crate::engine::value::JsValue;
 use crate::engine::value::conversion::primitive::{PrimitiveResume, PrimitiveStep};
 use crate::engine::vm::call::{BytecodeCallRequest, CallableExecution};
 use crate::engine::vm::exception::runtime_error_to_vm_error;
@@ -19,16 +19,16 @@ enum Finish {
     Plus,
     PropertyKey,
     PropertyWrite {
-        base: Value,
-        value: Value,
+        base: JsValue,
+        value: JsValue,
     },
     PropertyRead {
-        base: Value,
+        base: JsValue,
         keep_receiver: bool,
         keep_key: bool,
     },
-    AddLeft(Value),
-    AddRight(Value),
+    AddLeft(JsValue),
+    AddRight(JsValue),
 }
 
 /// The same resident state moves between task and wait as one pointer.
@@ -75,28 +75,24 @@ pub(super) enum Progress {
     PropertyWrite(Box<super::property_write_driver::ConvertedWrite>),
 }
 
-fn property_key_primitive(runtime: &Runtime, value: Value) -> Result<Value, Error> {
+fn property_key_primitive(runtime: &Runtime, value: JsValue) -> Result<JsValue, Error> {
     Ok(match value {
-        Value::Symbol(symbol) => {
-            if !symbol.belongs_to(runtime) {
-                return Err(Error::internal(
-                    "computed property symbol belongs to another runtime",
-                ));
-            }
-            Value::Symbol(symbol)
-        }
-        Value::String(string) => Value::String(string),
-        primitive => Value::String(primitive.to_js_string()?),
+        JsValue::Symbol(_) => value,
+        JsValue::String(_) => value,
+        primitive => super::numeric::allocate_string_jsvalue(
+            runtime,
+            super::numeric::to_js_string_jsvalue(runtime, &primitive)?,
+        )?,
     })
 }
 
 fn add_completion(
     runtime: &Runtime,
     realm: crate::engine::heap::ContextId,
-    left: Value,
-    right: Value,
+    left: JsValue,
+    right: JsValue,
 ) -> Result<Completion, Error> {
-    match super::numeric::add_primitives(left, right) {
+    match super::numeric::add_primitives(runtime, left, right) {
         Ok(value) => Ok(Completion::Return(value)),
         Err(error) => {
             let Some(kind) =
@@ -106,7 +102,7 @@ fn add_completion(
             };
             Ok(Completion::Throw(
                 runtime
-                    .new_native_error_from_error(realm, kind, &error)
+                    .new_native_error_from_error_jsvalue(realm, kind, &error)
                     .map_err(runtime_error_to_vm_error)?,
             ))
         }
@@ -115,7 +111,7 @@ fn add_completion(
 
 pub(super) enum PrimitiveCompletion {
     Completed,
-    Throw(Value),
+    Throw(JsValue),
     Declined,
 }
 
@@ -137,19 +133,12 @@ pub(super) fn complete_primitives(
     let mut transaction = execution.slots.frame_transaction(&mut body.window)?;
     let (left, right, store) = {
         let mut slots = transaction.slots();
-        // Preserve left-to-right domain validation, including checking a later
-        // malformed slot after an earlier invalid domain, before identity issue.
-        let mut invalid = None;
+        // Internal values carry no runtime branding; authenticate every operand
+        // slot in the original left-to-right order before the identity issue.
         let mut has_object = false;
         for offset in (0..=usize::from(addition)).rev() {
             let value = slots.peek(offset)?;
-            if let Err(error) = runtime.validate_value_domain(value, "conversion operand") {
-                invalid.get_or_insert(error);
-            }
-            has_object |= matches!(value, Value::Object(_));
-        }
-        if let Some(error) = invalid {
-            return Err(super::exception::runtime_error_to_vm_error(error));
+            has_object |= matches!(value, JsValue::Object(_));
         }
         *next_operation = next_operation
             .checked_add(1)
@@ -194,7 +183,7 @@ pub(super) fn complete_primitives(
     let completion = if let Some(left) = left {
         add_completion(runtime, realm, left, right)?
     } else {
-        match super::numeric::unary_plus_primitive(right) {
+        match super::numeric::unary_plus_primitive(runtime, right) {
             Ok(value) => Completion::Return(value),
             Err(error) => {
                 let Some(kind) =
@@ -204,7 +193,7 @@ pub(super) fn complete_primitives(
                 };
                 Completion::Throw(
                     runtime
-                        .new_native_error_from_error(realm, kind, &error)
+                        .new_native_error_from_error_jsvalue(realm, kind, &error)
                         .map_err(runtime_error_to_vm_error)?,
                 )
             }
@@ -253,7 +242,7 @@ pub(super) fn complete_primitives(
                         return Err(error);
                     }
                 };
-                drop(old);
+                super::bindings::release_frame_binding(runtime, old)?;
                 // The optional Drop only removes the assignment result while
                 // the local keeps the value; it has no observable owner drain.
                 let resume = store_pc
@@ -338,7 +327,7 @@ impl ConversionTask {
     ) -> Result<Self, Error> {
         let parent = execution.frames.current_mut(frame)?;
         let right = execution.slots.pop(&mut parent.window)?;
-        if property_key && !addition && !matches!(right, Value::Object(_)) {
+        if property_key && !addition && !matches!(right, JsValue::Object(_)) {
             let value = property_key_primitive(runtime, right)?;
             #[cfg(feature = "profiling")]
             let depth = execution.slots.depth(&parent.window) + 1;
@@ -413,14 +402,8 @@ impl ConversionTask {
         identity: u64,
     ) -> Result<Self, Error> {
         let parent = execution.frames.current_mut(frame)?;
-        for (offset, label) in [
-            (2, "property receiver"),
-            (1, "property key"),
-            (0, "property value"),
-        ] {
-            runtime
-                .validate_value_domain(execution.slots.peek(&parent.window, offset)?, label)
-                .map_err(runtime_error_to_vm_error)?;
+        for offset in 2..=0 {
+            let _ = execution.slots.peek(&parent.window, offset)?;
         }
         let value = execution.slots.pop(&mut parent.window)?;
         let key = execution.slots.pop(&mut parent.window)?;
@@ -447,15 +430,8 @@ impl ConversionTask {
         keep_key: bool,
     ) -> Result<Self, Error> {
         let parent = execution.frames.current_mut(frame)?;
-        runtime
-            .validate_value_domain(
-                execution.slots.peek(&parent.window, 1)?,
-                "property receiver",
-            )
-            .map_err(runtime_error_to_vm_error)?;
-        runtime
-            .validate_value_domain(execution.slots.peek(&parent.window, 0)?, "property key")
-            .map_err(runtime_error_to_vm_error)?;
+        execution.slots.peek(&parent.window, 1)?;
+        execution.slots.peek(&parent.window, 0)?;
         let key = execution.slots.pop(&mut parent.window)?;
         let base = execution.slots.pop(&mut parent.window)?;
         Ok(Self::new(
@@ -534,13 +510,13 @@ impl ConversionTask {
                     Completion::Return(value) => {
                         // Domain completion guarantees a primitive: this call
                         // cannot recursively perform another ToPrimitive.
-                        if matches!(value, Value::Object(_)) {
+                        if matches!(value, JsValue::Object(_)) {
                             return Err(Error::internal("conversion returned an object"));
                         }
                         match &mut self.finish {
                             Finish::AddLeft(right) => {
-                                let right = std::mem::replace(right, Value::Undefined);
-                                if !matches!(right, Value::Object(_)) {
+                                let right = std::mem::replace(right, JsValue::Undefined);
+                                if !matches!(right, JsValue::Object(_)) {
                                     #[cfg(feature = "profiling")]
                                     crate::engine::api::profiling::record_owned_execution_event(
                                         "add_completed_with_primitive_rhs",
@@ -562,7 +538,7 @@ impl ConversionTask {
                             Finish::AddRight(left) => add_completion(
                                 runtime,
                                 realm,
-                                std::mem::replace(left, Value::Undefined),
+                                std::mem::replace(left, JsValue::Undefined),
                                 value,
                             )?,
                             Finish::Predicate(input) => {
@@ -579,8 +555,8 @@ impl ConversionTask {
                                 base,
                                 value: assigned,
                             } => {
-                                let base = std::mem::replace(base, Value::Undefined);
-                                let assigned = std::mem::replace(assigned, Value::Undefined);
+                                let base = std::mem::replace(base, JsValue::Undefined);
+                                let assigned = std::mem::replace(assigned, JsValue::Undefined);
                                 return Ok(Progress::PropertyWrite(Box::new(
                                     super::property_write_driver::ConvertedWrite {
                                         base,
@@ -594,7 +570,7 @@ impl ConversionTask {
                                 keep_receiver,
                                 keep_key,
                             } => {
-                                let base = std::mem::replace(base, Value::Undefined);
+                                let base = std::mem::replace(base, JsValue::Undefined);
                                 let keep_receiver = *keep_receiver;
                                 let keep_key = *keep_key;
                                 return Ok(Progress::PropertyRead(Box::new(
@@ -609,17 +585,19 @@ impl ConversionTask {
                             Finish::PropertyKey => {
                                 Completion::Return(property_key_primitive(runtime, value)?)
                             }
-                            Finish::Plus => match super::numeric::unary_plus_primitive(value) {
-                                Ok(value) => Completion::Return(value),
-                                Err(error) => {
-                                    let Some(kind) = crate::engine::api::error::NativeErrorKind::from_javascript_error(error.kind()) else { return Err(error); };
-                                    Completion::Throw(
-                                        runtime
-                                            .new_native_error_from_error(realm, kind, &error)
-                                            .map_err(runtime_error_to_vm_error)?,
-                                    )
+                            Finish::Plus => {
+                                match super::numeric::unary_plus_primitive(runtime, value) {
+                                    Ok(value) => Completion::Return(value),
+                                    Err(error) => {
+                                        let Some(kind) = crate::engine::api::error::NativeErrorKind::from_javascript_error(error.kind()) else { return Err(error); };
+                                        Completion::Throw(
+                                            runtime
+                                                .new_native_error_from_error_jsvalue(realm, kind, &error)
+                                                .map_err(runtime_error_to_vm_error)?,
+                                        )
+                                    }
                                 }
-                            },
+                            }
                         }
                     }
                 };
@@ -645,7 +623,7 @@ impl ConversionTask {
                             resume
                                 .resume(
                                     runtime,
-                                    Completion::Return(value.unwrap_or(Value::Undefined)),
+                                    Completion::Return(value.unwrap_or(JsValue::Undefined)),
                                 )
                                 .map_err(runtime_error_to_vm_error)?,
                         ),
@@ -710,6 +688,11 @@ fn invoke(
     } = match super::call::normalize_callback(runtime, realm, callable, receiver, arguments)? {
         crate::engine::value::conversion::NativeConversion::Value(call) => call,
         crate::engine::value::conversion::NativeConversion::Throw(value) => {
+            // The callback boundary threw a public root; transfer it into the
+            // internal completion without a retain/release pair.
+            let value = runtime
+                .into_jsvalue(value)
+                .map_err(runtime_error_to_vm_error)?;
             return Ok(Progress::Ready(
                 task.with_step(
                     resume
@@ -796,7 +779,7 @@ fn invoke(
                 callable,
                 receiver,
                 arguments,
-                new_target: Value::Undefined,
+                new_target: JsValue::Undefined,
                 bytecode,
                 closure_slots,
                 caller_realm: realm,

@@ -1,7 +1,7 @@
 use crate::engine::api::error::ErrorKind;
 use crate::engine::api::runtime::Runtime;
 use crate::engine::api::runtime_error::RuntimeError;
-use crate::engine::atom::Atom;
+use crate::engine::atom::{Atom, AtomIdx};
 use crate::engine::heap::ObjectPayload;
 use crate::engine::object::access::raw_string_property_one_level;
 
@@ -28,6 +28,28 @@ impl Runtime {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("backtrace Error object"));
         }
+        self.ensure_error_backtrace_object(object.object_id(), skip_first_frame, explicit_location)
+    }
+
+    /// Internal-value form of [`Runtime::ensure_error_backtrace`].
+    pub(crate) fn ensure_error_backtrace_jsvalue(
+        &self,
+        value: &crate::engine::value::JsValue,
+        skip_first_frame: bool,
+        explicit_location: Option<ExplicitBacktraceLocation>,
+    ) -> Result<(), RuntimeError> {
+        let crate::engine::value::JsValue::Object(object) = value else {
+            return Ok(());
+        };
+        self.ensure_error_backtrace_object(*object, skip_first_frame, explicit_location)
+    }
+
+    fn ensure_error_backtrace_object(
+        &self,
+        object: crate::engine::heap::ObjectId,
+        skip_first_frame: bool,
+        explicit_location: Option<ExplicitBacktraceLocation>,
+    ) -> Result<(), RuntimeError> {
 
         let stack_key = self.pinned_property_key(crate::engine::atom::pinned::PinnedAtom::Stack)?;
         let needs_backtrace = {
@@ -39,7 +61,7 @@ impl Runtime {
                 state
                     .heap
                     .shape(data.shape)?
-                    .find(stack_key.atom())
+                    .find(AtomIdx::from_raw(stack_key.atom().raw()))
                     .is_none()
             }
         };

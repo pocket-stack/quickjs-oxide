@@ -8,7 +8,7 @@ use crate::engine::code::verify::private_elements::{
     PrivateBindingRole, private_binding_info, private_setter_local_pairs,
 };
 use crate::engine::heap::{
-    BytecodeConstant, PublishedPrivateBinding, PublishedPrivateBindings, RawValue,
+    BytecodeConstant, Heap, PublishedPrivateBinding, PublishedPrivateBindings, RawValue,
 };
 
 /// Name-aware publication data retained across atom linking. The unlinked
@@ -26,6 +26,7 @@ pub(crate) fn prepare_private_binding_publication(
     local_definitions: &[UnlinkedVariableDefinition],
     closure_variables: &[ClosureVariable],
     constants: &[BytecodeConstant],
+    heap: &Heap,
 ) -> Result<PrivateBindingPublicationPlan, RuntimeError> {
     let mut local_roles = vec![None; local_definitions.len()];
     let local_pairs = private_setter_local_pairs(local_definitions)?;
@@ -60,7 +61,7 @@ pub(crate) fn prepare_private_binding_publication(
             .ok()
             .and_then(|constant| constants.get(constant))
             .and_then(|constant| match constant {
-                BytecodeConstant::Value(RawValue::String(name)) => Some(name),
+                BytecodeConstant::Value(RawValue::String(name)) => heap.string(*name).ok(),
                 BytecodeConstant::Value(_)
                 | BytecodeConstant::RegExp { .. }
                 | BytecodeConstant::Function(_) => None,

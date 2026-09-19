@@ -39,7 +39,7 @@ fn bytecode_debug_filename_requires_one_auxiliary_atom_ownership() {
     let bytecode = heap.allocate_function_bytecode(owned).unwrap();
     assert_eq!(
         heap.release_function_bytecode(bytecode).unwrap().atoms,
-        vec![filename]
+        vec![AtomIdx::from_raw(filename.raw())]
     );
 }
 
@@ -638,12 +638,13 @@ fn bytecode_allocation_accepts_typed_class_heritage() {
         Instruction::Drop,
         Instruction::Return,
     ]);
+    let derived = heap
+        .allocate_string(JsString::from_static("Derived"))
+        .unwrap();
     let mut candidate = bytecode(
         &code,
         context,
-        vec![BytecodeConstant::Value(RawValue::String(
-            JsString::from_static("Derived"),
-        ))],
+        vec![BytecodeConstant::Value(RawValue::String(derived))],
         Vec::new(),
     );
     let mut atoms = crate::engine::atom::AtomTable::new();
@@ -653,6 +654,7 @@ fn bytecode_allocation_accepts_typed_class_heritage() {
     candidate.metadata.max_stack = 2;
     let function = heap.allocate_function_bytecode(candidate).unwrap();
     heap.release_function_bytecode(function).unwrap();
+    heap.release_string(derived).unwrap();
 
     heap.release_context(context).unwrap();
     heap.release_shape(shape).unwrap();
@@ -784,17 +786,26 @@ fn bytecode_static_names_require_complete_owned_string_mappings() {
         data.property_key_atoms = keys;
         data
     };
-    let spelling = || RawValue::String(JsString::from_static("mapped"));
+    let mut spellings: Vec<StringId> = Vec::new();
+    let mut spelling = |heap: &mut Heap| {
+        let id = heap
+            .allocate_string(JsString::from_static("mapped"))
+            .unwrap();
+        spellings.push(id);
+        RawValue::String(id)
+    };
     for keys in [None, Some(Rc::from([Atom::NULL]))] {
+        let value = spelling(&mut heap);
         assert_eq!(
-            heap.allocate_function_bytecode(candidate(keys, vec![], spelling())),
+            heap.allocate_function_bytecode(candidate(keys, vec![], value)),
             Err(HeapError::Invariant(
                 "static name opcode has no linked property key"
             ))
         );
     }
+    let unowned = spelling(&mut heap);
     assert_eq!(
-        heap.allocate_function_bytecode(candidate(Some(Rc::from([name])), vec![], spelling())),
+        heap.allocate_function_bytecode(candidate(Some(Rc::from([name])), vec![], unowned)),
         Err(HeapError::Invariant(
             "static name atom is not owned by bytecode metadata"
         ))
@@ -809,13 +820,17 @@ fn bytecode_static_names_require_complete_owned_string_mappings() {
             "linked property key does not reference a string constant"
         ))
     );
+    let linked = spelling(&mut heap);
     let id = heap
-        .allocate_function_bytecode(candidate(Some(Rc::from([name])), vec![name], spelling()))
+        .allocate_function_bytecode(candidate(Some(Rc::from([name])), vec![name], linked))
         .unwrap();
     assert_eq!(
         heap.release_function_bytecode(id).unwrap().atoms,
-        vec![name]
+        vec![AtomIdx::from_raw(name.raw())]
     );
+    for id in spellings {
+        heap.release_string(id).unwrap();
+    }
     heap.release_context(realm).unwrap();
     heap.release_object(prototype).unwrap();
     heap.release_shape(shape).unwrap();

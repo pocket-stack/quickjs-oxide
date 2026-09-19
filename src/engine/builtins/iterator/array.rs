@@ -119,7 +119,7 @@ impl ArrayNextStep {
     }
     fn wrong_receiver(runtime: &Runtime, realm: ContextId) -> Result<Self, RuntimeError> {
         Ok(Self::Complete(NativeInvokeOutcome::Completion(
-            Completion::Throw(runtime.new_native_error(
+            Completion::Throw(runtime.new_native_error_jsvalue(
                 realm,
                 NativeErrorKind::Type,
                 "Array Iterator object expected",
